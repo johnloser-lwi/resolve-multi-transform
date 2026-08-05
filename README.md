@@ -388,8 +388,59 @@ the kernel time plus four full-frame intermediate buffers (~127 MB each at UHD R
 resample the image four times, which softens it. Layered clips each needing their own transform
 are unavoidable; multiple transforms on the *same* clip are not.
 
-An effect that evaluates to the identity transform at full opacity reports `isIdentity`, and the
-host may skip it entirely.
+An effect that does nothing **at any frame** reports `isIdentity`, and the host may skip it
+entirely. That test is deliberately time-independent. Judging it per frame looks correct and is
+not: outside a stage's range the progress pins to 0 or 1, so the transform collapses to the From
+or To pose — normally the identity — and the effect declares itself a pass-through on precisely
+the frames outside its own animation. Hosts cache that verdict per frame, so moving the stage's
+start or end over one of those frames left the host still convinced nothing happened there, and
+edits made with the playhead outside the range appeared to do nothing until the cache was
+purged. Giving the same answer at every frame removes the failure mode; the cost is losing the
+skip on merely-neutral frames, worth about 0.3 ms each.
+
+## A note for other OFX hosts
+
+The animation is driven by the render time, not by host keyframes, so **no parameter is ever
+animated**. A host that assumes "no animated parameters means a static output" will render one
+frame and reuse it for the whole clip — playback freezes while the controls still update the
+image live.
+
+Two OFX properties have to be declared because of this, and **both default to the wrong value
+for an effect that animates internally**:
+
+- **`kOfxImageEffectFrameVarying`**, set in `getClipPreferences`. It means "generates a
+  different image from frame to frame, even if no parameters or input image changes". Without
+  it a host may render one frame and reuse it, so playback freezes while the controls still
+  update the image live.
+- **`kOfxParamPropCacheInvalidation` = `kOfxParamInvalidateAll`**, on every parameter that
+  affects the render. The default, `kOfxParamInvalidateValueChange`, means "invalidate only the
+  range of frames this parameter's *keyframe* affects" — correct for keyframed parameters, and
+  meaningless here, because these parameters have no keyframes and each affects every frame.
+  Without it a caching host keeps replaying stale frames after an edit until the cache is
+  purged by hand.
+
+  The parameters that only drive the viewer overlay — Active Stage, Gizmo Edits, Show Curve
+  Editor — deliberately keep the default, since they change nothing about the rendered image
+  and purging the cache when a stage tab is clicked would just stall playback.
+
+- **`paramEditBegin` / `paramEditEnd`** around every parameter the *plugin itself* writes. The
+  spec requires these whenever a plugin calls `paramSetValue` "either from custom GUI
+  interaction or some analysis of imagery", from an interact action or `changedParam`. That is
+  every write this plugin makes: the overlay's gizmo, timeline, path and curve handles, the Set
+  Start/End buttons, the easing presets, Straighten Path, and the derived Duration.
+
+  Without the brackets the host is never told the edit happened. The symptom is distinctive:
+  edits made through the host's *own* Inspector work, because the host performed them and knows
+  about them, while anything dragged in the overlay or set by a button appears to do nothing
+  until the cache is purged by hand. Bracketing also collapses a drag into one undo step
+  instead of one per mouse-move event.
+
+Resolve is lenient about all three and never showed any of the problems; Fusion honours all
+three, and is the one behaving correctly.
+
+If playback ever looks frozen in some other host, `probe.log` traces the first eight render
+times. Times that do not advance mean the host is caching; times that advance normally mean the
+animation's own start/end frames are outside the range being played.
 
 ## Host capability probe
 

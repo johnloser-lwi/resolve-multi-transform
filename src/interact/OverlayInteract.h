@@ -52,6 +52,14 @@ private:
 
     /// Widget that claimed the current drag, so motion/up go to the same place.
     Widget* _captured = nullptr;
+
+    /// Whether a parameter edit block is currently open for that drag. The
+    /// block must be closed exactly once, including when a drag is abandoned
+    /// because something threw.
+    bool _editBlockOpen = false;
+
+    void openEditBlock(const char* name);
+    void closeEditBlock();
 };
 
 /** @brief Descriptor that registers the overlay with the effect. */

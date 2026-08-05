@@ -15,6 +15,7 @@
 #include "MultiTransformPlugin.h"
 
 #include "AnimEngine.h"
+#include "EditBlock.h"
 #include "HostProbe.h"
 #include "ParamNames.h"
 #include "Sampler.h"
@@ -94,12 +95,22 @@ void TransformProcessor::processImagesCUDA()
     const int dstHeight = db.y2 - db.y1;
     const int dstRowFloats = _dstImg->getRowBytes() / static_cast<int>(sizeof(float));
 
-    RunMultiTransformCuda(_pCudaStream,
-                          sv.data, sv.width, sv.height, sv.rowStrideFloats,
-                          static_cast<float*>(_dstImg->getPixelData()),
-                          dstWidth, dstHeight, dstRowFloats,
-                          _transforms,
-                          static_cast<int>(_filter), static_cast<int>(_edge));
+    // Whether the host supplies a stream decides who synchronises, so it is
+    // worth knowing which world we are in when a render looks wrong.
+    mtx::ProbeOnce("cuda-stream",
+                   std::string("CUDA render: host stream = ") +
+                   (_pCudaStream ? "provided (host synchronises)"
+                                 : "NULL (plugin synchronises)"));
+
+    const char* err =
+        RunMultiTransformCuda(_pCudaStream,
+                              sv.data, sv.width, sv.height, sv.rowStrideFloats,
+                              static_cast<float*>(_dstImg->getPixelData()),
+                              dstWidth, dstHeight, dstRowFloats,
+                              _transforms,
+                              static_cast<int>(_filter), static_cast<int>(_edge));
+
+    if (err) mtx::ProbeOnce("cuda-error", std::string("CUDA error: ") + err);
 }
 
 void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
@@ -150,6 +161,7 @@ public:
                             OFX::Clip*& p_IdentityClip, double& p_IdentityTime) override;
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args,
                               const std::string& p_ParamName) override;
+    virtual void getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences) override;
 
     /** Gather every parameter into the plain structs the renderer consumes. */
     AnimParams fetchAnimParams(double p_Time) const;
@@ -220,8 +232,10 @@ private:
     /// preset writes the amounts, and writing an amount selects Custom.
     bool _syncingEasing = false;
 
-    /// Diagnostic only: how many frames actually reached the renderer.
-    long long _renderCount = 0;
+    /// Diagnostic only: how many frames reached the renderer, and how many were
+    /// reported as identity and so may have been passed straight through.
+    long long _renderCount   = 0;
+    long long _identityCount = 0;
 };
 
 MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
@@ -379,6 +393,23 @@ BlurParams MultiTransformPlugin::fetchBlurParams(double p_Time) const
     return b;
 }
 
+void MultiTransformPlugin::getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences)
+{
+    // Declare that the output changes over time even though no parameter is
+    // animated.
+    //
+    // The animation here is internal: it is driven by the render time, not by
+    // host keyframes. Without this, a host is entirely within its rights to
+    // render one frame and reuse it for the whole clip, because as far as it
+    // can tell nothing about the effect varies -- and Fusion does exactly that,
+    // so playback showed a frozen image while the controls still updated it
+    // live. Resolve happened to re-render regardless, which is why this went
+    // unnoticed there.
+    p_ClipPreferences.setOutputFrameVarying(true);
+
+    mtx::ProbeOnce("clip-prefs", "getClipPreferences: declared output frame-varying");
+}
+
 bool MultiTransformPlugin::sourceSize(double p_Time, float& outW, float& outH) const
 {
     if (!_srcClip) return false;
@@ -471,6 +502,7 @@ void MultiTransformPlugin::applyEasingPreset(int stageIndex)
 
     const EasingPresetValues v = PresetValues(preset);
 
+    mtx::EditBlock block(this, "Easing Preset");
     _syncingEasing = true;
     _stage[stageIndex].easeIn->setValue(v.easeIn);
     _stage[stageIndex].easeOut->setValue(v.easeOut);
@@ -498,6 +530,7 @@ void MultiTransformPlugin::markEasingCustom(int stageIndex)
     _stage[stageIndex].easingPreset->getValue(preset);
     if (preset == kEasingCustom) return;
 
+    mtx::EditBlock block(this, "Custom Easing");
     _syncingEasing = true;
     _stage[stageIndex].easingPreset->setValue(kEasingCustom);
     _syncingEasing = false;
@@ -507,6 +540,8 @@ void MultiTransformPlugin::updateDuration(int stageIndex)
 {
     const double start = _stage[stageIndex].startFrame->getValue();
     const double end   = _stage[stageIndex].endFrame->getValue();
+
+    mtx::EditBlock block(this, "Duration");
     _stage[stageIndex].duration->setValue(end - start);
 }
 
@@ -529,13 +564,19 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
         // range, so park-and-click beats typing frame numbers.
         if (p_ParamName == StageParam(kParamSetStart, i))
         {
-            _stage[i].startFrame->setValue(p_Args.time);
+            {
+                mtx::EditBlock block(this, "Set Start to Playhead");
+                _stage[i].startFrame->setValue(p_Args.time);
+            }
             updateDuration(i);
             return;
         }
         if (p_ParamName == StageParam(kParamSetEnd, i))
         {
-            _stage[i].endFrame->setValue(p_Args.time);
+            {
+                mtx::EditBlock block(this, "Set End to Playhead");
+                _stage[i].endFrame->setValue(p_Args.time);
+            }
             updateDuration(i);
             return;
         }
@@ -554,6 +595,7 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
         {
             // Zero offsets restore an exactly straight line, not merely a
             // nearly straight one -- see PathControlPoints.
+            mtx::EditBlock block(this, "Straighten Path");
             _stage[i].pathC1->setValue(0.0, 0.0);
             _stage[i].pathC2->setValue(0.0, 0.0);
             return;
@@ -584,36 +626,33 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
 bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
                                       OFX::Clip*& p_IdentityClip, double& p_IdentityTime)
 {
-    // If the composed transform is the identity there is nothing to do, and
-    // saying so lets Resolve skip the effect entirely.
-    float w = 0.0f, h = 0.0f;
-    if (!sourceSize(p_Args.time, w, h)) return false;
+    if (!_srcClip) return false;
 
-    // Every shutter sample must be the identity, not just the one at frame
-    // centre: a move that is momentarily at rest still blurs if it is moving
-    // either side of the shutter.
-    const SampleTransforms st = BuildSampleTransforms(fetchAnimParams(p_Args.time),
-                                                      fetchBlurParams(p_Args.time),
-                                                      static_cast<float>(p_Args.time), w, h);
+    // Answer for the whole clip, not for this frame.
+    //
+    // Testing the transform at p_Args.time looks obviously right and is not:
+    // outside a stage's range the progress pins to 0 or 1, so the transform
+    // collapses to the From or To pose, which is normally the identity. The
+    // effect then declares itself a pass-through on exactly the frames outside
+    // its own animation. Hosts cache that per frame, so moving the stage's
+    // start or end to cover one of those frames left the host still convinced
+    // nothing happens there -- edits applied while the playhead sat outside the
+    // range appeared to do nothing at all, and only a manual cache purge fixed
+    // it. IsNoOp gives the same answer at every time, so there is no stale
+    // verdict to get stuck on.
+    if (!IsNoOp(fetchAnimParams(p_Args.time))) return false;
 
-    const Mat3 id = Mat3::Identity();
-    for (int k = 0; k < st.count; ++k)
+    // A pass-through frame shows the untransformed source, which on screen looks
+    // exactly like the image snapping back. Log when it happens so that reading
+    // as a glitch is diagnosable rather than mysterious.
+    ++_identityCount;
+    if (_identityCount <= 5 || (_identityCount % 30) == 0)
     {
-        // A fade is a real change even when nothing moves, so opacity has to be
-        // part of the identity test or fades would be silently optimised away.
-        if (std::fabs(st.opacity[k] - 1.0f) > 1e-4f) return false;
-
-        for (int i = 0; i < 6; ++i)
-        {
-            // Tolerance is in pixels for the translation terms, so keep it tight.
-            if (std::fabs(st.inv[k].m[i] - id.m[i]) > 1e-4f) return false;
-        }
+        std::ostringstream o;
+        o << "isIdentity #" << _identityCount << " time=" << p_Args.time
+          << " -- host may pass the source through untouched";
+        mtx::ProbeLog(o.str());
     }
-
-    // Worth knowing whether the host honours this at all: if identity frames
-    // are still being rendered, no amount of kernel tuning will help.
-    mtx::ProbeOnce("first-identity-skip",
-                   "isIdentity: returned true -- host may skip this render entirely");
 
     p_IdentityClip = _srcClip;
     p_IdentityTime = p_Args.time;
@@ -639,6 +678,21 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     // Count renders that actually did work, so the log distinguishes "the host
     // skipped it" from "we rendered a frame that produced nothing new".
     _renderCount++;
+
+    // Trace render times: the first few, then periodically.
+    //
+    // The periodic part matters. Logging only the opening renders captured
+    // nothing but the initial display pass -- which sits at a single time and
+    // says nothing about playback, the thing actually being diagnosed. Sampling
+    // during a long run is what shows whether time advances, stalls, or jumps
+    // backwards.
+    if (_renderCount <= 5 || (_renderCount % 30) == 0)
+    {
+        std::ostringstream o;
+        o << "render #" << _renderCount << " time=" << p_Args.time
+          << (p_Args.isEnabledCudaRender ? " [cuda]" : " [cpu]");
+        mtx::ProbeLog(o.str());
+    }
 
     int filterIdx = kFilterBilinear;
     int edgeIdx   = kEdgeBlack;
@@ -720,6 +774,31 @@ void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 
 namespace {
 
+/** @brief Declare that changing this parameter invalidates the whole cache.
+ *
+ * The OFX default, kOfxParamInvalidateValueChange, means "invalidate only the
+ * range of frames this parameter's keyframe affects". That is the right default
+ * for an effect whose parameters are keyframed -- and completely wrong here.
+ *
+ * Nothing in this plugin is ever keyframed: the parameters are constants that
+ * the animation engine interprets against the render time, so *every* parameter
+ * affects *every* frame. Without this declaration a host that caches rendered
+ * frames has no reason to throw any of them away when a value changes, and
+ * keeps replaying stale output until the cache is purged by hand. Resolve is
+ * lenient about it; Fusion is not, and it is Fusion that is behaving correctly.
+ *
+ * Deliberately not applied to parameters that only drive the viewer overlay
+ * (Active Stage, Gizmo Edits, Show Curve Editor) -- those change nothing about
+ * the rendered image, and purging the cache when a stage tab is clicked would
+ * be a needless stall.
+ */
+template <class T>
+T* InvalidatesCache(T* p)
+{
+    p->setCacheInvalidation(eCacheInvalidateValueAll);
+    return p;
+}
+
 DoubleParamDescriptor* DefineDouble(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page,
                                     GroupParamDescriptor* parent, const std::string& name,
                                     const std::string& label, const std::string& hint,
@@ -735,7 +814,7 @@ DoubleParamDescriptor* DefineDouble(OFX::ImageEffectDescriptor& desc, PageParamD
     p->setIncrement(inc);
     if (parent) p->setParent(*parent);
     page->addChild(*p);
-    return p;
+    return InvalidatesCache(p);
 }
 
 Double2DParamDescriptor* DefineDouble2D(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page,
@@ -752,7 +831,7 @@ Double2DParamDescriptor* DefineDouble2D(OFX::ImageEffectDescriptor& desc, PagePa
     p->setIncrement(0.001);
     if (parent) p->setParent(*parent);
     page->addChild(*p);
-    return p;
+    return InvalidatesCache(p);
 }
 
 /** @brief A section heading: a static label used purely as a visual divider.
@@ -791,6 +870,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                 "replace: two stages each scaling 1.0 to 1.5 give 2.25x overall.");
     en->setDefault(i == 0);
     page->addChild(*en);
+    InvalidatesCache(en);
 
     PushButtonParamDescriptor* setStart = desc.definePushButtonParam(StageParam(kParamSetStart, i));
     setStart->setLabels("Set Start to Playhead", "Set Start", "Set Start to Playhead");
@@ -813,10 +893,14 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                  "well as in start time.",
                  24.0, 0.0, 1e9, 0.0, 100000.0, 1.0);
 
+    // Duration is a derived read-out, so it must not claim to invalidate
+    // anything: Start and End already do, and this would only purge the cache a
+    // second time for a value that changes no pixels.
     DefineDouble(desc, page, nullptr, StageParam(kParamDuration, i), "Duration (frames)",
                  "End Frame minus Start Frame. Calculated automatically -- shown for "
                  "reference, not editable.",
-                 24.0, -1e9, 1e9, 0.0, 240.0, 1.0);
+                 24.0, -1e9, 1e9, 0.0, 240.0, 1.0)
+        ->setCacheInvalidation(eCacheInvalidateValueChange);
 
     DefineDouble2D(desc, page, nullptr, StageParam(kParamAnchor, i), "Anchor",
                    "Point that scale and rotation pivot around. 0.5, 0.5 is the image centre. "
@@ -898,6 +982,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     ease->appendOption("Custom");
     ease->setDefault(kEasingSmooth);
     page->addChild(*ease);
+    InvalidatesCache(ease);
 
     // These four are the actual curve, and are always editable -- a preset is a
     // starting point, never a locked choice. Raw bezier handles (X1/Y1/X2/Y2)
@@ -943,6 +1028,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     bounce->appendOption("Spring (settles through target)");
     bounce->appendOption("Ball (rebounds off target)");
     bounce->setDefault(kBounceNone);
+    InvalidatesCache(bounce);
     page->addChild(*bounce);
 
     DefineDouble(desc, page, nullptr, StageParam(kParamBounceAmount, i), "Bounce Amount",
@@ -995,6 +1081,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                    "its own start and end frame; surplus stages are hidden.");
     for (int i = 1; i <= kMaxStages; ++i) count->appendOption(std::to_string(i));
     count->setDefault(0);   // one stage
+    InvalidatesCache(count);
     page->addChild(*count);
 
     // Overlay state, kept as parameters so it survives save/reload and so the
@@ -1040,6 +1127,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     BooleanParamDescriptor* blurOn = p_Desc.defineBooleanParam(kParamBlurEnabled);
     blurOn->setLabels("Enable Motion Blur", "Motion Blur", "Enable Motion Blur");
     blurOn->setDefault(false);
+    InvalidatesCache(blurOn);
     blurOn->setParent(*blur);
     page->addChild(*blurOn);
 
@@ -1058,6 +1146,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     samples->setHint("Number of shutter samples. More is smoother but slower; with Adaptive "
                      "Samples on this acts as an upper bound rather than a fixed cost.");
     samples->setDefault(16);
+    InvalidatesCache(samples);
     samples->setRange(1, mtx::kMaxBlurSamples);
     samples->setDisplayRange(1, mtx::kMaxBlurSamples);
     samples->setParent(*blur);
@@ -1069,6 +1158,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                       "slow or static frames cost almost nothing while fast ones stay "
                       "smooth. Turn off only if you need a fixed, predictable cost.");
     adaptive->setDefault(true);
+    InvalidatesCache(adaptive);
     adaptive->setParent(*blur);
     page->addChild(*adaptive);
 
@@ -1082,6 +1172,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     filter->appendOption("Nearest");
     filter->appendOption("Bilinear");
     filter->setDefault(kFilterBilinear);
+    InvalidatesCache(filter);
     filter->setParent(*sampling);
     page->addChild(*filter);
 
@@ -1092,6 +1183,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     edge->appendOption("Clamp");
     edge->appendOption("Mirror");
     edge->setDefault(kEdgeBlack);
+    InvalidatesCache(edge);
     edge->setParent(*sampling);
     page->addChild(*edge);
 }

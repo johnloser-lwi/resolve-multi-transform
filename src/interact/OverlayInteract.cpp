@@ -1,6 +1,7 @@
 ﻿#include "OverlayInteract.h"
 
 #include "AnimEngine.h"
+#include "EditBlock.h"
 #include "HostProbe.h"
 #include "ParamNames.h"
 
@@ -65,6 +66,34 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
     catch (...)
     {
         mtx::ProbeLog("overlay: addParamToSlaveTo failed; overlay will still draw");
+    }
+}
+
+void MultiTransformInteract::openEditBlock(const char* name)
+{
+    if (!_effect || _editBlockOpen) return;
+    try
+    {
+        _effect->beginEditBlock(name);
+        _editBlockOpen = true;
+    }
+    catch (...)
+    {
+        mtx::ProbeOnce("edit-block-failed", "overlay: beginEditBlock threw");
+    }
+}
+
+void MultiTransformInteract::closeEditBlock()
+{
+    if (!_effect || !_editBlockOpen) return;
+    _editBlockOpen = false;   // cleared first, so a throw cannot leave it stuck open
+    try
+    {
+        _effect->endEditBlock();
+    }
+    catch (...)
+    {
+        mtx::ProbeOnce("edit-block-end-failed", "overlay: endEditBlock threw");
     }
 }
 
@@ -255,10 +284,13 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
 
 bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD& p)
 {
+    // Each branch brackets its own write. A plugin-initiated paramSetValue that
+    // is not inside an edit block leaves the host unaware the value changed.
     for (int i = 0; i < c.stageCount; ++i)
     {
         if (Contains(tabRect(c, i), p))
         {
+            EditBlock block(_effect, "Select Stage");
             _effect->fetchChoiceParam(kParamActiveStage)->setValue(i);
             return true;
         }
@@ -267,12 +299,14 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
     {
         if (Contains(fromToRect(c, k == 1), p))
         {
+            EditBlock block(_effect, "Gizmo Edits");
             _effect->fetchChoiceParam(kParamEditTarget)->setValue(k);
             return true;
         }
     }
     if (Contains(curveToggleRect(c), p))
     {
+        EditBlock block(_effect, "Show Curve Editor");
         _effect->fetchBooleanParam(kParamShowCurve)->setValue(!c.showCurve);
         return true;
     }
@@ -337,17 +371,29 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         for (Widget* w : order)
         {
             if (!w) continue;
+
+            // Opened before the widget writes anything, and held for the whole
+            // drag: every paramSetValue between here and penUp belongs to one
+            // edit. That is both what tells the host an edit happened at all,
+            // and what makes a drag a single undo step rather than one per
+            // mouse-move.
+            openEditBlock("Multi Transform");
+
             if (w->penDown(c, p))
             {
                 _captured = w;
                 requestRedraw();
                 return true;
             }
+
+            // That widget did not want it; close before offering the next.
+            closeEditBlock();
         }
     }
     catch (...)
     {
         mtx::ProbeOnce("overlay-pendown-failed", "overlay: penDown threw");
+        closeEditBlock();
         _captured = nullptr;
         return false;
     }
@@ -381,6 +427,7 @@ bool MultiTransformInteract::penMotion(const OFX::PenArgs& args)
         // Drop the capture: continuing to feed a widget that just failed to
         // write a parameter would repeat the failure on every mouse move.
         mtx::ProbeOnce("overlay-penmotion-failed", "overlay: penMotion threw; drag cancelled");
+        closeEditBlock();
         _captured = nullptr;
     }
     return false;
@@ -403,6 +450,10 @@ bool MultiTransformInteract::penUp(const OFX::PenArgs& args)
         mtx::ProbeOnce("overlay-penup-failed", "overlay: penUp threw");
     }
     _captured = nullptr;
+
+    // Closing the block is what commits the drag as far as the host is
+    // concerned, so it must happen however the drag ended.
+    closeEditBlock();
 
     if (ok && handled) requestRedraw();
     return handled;

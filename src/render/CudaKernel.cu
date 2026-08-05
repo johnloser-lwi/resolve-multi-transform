@@ -42,13 +42,13 @@ __global__ void MultiTransformKernel(const float* __restrict__ src,
     p[0] = out[0]; p[1] = out[1]; p[2] = out[2]; p[3] = out[3];
 }
 
-void RunMultiTransformCuda(void* pStream,
-                           const float* src, int srcWidth, int srcHeight, int srcRowFloats,
-                           float* dst, int dstWidth, int dstHeight, int dstRowFloats,
-                           const mtx::SampleTransforms& st,
-                           int filterMode, int edgeMode)
+const char* RunMultiTransformCuda(void* pStream,
+                                  const float* src, int srcWidth, int srcHeight, int srcRowFloats,
+                                  float* dst, int dstWidth, int dstHeight, int dstRowFloats,
+                                  const mtx::SampleTransforms& st,
+                                  int filterMode, int edgeMode)
 {
-    if (dstWidth <= 0 || dstHeight <= 0) return;
+    if (dstWidth <= 0 || dstHeight <= 0) return nullptr;
 
     cudaStream_t stream = static_cast<cudaStream_t>(pStream);
 
@@ -60,6 +60,25 @@ void RunMultiTransformCuda(void* pStream,
         src, srcWidth, srcHeight, srcRowFloats,
         dst, dstWidth, dstHeight, dstRowFloats,
         st, filterMode, edgeMode);
+
+    // Synchronise ourselves when the host did not give us a stream.
+    //
+    // Declaring setSupportsCudaStream(true) is a promise that we render on the
+    // host's stream and that the host will synchronise it. That promise cannot
+    // hold if there is no stream: the launch goes to the default stream and
+    // returns immediately, so the host is free to read the output buffer while
+    // the kernel is still writing it. The result is intermittently torn or
+    // stale frames -- fine in a host that always supplies a stream, broken in
+    // one that does not. The SDK spells this out: a plugin using the default
+    // stream must synchronise before returning.
+    if (stream == nullptr)
+    {
+        const cudaError_t syncErr = cudaDeviceSynchronize();
+        if (syncErr != cudaSuccess) return cudaGetErrorString(syncErr);
+    }
+
+    const cudaError_t err = cudaGetLastError();
+    return (err == cudaSuccess) ? nullptr : cudaGetErrorString(err);
 }
 
 /** @brief Time the kernel alone: buffers are allocated and uploaded once, so the

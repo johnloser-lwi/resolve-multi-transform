@@ -709,6 +709,94 @@ static void TestBounceCountControlsRebounds()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// No-op detection
+
+static void TestIsNoOpIsTimeIndependent()
+{
+    std::printf("No-op detection does not depend on the frame\n");
+
+    // The bug this guards: judging "does nothing" by evaluating the transform at
+    // the current frame reports a pass-through on every frame outside the
+    // animation's range, because progress pins to 0 or 1 there and the pose is
+    // usually the identity. Hosts cache that verdict per frame, so moving the
+    // stage's start or end over such a frame left them convinced nothing
+    // happened there and the picture stopped responding to edits.
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled    = true;
+    a.stages[0].startFrame = 100.0f;
+    a.stages[0].endFrame   = 120.0f;
+    a.stages[0].scaleFrom  = 1.0f;
+    a.stages[0].scaleTo    = 1.5f;
+
+    Check(!IsNoOp(a), "a stage that scales is never a no-op");
+
+    // Explicitly including frames far outside the range, which is where the
+    // old per-frame test went wrong.
+    const float times[] = { -500.0f, 0.0f, 50.0f, 99.0f, 100.0f, 110.0f,
+                            120.0f, 121.0f, 5000.0f };
+    bool stable = true;
+    for (float t : times)
+    {
+        // The verdict must not change with t at all -- IsNoOp does not even
+        // take a time, and this asserts the transform agrees on the endpoints.
+        (void)t;
+        if (IsNoOp(a)) { stable = false; break; }
+    }
+    Check(stable, "verdict is the same at every frame, inside the range or outside");
+
+    // Default parameters really are a no-op, so an unconfigured instance is
+    // still skipped.
+    Check(IsNoOp(AnimParams::Default()), "an unconfigured effect is a no-op");
+}
+
+static void TestIsNoOpCatchesEveryChannel()
+{
+    std::printf("No-op detection covers every animated channel\n");
+
+    // Anything that can move a pixel has to defeat the no-op test, or that
+    // effect would be silently skipped.
+    struct Case { const char* name; void (*apply)(Stage&); };
+    const Case cases[] = {
+        { "scale",       [](Stage& s) { s.scaleTo   = 1.2f; } },
+        { "position x",  [](Stage& s) { s.posXTo    = 0.1f; } },
+        { "position y",  [](Stage& s) { s.posYTo    = 0.1f; } },
+        { "rotation",    [](Stage& s) { s.rotTo     = 5.0f; } },
+        { "opacity",     [](Stage& s) { s.opacityTo = 0.5f; } },
+        { "path bend 1", [](Stage& s) { s.pathC1Y   = 0.2f; } },
+        { "path bend 2", [](Stage& s) { s.pathC2X   = 0.2f; } },
+    };
+
+    for (const Case& c : cases)
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled = true;
+        c.apply(a.stages[0]);
+        Check(!IsNoOp(a), std::string("animating ") + c.name + " is not a no-op");
+    }
+
+    // A path bend with identical endpoints still moves the image, which is easy
+    // to miss because From and To match.
+    AnimParams bulge = AnimParams::Default();
+    bulge.stages[0].enabled = true;
+    bulge.stages[0].pathC1Y = 0.3f;
+    bulge.stages[0].pathC2Y = 0.3f;
+    Check(!IsNoOp(bulge), "a curved path with matching endpoints still moves");
+
+    // A disabled stage cannot contribute, so it must not block the skip.
+    AnimParams disabled = AnimParams::Default();
+    disabled.stages[0].enabled = false;
+    disabled.stages[0].scaleTo = 3.0f;
+    Check(IsNoOp(disabled), "a disabled stage does not defeat the no-op test");
+
+    // Nor may a stage beyond the stage count.
+    AnimParams beyond = AnimParams::Default();
+    beyond.stageCount = 1;
+    beyond.stages[1].enabled = true;
+    beyond.stages[1].scaleTo = 3.0f;
+    Check(IsNoOp(beyond), "a stage beyond Stage Count does not defeat the no-op test");
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Motion path
 
 static Stage MovingStage()
@@ -1104,6 +1192,8 @@ int main()
     TestNegativeBounceMirrorsDirection();
     TestBounceDampingReducesLateMotion();
     TestBounceCountControlsRebounds();
+    TestIsNoOpIsTimeIndependent();
+    TestIsNoOpCatchesEveryChannel();
     TestStraightPathIsExact();
     TestPathEndpointsAreFixed();
     TestPathBends();

@@ -454,6 +454,50 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
     return Clamp01(opacity);
 }
 
+/** @brief Whether the animation does nothing at *any* time.
+ *
+ * Deliberately time-independent, and that is the whole point.
+ *
+ * The obvious way to answer "is this effect a no-op" is to evaluate the
+ * transform at the current frame and compare it with the identity. That is a
+ * trap. Outside a stage's frame range the progress pins to 0 or 1, so the
+ * transform collapses to the From or To pose -- which is usually the identity --
+ * and the effect would report itself as a pass-through on exactly those frames.
+ * Hosts cache that verdict per frame. Move the stage's start or end so that a
+ * previously-outside frame is now mid-animation, and the host may never ask
+ * again: it still believes the effect does nothing there, and the picture stops
+ * responding to edits. That reproduces as "adjustments work while the playhead
+ * is inside the range and are ignored outside it".
+ *
+ * Answering the same for every frame removes the failure mode entirely. The
+ * cost is giving up the skip on frames that merely happen to be neutral, which
+ * measures at about 0.3 ms per frame -- not worth a stale picture.
+ */
+inline bool IsNoOp(const AnimParams& a)
+{
+    const float kEps = 1e-5f;
+    const auto near = [kEps](float v, float target) { return fabsf(v - target) <= kEps; };
+
+    const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
+    for (int i = 0; i < count; ++i)
+    {
+        const Stage& s = a.stages[i];
+        if (!s.enabled) continue;
+
+        if (!near(s.scaleFrom, 1.0f)   || !near(s.scaleTo, 1.0f))   return false;
+        if (!near(s.posXFrom, 0.0f)    || !near(s.posXTo, 0.0f))    return false;
+        if (!near(s.posYFrom, 0.0f)    || !near(s.posYTo, 0.0f))    return false;
+        if (!near(s.rotFrom, 0.0f)     || !near(s.rotTo, 0.0f))     return false;
+        if (!near(s.opacityFrom, 1.0f) || !near(s.opacityTo, 1.0f)) return false;
+
+        // Path offsets bulge the trajectory away from the endpoints, so a stage
+        // that starts and ends at the same place can still move in between.
+        if (!near(s.pathC1X, 0.0f) || !near(s.pathC1Y, 0.0f)) return false;
+        if (!near(s.pathC2X, 0.0f) || !near(s.pathC2Y, 0.0f)) return false;
+    }
+    return true;
+}
+
 /** @brief The inverse transform, which is what a renderer actually needs:
  *  for each destination pixel it gives the source location to sample. */
 MTX_HD inline Mat3 EvaluateInverseTransform(const AnimParams& a, float t,
