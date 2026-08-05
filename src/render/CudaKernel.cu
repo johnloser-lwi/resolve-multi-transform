@@ -62,6 +62,52 @@ void RunMultiTransformCuda(void* pStream,
         st, filterMode, edgeMode);
 }
 
+/** @brief Time the kernel alone: buffers are allocated and uploaded once, so the
+ *  result excludes host/device transfer and reflects what Resolve actually pays
+ *  per frame (it hands us pointers to memory already on the device). */
+float BenchMultiTransformCuda(const float* hostSrc, int width, int height,
+                              const mtx::SampleTransforms& st,
+                              int filterMode, int edgeMode, int iterations)
+{
+    const size_t bytes = static_cast<size_t>(width) * height * 4 * sizeof(float);
+
+    float* dSrc = nullptr;
+    float* dDst = nullptr;
+    if (cudaMalloc(&dSrc, bytes) != cudaSuccess) return -1.0f;
+    if (cudaMalloc(&dDst, bytes) != cudaSuccess) { cudaFree(dSrc); return -1.0f; }
+    cudaMemcpy(dSrc, hostSrc, bytes, cudaMemcpyHostToDevice);
+
+    // Warm up: the first launch pays JIT/context costs that would otherwise be
+    // charged to the measurement.
+    RunMultiTransformCuda(nullptr, dSrc, width, height, width * 4,
+                          dDst, width, height, width * 4, st, filterMode, edgeMode);
+    cudaDeviceSynchronize();
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    for (int i = 0; i < iterations; ++i)
+    {
+        RunMultiTransformCuda(nullptr, dSrc, width, height, width * 4,
+                              dDst, width, height, width * 4, st, filterMode, edgeMode);
+    }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, start, stop);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    cudaFree(dSrc);
+    cudaFree(dDst);
+
+    return ms / static_cast<float>(iterations);
+}
+
 /** @brief Synchronous variant for the parity test, which has no host stream and
  *  needs the result back before it can compare anything. */
 void RunMultiTransformCudaSync(const float* hostSrc, int srcWidth, int srcHeight,

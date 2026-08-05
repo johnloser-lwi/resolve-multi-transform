@@ -266,6 +266,45 @@ the picture they can drift off screen. OFX 1.4 removed `kOfxInteractPropViewport
 provides no other way for a plugin to learn the viewport bounds, so anchoring to the image is
 the only option available. Zoom to fit to bring them back.
 
+## Performance
+
+Measured on an RTX 5070 Ti at 3840x2160, CUDA kernel time per frame **per instance**
+(`bench_render` in the build output re-runs this):
+
+| Case | Samples | Time | Four layered clips |
+|---|---|---|---|
+| No movement (any blur setting) | 1 | **0.31 ms** | 1.2 ms |
+| Mid-move, no blur | 1 | 0.30 ms | 1.2 ms |
+| Mid-move, adaptive blur | 30 | 2.54 ms | 10.2 ms |
+| Mid-move, 64 fixed samples | 64 | 5.31 ms | 21.2 ms |
+| CPU fallback path | 1 | ~122 ms | — |
+
+Three things follow from this.
+
+**A frame that is not moving costs one sample, whatever the blur settings say.** If nothing
+has moved across the shutter interval and opacity is not mid-fade, every sample would produce
+an identical image, so they collapse to one. A static frame with 64 fixed samples used to cost
+17x what it needed to.
+
+**Motion blur is the cost driver, and only while something is actually moving.** It is roughly
+8x the cost of no blur. Leave **Adaptive Samples** on — it spends samples in proportion to real
+on-screen movement instead of paying a fixed worst case every frame.
+
+**Check that the GPU path is actually being used.** The CPU fallback is ~400x slower, and four
+layers of that will not play back. `probe.log` records `render dispatch: cuda=yes` on the first
+render; if it says `no`, that dwarfs every other consideration.
+
+### Prefer stages over stacked instances
+
+Four stages inside **one** instance measure 0.35 ms — the same as one stage, because stages are
+composed into a single matrix before the kernel runs. Four *separate* instances cost four times
+the kernel time plus four full-frame intermediate buffers (~127 MB each at UHD RGBA float), and
+resample the image four times, which softens it. Layered clips each needing their own transform
+are unavoidable; multiple transforms on the *same* clip are not.
+
+An effect that evaluates to the identity transform at full opacity reports `isIdentity`, and the
+host may skip it entirely.
+
 ## Host capability probe
 
 The plugin writes what the host actually supports to:

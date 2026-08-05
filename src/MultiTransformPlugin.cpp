@@ -210,6 +210,9 @@ private:
     /// Guards the preset <-> amounts sync from re-entering itself: stamping a
     /// preset writes the amounts, and writing an amount selects Custom.
     bool _syncingEasing = false;
+
+    /// Diagnostic only: how many frames actually reached the renderer.
+    long long _renderCount = 0;
 };
 
 MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
@@ -293,6 +296,18 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         // getValueAtTime rather than getValue: the OFX spec requires it inside
         // render actions, and it costs nothing for our non-animated parameters.
         s.enabled       = h.enabled->getValueAtTime(p_Time);
+
+        // Each read is a suite call into the host. Reading all four stages
+        // unconditionally meant ~100 calls per frame per instance even when
+        // only one stage was in use -- and with several layered clips each
+        // running this effect, that overhead stops being free. A stage that
+        // cannot contribute is left at its (identity) defaults instead.
+        if (!s.enabled || i >= a.stageCount)
+        {
+            s.enabled = false;
+            continue;
+        }
+
         s.startFrame    = static_cast<float>(h.startFrame->getValueAtTime(p_Time));
         s.endFrame      = static_cast<float>(h.endFrame->getValueAtTime(p_Time));
         s.scaleFrom     = static_cast<float>(h.scaleFrom->getValueAtTime(p_Time));
@@ -521,6 +536,11 @@ bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
         }
     }
 
+    // Worth knowing whether the host honours this at all: if identity frames
+    // are still being rendered, no amount of kernel tuning will help.
+    mtx::ProbeOnce("first-identity-skip",
+                   "isIdentity: returned true -- host may skip this render entirely");
+
     p_IdentityClip = _srcClip;
     p_IdentityTime = p_Args.time;
     return true;
@@ -541,6 +561,10 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
                    std::string("render dispatch: cuda=") +
                    (p_Args.isEnabledCudaRender ? "yes" : "no") +
                    " opencl=" + (p_Args.isEnabledOpenCLRender ? "yes" : "no"));
+
+    // Count renders that actually did work, so the log distinguishes "the host
+    // skipped it" from "we rendered a frame that produced nothing new".
+    _renderCount++;
 
     int filterIdx = kFilterBilinear;
     int edgeIdx   = kEdgeBlack;

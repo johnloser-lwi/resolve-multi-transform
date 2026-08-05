@@ -81,6 +81,12 @@ target_include_directories(test_render_parity PRIVATE src)
 target_link_libraries(test_render_parity PRIVATE mtxcuda)
 add_test(NAME render_parity COMMAND test_render_parity)
 
+# Benchmark, not a test: run it by hand to decide where optimisation is worth
+# spending. Deliberately not registered with CTest.
+add_executable(bench_render tests/bench_render.cpp)
+target_include_directories(bench_render PRIVATE src)
+target_link_libraries(bench_render PRIVATE mtxcuda)
+
 # --- Assemble the .ofx.bundle ------------------------------------------------
 # Per-config path: with a multi-config generator a single shared bundle dir means
 # a Debug build silently overwrites the Release one (and vice versa), and the

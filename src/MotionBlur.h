@@ -23,15 +23,17 @@ struct BlurParams
     float shutterPhase;   ///< degrees; 0 centres the shutter on the frame
     int   samples;        ///< upper bound when adaptive, exact count otherwise
     bool  adaptive;       ///< scale sample count with how far the image actually moves
+    float pixelsPerSample;///< adaptive density: larger is cheaper and coarser
 
     MTX_HD static BlurParams Default()
     {
         BlurParams b;
-        b.enabled      = false;
-        b.shutterAngle = 180.0f;
-        b.shutterPhase = 0.0f;
-        b.samples      = 16;
-        b.adaptive     = true;
+        b.enabled         = false;
+        b.shutterAngle    = 180.0f;
+        b.shutterPhase    = 0.0f;
+        b.samples         = 16;
+        b.adaptive        = true;
+        b.pixelsPerSample = 2.0f;
         return b;
     }
 };
@@ -70,27 +72,15 @@ struct SampleTransforms
     float opacity[kMaxBlurSamples];
 };
 
-/** @brief Sample count scaled to how far the image actually moves.
- *
- * A static frame needs one sample no matter what the slider says; a whip pan
- * needs many. Measuring the on-screen displacement of the image corners across
- * the shutter interval and allocating roughly one sample per two pixels of
- * travel keeps quality constant instead of paying a fixed worst-case cost on
- * every frame.
- */
-inline int AdaptiveSampleCount(const AnimParams& a, const BlurParams& b,
-                               float t, float width, float height)
+/** @brief Greatest on-screen movement of any image corner across the shutter,
+ *  in pixels. This is the measure of "how much blur is actually happening". */
+inline float MaxShutterDisplacement(const AnimParams& a, const BlurParams& b,
+                                    float t, float width, float height)
 {
-    const int maxSamples = b.samples < kMaxBlurSamples ? b.samples : kMaxBlurSamples;
-    if (maxSamples <= 1) return 1;
+    const Mat3 mA = EvaluateTransform(a, BlurSampleTime(t, b, 0, 2), width, height);
+    const Mat3 mB = EvaluateTransform(a, BlurSampleTime(t, b, 1, 2), width, height);
 
-    const float tA = BlurSampleTime(t, b, 0, 2);
-    const float tB = BlurSampleTime(t, b, 1, 2);
-
-    const Mat3 mA = EvaluateTransform(a, tA, width, height);
-    const Mat3 mB = EvaluateTransform(a, tB, width, height);
-
-    const float cx[4] = { 0.0f, width, 0.0f,  width  };
+    const float cx[4] = { 0.0f, width, 0.0f,   width  };
     const float cy[4] = { 0.0f, 0.0f,  height, height };
 
     float maxDisp = 0.0f;
@@ -104,10 +94,38 @@ inline int AdaptiveSampleCount(const AnimParams& a, const BlurParams& b,
         const float d  = sqrtf(dx * dx + dy * dy);
         if (d > maxDisp) maxDisp = d;
     }
+    return maxDisp;
+}
 
-    // Roughly one sample per two pixels of travel; below that the samples
-    // overlap and add nothing but cost.
-    int n = static_cast<int>(maxDisp * 0.5f) + 1;
+/** @brief Whether opacity changes measurably across the shutter.
+ *
+ * A fade with no movement still needs multiple samples, so displacement alone
+ * is not enough to decide that a frame is static.
+ */
+inline bool OpacityMovesAcrossShutter(const AnimParams& a, const BlurParams& b, float t)
+{
+    const float oA = EvaluateOpacity(a, BlurSampleTime(t, b, 0, 2));
+    const float oB = EvaluateOpacity(a, BlurSampleTime(t, b, 1, 2));
+    return fabsf(oB - oA) > 1e-4f;
+}
+
+/** @brief Sample count scaled to how far the image actually moves.
+ *
+ * A static frame needs one sample no matter what the slider says; a whip pan
+ * needs many. Allocating roughly one sample per @p pixelsPerSample of corner
+ * travel keeps quality constant instead of paying a fixed worst-case cost on
+ * every frame.
+ */
+inline int AdaptiveSampleCount(const AnimParams& a, const BlurParams& b,
+                               float t, float width, float height)
+{
+    const int maxSamples = b.samples < kMaxBlurSamples ? b.samples : kMaxBlurSamples;
+    if (maxSamples <= 1) return 1;
+
+    const float maxDisp = MaxShutterDisplacement(a, b, t, width, height);
+
+    const float perSample = b.pixelsPerSample > 0.25f ? b.pixelsPerSample : 0.25f;
+    int n = static_cast<int>(maxDisp / perSample) + 1;
     if (n < 1)          n = 1;
     if (n > maxSamples) n = maxSamples;
     return n;
@@ -121,7 +139,22 @@ inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurPar
 
     // Disabled, or a closed shutter, must collapse to exactly the un-blurred
     // path -- not "one sample that happens to be close".
-    const bool blurring = b.enabled && b.shutterAngle > 1e-4f && b.samples > 1;
+    bool blurring = b.enabled && b.shutterAngle > 1e-4f && b.samples > 1;
+
+    // Nothing moving means every shutter sample would be the same image, so
+    // averaging them is an expensive way to compute the frame unchanged. This
+    // applies even with adaptive sampling turned off: a fixed 64-sample setting
+    // otherwise costs ~17x on a frame that is standing still, which is the
+    // dominant waste when several layers each carry this effect.
+    //
+    // Opacity is checked too, because a fade with no movement genuinely does
+    // vary across the shutter and must not be collapsed.
+    if (blurring &&
+        MaxShutterDisplacement(a, b, t, width, height) < 0.01f &&
+        !OpacityMovesAcrossShutter(a, b, t))
+    {
+        blurring = false;
+    }
 
     st.count = blurring ? (b.adaptive ? AdaptiveSampleCount(a, b, t, width, height)
                                       : (b.samples < kMaxBlurSamples ? b.samples
