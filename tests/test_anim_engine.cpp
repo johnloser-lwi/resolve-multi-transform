@@ -709,6 +709,129 @@ static void TestBounceCountControlsRebounds()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Motion path
+
+static Stage MovingStage()
+{
+    Stage s = Stage::Default();
+    s.enabled    = true;
+    s.easing     = Easing::Linear();
+    s.startFrame = 0.0f;
+    s.endFrame   = 20.0f;
+    s.posXFrom   = -0.3f; s.posYFrom = 0.1f;
+    s.posXTo     =  0.4f; s.posYTo   = -0.2f;
+    return s;
+}
+
+static void TestStraightPathIsExact()
+{
+    std::printf("Zero path offsets reproduce a straight line exactly\n");
+
+    // The control points sit at one and two thirds along the segment, which
+    // makes the cubic the degree-elevated form of the linear interpolation.
+    // That is what lets the motion path be added without changing a single
+    // existing animation -- it must match Lerp to the bit, not approximately.
+    const Stage s = MovingStage();
+
+    bool exact = true;
+    for (int i = 0; i <= 100; ++i)
+    {
+        const float e = i / 100.0f;
+        float px, py;
+        EvaluatePath(s, e, px, py);
+
+        if (std::fabs(px - Lerp(s.posXFrom, s.posXTo, e)) > 1e-6f) exact = false;
+        if (std::fabs(py - Lerp(s.posYFrom, s.posYTo, e)) > 1e-6f) exact = false;
+    }
+    Check(exact, "straight path matches linear interpolation exactly");
+
+    // And therefore the composed transform is unchanged too.
+    AnimParams a = AnimParams::Default();
+    a.stages[0] = s;
+    const Mat3 m = EvaluateTransform(a, 10.0f, 1920.0f, 1080.0f);
+    float x, y;
+    m.Apply(0.0f, 0.0f, x, y);
+    CheckNear(x, Lerp(s.posXFrom, s.posXTo, 0.5f) * 1920.0f, 1e-2f,
+              "transform translation follows the straight path");
+}
+
+static void TestPathEndpointsAreFixed()
+{
+    std::printf("Path handles never move the endpoints\n");
+
+    Stage s = MovingStage();
+    s.pathC1X = 0.5f;  s.pathC1Y = -0.6f;
+    s.pathC2X = -0.4f; s.pathC2Y = 0.35f;
+
+    float px, py;
+    EvaluatePath(s, 0.0f, px, py);
+    CheckNear(px, s.posXFrom, 1e-6f, "path starts at From, x");
+    CheckNear(py, s.posYFrom, 1e-6f, "path starts at From, y");
+
+    EvaluatePath(s, 1.0f, px, py);
+    CheckNear(px, s.posXTo, 1e-6f, "path ends at To, x");
+    CheckNear(py, s.posYTo, 1e-6f, "path ends at To, y");
+}
+
+static void TestPathBends()
+{
+    std::printf("Path handles bend the trajectory\n");
+
+    const Stage straight = MovingStage();
+    Stage bent = straight;
+    bent.pathC1Y = 0.5f;
+    bent.pathC2Y = 0.5f;
+
+    float sx, sy, bx, by;
+    EvaluatePath(straight, 0.5f, sx, sy);
+    EvaluatePath(bent,     0.5f, bx, by);
+
+    Check(std::fabs(by - sy) > 0.1f, "offsetting the handles moves the midpoint off the line");
+    CheckNear(bx, sx, 1e-5f, "a purely vertical offset does not shift the path in x");
+
+    // Offsets are relative to the straight line, so moving the endpoints carries
+    // the bend along rather than leaving the handles stranded.
+    Stage shifted = bent;
+    shifted.posXFrom += 1.0f;
+    shifted.posXTo   += 1.0f;
+    float ox, oy, nx, ny;
+    EvaluatePath(bent,    0.5f, ox, oy);
+    EvaluatePath(shifted, 0.5f, nx, ny);
+    CheckNear(nx, ox + 1.0f, 1e-5f, "bend travels with the endpoints, x");
+    CheckNear(ny, oy,        1e-5f, "bend travels with the endpoints, y");
+}
+
+static void TestEasingDrivesSpeedNotShape()
+{
+    std::printf("Easing sets speed along the path, not its shape\n");
+
+    Stage linear = MovingStage();
+    linear.pathC1Y = 0.4f;
+    linear.pathC2Y = 0.4f;
+
+    Stage eased = linear;
+    eased.easing = Easing::Smooth();
+
+    // The two stages trace the *same* curve through space; only the timing
+    // along it differs. Sampling by eased progress must therefore land on
+    // points that also exist on the linear version.
+    const float e = ApplyEasing(0.3f, eased.easing);
+    float ex, ey, lx, ly;
+    EvaluatePath(eased,  e,     ex, ey);
+    EvaluatePath(linear, e,     lx, ly);
+    CheckNear(ex, lx, 1e-6f, "same path point for the same parameter, x");
+    CheckNear(ey, ly, 1e-6f, "same path point for the same parameter, y");
+
+    // But at the same *time* they are in different places, because the easing
+    // has moved the object further along.
+    float atX, atY, alX, alY;
+    EvaluatePath(eased,  ApplyEasing(0.3f, eased.easing),  atX, atY);
+    EvaluatePath(linear, ApplyEasing(0.3f, linear.easing), alX, alY);
+    Check(std::fabs(atX - alX) > 1e-3f || std::fabs(atY - alY) > 1e-3f,
+          "easing changes where along the path the object is at a given time");
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Opacity
 
 static void TestOpacityFade()
@@ -981,6 +1104,10 @@ int main()
     TestNegativeBounceMirrorsDirection();
     TestBounceDampingReducesLateMotion();
     TestBounceCountControlsRebounds();
+    TestStraightPathIsExact();
+    TestPathEndpointsAreFixed();
+    TestPathBends();
+    TestEasingDrivesSpeedNotShape();
     TestOpacityFade();
     TestOpacityComposition();
     TestOpacityBlursAcrossShutter();

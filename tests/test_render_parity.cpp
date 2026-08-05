@@ -215,6 +215,22 @@ int main()
                           kFilterBilinear, kEdgeMirror, b });
     }
 
+    // --- Motion path ---
+    {
+        AnimParams curved = MakeAnim(1.0f, 0.0f, 0.4f, 0.0f);
+        curved.stages[0].pathC1Y =  0.35f;
+        curved.stages[0].pathC2Y = -0.25f;
+        cases.push_back({ "curved motion path", curved, 10.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        // A curved path plus blur moves the image along an arc within a single
+        // shutter, which is where a host/device disagreement would show.
+        BlurParams b = BlurParams::Default();
+        b.enabled = true; b.adaptive = false; b.samples = 16;
+        cases.push_back({ "curved path + motion blur", curved, 10.0f,
+                          kFilterBilinear, kEdgeBlack, b });
+    }
+
     // --- Bounce ---
     // The oscillator uses cosf/expf, which are separate device implementations
     // on the GPU; these confirm they agree with the host build.

@@ -61,6 +61,11 @@ struct OverlayContext
     bool editTo      = true;   ///< gizmo edits the "To" state rather than "From"
     int  stageCount  = 1;
 
+    /// The curve panel sits over the image and is hit-tested before the motion
+    /// path, so it can swallow path handles underneath it. Turning it off gets
+    /// it out of the way.
+    bool showCurve   = true;
+
     /// The animation as the renderer will see it, read straight from the
     /// parameters, so the overlay can never show something different.
     AnimParams anim = AnimParams::Default();

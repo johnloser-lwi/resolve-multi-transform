@@ -14,6 +14,7 @@ namespace mtx {
 constexpr const char* kParamStageCount     = "stageCount";
 constexpr const char* kParamActiveStage    = "activeStage";   ///< which stage the overlay edits
 constexpr const char* kParamEditTarget     = "editTarget";    ///< 0 = From, 1 = To
+constexpr const char* kParamShowCurve      = "showCurveEditor";
 constexpr const char* kParamFilter         = "filterMode";
 constexpr const char* kParamEdge           = "edgeMode";
 
@@ -32,6 +33,7 @@ constexpr const char* kParamLabelTiming    = "lblTiming";
 constexpr const char* kParamLabelFrom      = "lblFrom";
 constexpr const char* kParamLabelTo        = "lblTo";
 constexpr const char* kParamLabelEasing    = "lblEasing";
+constexpr const char* kParamLabelPath      = "lblPath";
 constexpr const char* kParamEnabled        = "enabled";
 constexpr const char* kParamStartFrame     = "startFrame";
 constexpr const char* kParamEndFrame       = "endFrame";
@@ -47,6 +49,9 @@ constexpr const char* kParamRotTo          = "rotTo";
 constexpr const char* kParamOpacityFrom    = "opacityFrom";
 constexpr const char* kParamOpacityTo      = "opacityTo";
 constexpr const char* kParamAnchor         = "anchor";
+constexpr const char* kParamPathC1         = "pathC1";      ///< offset of the first path handle
+constexpr const char* kParamPathC2         = "pathC2";      ///< offset of the second
+constexpr const char* kParamPathReset      = "pathReset";
 constexpr const char* kParamEasingPreset   = "easingPreset";
 constexpr const char* kParamEaseIn         = "easeIn";
 constexpr const char* kParamEaseOut        = "easeOut";

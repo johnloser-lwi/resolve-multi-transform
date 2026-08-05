@@ -170,6 +170,29 @@ Each stage's curve is controlled by four amounts, all of which stay editable at 
 | **Anticipation** | Pulls back before moving, like a crouch before a jump. **Negative steepens the start.** |
 | **Overshoot** | Travels past the target and settles back (~80 = classic springy). **Negative undershoots.** |
 
+### Motion path
+
+By default a stage moves in a straight line from its From position to its To position. The
+**Motion Path** handles bend that route into a curve.
+
+The practical way to use it is on screen: turn on **Open FX Overlay**, and the trajectory is
+drawn over the image with two draggable handles, one tethered to each end. Drag them to shape
+the arc. **Straighten Path** resets both. The two `Path Handle` values in the Inspector are the
+same thing numerically, if you need precision.
+
+Small white dots along the path mark equal *time* intervals, so they show pacing: bunched dots
+mean the object is moving slowly there, spread-out dots mean fast.
+
+**Easing controls speed along the path; the handles control its shape.** They are independent,
+which is what makes them compose — a bounce on a curved path runs the object back and forth
+*along the curve* rather than distorting it.
+
+Handles are stored as offsets from the straight line, so moving From or To carries the bend
+with them instead of stranding the handles. And a zero offset reproduces the straight line
+**exactly**, not approximately: the control points sit at one and two thirds along the segment,
+which makes the cubic the degree-elevated form of a linear interpolation. Existing animations
+are bit-for-bit unaffected, and there is a test pinning that.
+
 ### Bounce
 
 **Overshoot** gives a single smooth overshoot. It cannot give you more than that: it is the `y2`
@@ -290,11 +313,22 @@ Edit, Fusion and Color pages.
 The overlay has four parts:
 
 **Stage tabs** (above the timeline) — click `1`–`4` to choose which stage the gizmo and curve
-editor act on. **FROM / TO** picks which end of that stage the gizmo poses.
+editor act on. **FROM / TO** picks which end of that stage the gizmo poses. **CURVE** shows or
+hides the curve editor panel.
+
+Hide the curve editor when it is sitting over something you want to drag. It occupies the
+top-right of the image and is hit-tested ahead of the motion path, so it will take clicks
+intended for a path handle underneath it. Hiding it removes it from hit-testing entirely, not
+just from view. The same switch is **Show Curve Editor** in the Inspector, and it is remembered
+with the project.
 
 **Transform gizmo** (on the image) — the outline shows the stage's pose. Drag inside it to
 move, drag a corner to scale, drag the arm above the top edge to rotate, drag the circled
 crosshair to move the anchor point. The gizmo is cyan for FROM and orange for TO.
+
+**Motion path** (on the image) — the route the stage travels, in the stage's lane colour, with
+a cyan dot at the start and an orange one at the end. Drag either handle to bend it; the white
+dots along it mark equal time intervals, so they show where the move is fast or slow.
 
 **Stage timing lanes** (bottom) — one lane per stage, drawn against a shared frame ruler with
 the playhead marked. Drag a bar's left or right edge to change its start or end frame; drag its
@@ -302,7 +336,7 @@ middle to slide the whole stage without changing its length. Clicking a lane als
 stage. This is where staggering becomes obvious: the offsets between stages are visible as
 offsets between bars.
 
-**Curve editor** (top right) — the actual easing curve for the active stage, plotted with the
+**Curve editor** (top right, toggled by **CURVE**) — the actual easing curve for the active stage, plotted with the
 same evaluator the renderer uses, so what you see is what it does. Drag the two control handles
 to shape it. The faint diagonal is linear for reference, the horizontal lines mark 0 and 1
 (anything beyond them is anticipation or overshoot), and the yellow dot shows where the current

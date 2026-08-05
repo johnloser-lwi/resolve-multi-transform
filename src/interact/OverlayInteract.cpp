@@ -33,6 +33,7 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
         addParamToSlaveTo(_effect->fetchChoiceParam(kParamStageCount));
         addParamToSlaveTo(_effect->fetchChoiceParam(kParamActiveStage));
         addParamToSlaveTo(_effect->fetchChoiceParam(kParamEditTarget));
+        addParamToSlaveTo(_effect->fetchBooleanParam(kParamShowCurve));
 
         for (int i = 0; i < kMaxStages; ++i)
         {
@@ -48,6 +49,8 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamOpacityFrom,  i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamOpacityTo,    i)));
             addParamToSlaveTo(_effect->fetchDouble2DParam(StageParam(kParamAnchor,       i)));
+            addParamToSlaveTo(_effect->fetchDouble2DParam(StageParam(kParamPathC1,       i)));
+            addParamToSlaveTo(_effect->fetchDouble2DParam(StageParam(kParamPathC2,       i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamEaseIn,       i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamEaseOut,      i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamAnticipation, i)));
@@ -104,6 +107,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.stageCount  = GetChoice(_effect, kParamStageCount) + 1;
     out.activeStage = GetChoice(_effect, kParamActiveStage);
     out.editTo      = GetChoice(_effect, kParamEditTarget) != 0;
+    out.showCurve   = GetBool(_effect, kParamShowCurve, time);
 
     if (out.activeStage >= out.stageCount) out.activeStage = out.stageCount - 1;
     if (out.activeStage < 0)               out.activeStage = 0;
@@ -132,6 +136,10 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         s.posXTo   = static_cast<float>(x); s.posYTo   = static_cast<float>(y);
         GetDouble2D(_effect, StageParam(kParamAnchor, i), time, x, y);
         s.anchorX  = static_cast<float>(x); s.anchorY  = static_cast<float>(y);
+        GetDouble2D(_effect, StageParam(kParamPathC1, i), time, x, y);
+        s.pathC1X  = static_cast<float>(x); s.pathC1Y  = static_cast<float>(y);
+        GetDouble2D(_effect, StageParam(kParamPathC2, i), time, x, y);
+        s.pathC2X  = static_cast<float>(x); s.pathC2Y  = static_cast<float>(y);
 
         s.easing = MakeEasing(
             static_cast<float>(GetDouble(_effect, StageParam(kParamEaseIn,        i), time)),
@@ -165,18 +173,31 @@ OfxRectD MultiTransformInteract::tabRect(const OverlayContext& c, int index) con
     return r;
 }
 
-OfxRectD MultiTransformInteract::fromToRect(const OverlayContext& c, bool toButton) const
+OfxRectD MultiTransformInteract::rightButtonRect(const OverlayContext& c,
+                                                 int indexFromRight, double widthPx) const
 {
     const OfxRectD& tl = _timeline.rect();
-    const double w = c.sx(kToggleWPx);
-    const double h = c.sy(kTabHeightPx);
+    const double w   = c.sx(widthPx);
+    const double h   = c.sy(kTabHeightPx);
+    const double gap = c.sx(kTabGapPx);
 
+    // Every button in the row is the same width, so stepping by index is enough.
     OfxRectD r;
-    r.x2 = toButton ? tl.x2 : tl.x2 - w - c.sx(kTabGapPx);
+    r.x2 = tl.x2 - static_cast<double>(indexFromRight) * (c.sx(kToggleWPx) + gap);
     r.x1 = r.x2 - w;
     r.y1 = tl.y2 + c.sy(6.0);
     r.y2 = r.y1 + h;
     return r;
+}
+
+OfxRectD MultiTransformInteract::fromToRect(const OverlayContext& c, bool toButton) const
+{
+    return rightButtonRect(c, toButton ? 0 : 1, kToggleWPx);
+}
+
+OfxRectD MultiTransformInteract::curveToggleRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 2, kToggleWPx);
 }
 
 void MultiTransformInteract::drawToolbar(const OverlayContext& c)
@@ -214,6 +235,22 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
         Text(c, toButton ? "TO" : "FROM", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
              kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
     }
+
+    // Curve editor toggle. Stays visible when the panel is hidden, or there
+    // would be no way to bring it back.
+    {
+        const OfxRectD r = curveToggleRect(c);
+
+        SetColour(c, c.showCurve ? colours::kAccent : colours::kPanel);
+        FillRect(c, r.x1, r.y1, r.x2, r.y2);
+        SetColour(c, c.showCurve ? colours::kHandle : colours::kPanelEdge);
+        SetLineWidth(c, 1.0f);
+        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+
+        SetColour(c, c.showCurve ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kTextDim);
+        Text(c, "CURVE", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
+             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
+    }
 }
 
 bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD& p)
@@ -234,6 +271,11 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
             return true;
         }
     }
+    if (Contains(curveToggleRect(c), p))
+    {
+        _effect->fetchBooleanParam(kParamShowCurve)->setValue(!c.showCurve);
+        return true;
+    }
     return false;
 }
 
@@ -251,11 +293,15 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         _timeline.layout(c);
         _curve.layout(c);
         _gizmo.layout(c);
+        _path.layout(c);
 
         // Back to front: the gizmo lives on the image, the HUD panels above it.
+        // The path sits over the gizmo: its handles are small and must not be
+        // buried under the gizmo's outline.
         _gizmo.draw(c);
+        _path.draw(c);
         _timeline.draw(c);
-        _curve.draw(c);
+        if (c.showCurve) _curve.draw(c);
         drawToolbar(c);
     }
     catch (...)
@@ -277,16 +323,20 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         _timeline.layout(c);
         _curve.layout(c);
         _gizmo.layout(c);
+        _path.layout(c);
 
         const OfxPointD p = args.penPosition;
 
         if (toolbarHit(c, p)) { requestRedraw(); return true; }
 
         // Front to back, the reverse of drawing order, so a click lands on
-        // whatever is visually on top.
-        Widget* order[3] = { &_curve, &_timeline, &_gizmo };
+        // whatever is visually on top. A hidden curve panel is skipped entirely
+        // rather than merely not drawn -- otherwise it would keep swallowing
+        // clicks aimed at the motion path handles beneath it.
+        Widget* order[4] = { c.showCurve ? &_curve : nullptr, &_timeline, &_path, &_gizmo };
         for (Widget* w : order)
         {
+            if (!w) continue;
             if (w->penDown(c, p))
             {
                 _captured = w;
@@ -318,6 +368,7 @@ bool MultiTransformInteract::penMotion(const OFX::PenArgs& args)
         _timeline.layout(c);
         _curve.layout(c);
         _gizmo.layout(c);
+        _path.layout(c);
 
         if (_captured->penMotion(c, args.penPosition))
         {

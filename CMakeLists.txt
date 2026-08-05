@@ -55,6 +55,7 @@ add_library(MultiTransform MODULE
     src/interact/TimelineWidget.cpp
     src/interact/CurveWidget.cpp
     src/interact/GizmoWidget.cpp
+    src/interact/PathWidget.cpp
 )
 target_include_directories(MultiTransform PRIVATE src)
 target_link_libraries(MultiTransform PRIVATE ofxsupport mtxcuda)

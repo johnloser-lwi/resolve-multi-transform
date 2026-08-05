@@ -290,6 +290,12 @@ struct Stage
     float opacityFrom,  opacityTo;    ///< 0..1
     float anchorX,      anchorY;      ///< normalised, 0.5,0.5 == image centre
 
+    // Motion path. Offsets, in normalised position units, of the two bezier
+    // control points away from where they would sit on a straight line. Zero
+    // means a straight line -- see EvaluatePath for why that is exact.
+    float pathC1X, pathC1Y;
+    float pathC2X, pathC2Y;
+
     Easing easing;
 
     MTX_HD static Stage Default()
@@ -304,6 +310,8 @@ struct Stage
         s.rotFrom     = 0.0f; s.rotTo     = 0.0f;
         s.opacityFrom = 1.0f; s.opacityTo = 1.0f;
         s.anchorX     = 0.5f; s.anchorY   = 0.5f;
+        s.pathC1X     = 0.0f; s.pathC1Y   = 0.0f;
+        s.pathC2X     = 0.0f; s.pathC2Y   = 0.0f;
         s.easing      = Easing::Smooth();
         return s;
     }
@@ -342,6 +350,51 @@ MTX_HD inline float StageProgress(const Stage& s, float t)
     return ApplyEasing((t - s.startFrame) / dur, s.easing);
 }
 
+/** @brief The two motion-path control points, in normalised position units.
+ *
+ * They sit one third and two thirds of the way along the straight line from
+ * From to To, displaced by the stage's stored offsets. That placement is what
+ * makes a zero offset mean *exactly* a straight line: a cubic bezier whose
+ * control points are evenly spaced along a segment is the degree-elevated form
+ * of the linear interpolation, so it reproduces `Lerp` identically -- same
+ * positions, same uniform speed. A path that is "off" therefore costs nothing
+ * and changes nothing, and existing projects are untouched.
+ */
+MTX_HD inline void PathControlPoints(const Stage& s,
+                                     float& c1x, float& c1y, float& c2x, float& c2y)
+{
+    const float dx = s.posXTo - s.posXFrom;
+    const float dy = s.posYTo - s.posYFrom;
+
+    c1x = s.posXFrom + dx * (1.0f / 3.0f) + s.pathC1X;
+    c1y = s.posYFrom + dy * (1.0f / 3.0f) + s.pathC1Y;
+    c2x = s.posXFrom + dx * (2.0f / 3.0f) + s.pathC2X;
+    c2y = s.posYFrom + dy * (2.0f / 3.0f) + s.pathC2Y;
+}
+
+/** @brief Position along the motion path at eased progress @p e.
+ *
+ * @param e the *eased* progress, not raw time. Easing therefore governs speed
+ *          along the path while the control points govern its shape -- the
+ *          standard separation, and the reason bounce and path compose: a
+ *          bounce makes the object run back and forth along the curve rather
+ *          than distorting it.
+ */
+MTX_HD inline void EvaluatePath(const Stage& s, float e, float& outX, float& outY)
+{
+    float c1x, c1y, c2x, c2y;
+    PathControlPoints(s, c1x, c1y, c2x, c2y);
+
+    const float u  = 1.0f - e;
+    const float w0 = u * u * u;
+    const float w1 = 3.0f * u * u * e;
+    const float w2 = 3.0f * u * e * e;
+    const float w3 = e * e * e;
+
+    outX = w0 * s.posXFrom + w1 * c1x + w2 * c2x + w3 * s.posXTo;
+    outY = w0 * s.posYFrom + w1 * c1y + w2 * c2y + w3 * s.posYTo;
+}
+
 /** @brief The transform contributed by a single stage, in pixel space. */
 MTX_HD inline Mat3 EvaluateStage(const Stage& s, float t, float width, float height)
 {
@@ -349,8 +402,11 @@ MTX_HD inline Mat3 EvaluateStage(const Stage& s, float t, float width, float hei
 
     const float scale = Lerp(s.scaleFrom, s.scaleTo, e);
     const float rot   = Lerp(s.rotFrom,   s.rotTo,   e);
-    const float posX  = Lerp(s.posXFrom,  s.posXTo,  e) * width;
-    const float posY  = Lerp(s.posYFrom,  s.posYTo,  e) * height;
+
+    float px, py;
+    EvaluatePath(s, e, px, py);
+    const float posX = px * width;
+    const float posY = py * height;
 
     return MakeTransform(s.anchorX * width, s.anchorY * height,
                          scale, scale, rot, posX, posY);

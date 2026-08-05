@@ -38,11 +38,15 @@ private:
     void     drawToolbar(const OverlayContext& c);
     bool     toolbarHit(const OverlayContext& c, const OfxPointD& p);
     OfxRectD tabRect(const OverlayContext& c, int index) const;
+    /** Buttons right-aligned above the timeline, counted from the right edge. */
+    OfxRectD rightButtonRect(const OverlayContext& c, int indexFromRight, double widthPx) const;
     OfxRectD fromToRect(const OverlayContext& c, bool toButton) const;
+    OfxRectD curveToggleRect(const OverlayContext& c) const;
 
     OFX::ImageEffect* _effect = nullptr;
 
     GizmoWidget    _gizmo;
+    PathWidget     _path;
     TimelineWidget _timeline;
     CurveWidget    _curve;
 

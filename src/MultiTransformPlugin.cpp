@@ -184,6 +184,10 @@ private:
         OFX::StringParam*   lblFrom;
         OFX::StringParam*   lblTo;
         OFX::StringParam*   lblEasing;
+        OFX::StringParam*   lblPath;
+        OFX::Double2DParam* pathC1;
+        OFX::Double2DParam* pathC2;
+        OFX::PushButtonParam* pathReset;
         OFX::BooleanParam*  enabled;
         OFX::DoubleParam*   startFrame;
         OFX::DoubleParam*   endFrame;
@@ -244,6 +248,10 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.lblFrom       = fetchStringParam  (StageParam(kParamLabelFrom,     i));
         s.lblTo         = fetchStringParam  (StageParam(kParamLabelTo,       i));
         s.lblEasing     = fetchStringParam  (StageParam(kParamLabelEasing,   i));
+        s.lblPath       = fetchStringParam  (StageParam(kParamLabelPath,     i));
+        s.pathC1        = fetchDouble2DParam(StageParam(kParamPathC1,        i));
+        s.pathC2        = fetchDouble2DParam(StageParam(kParamPathC2,        i));
+        s.pathReset     = fetchPushButtonParam(StageParam(kParamPathReset,   i));
         s.enabled       = fetchBooleanParam (StageParam(kParamEnabled,       i));
         s.startFrame    = fetchDoubleParam  (StageParam(kParamStartFrame,    i));
         s.endFrame      = fetchDoubleParam  (StageParam(kParamEndFrame,      i));
@@ -336,6 +344,10 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         s.posXTo   = static_cast<float>(x); s.posYTo   = static_cast<float>(y);
         h.anchor->getValueAtTime(p_Time, x, y);
         s.anchorX  = static_cast<float>(x); s.anchorY  = static_cast<float>(y);
+        h.pathC1->getValueAtTime(p_Time, x, y);
+        s.pathC1X  = static_cast<float>(x); s.pathC1Y  = static_cast<float>(y);
+        h.pathC2->getValueAtTime(p_Time, x, y);
+        s.pathC2X  = static_cast<float>(x); s.pathC2Y  = static_cast<float>(y);
 
         // The amounts are the single source of truth; the preset dropdown only
         // ever stamps values into them.
@@ -406,6 +418,10 @@ void MultiTransformPlugin::syncStageVisibility()
         s.lblFrom->setIsSecret(hidden);
         s.lblTo->setIsSecret(hidden);
         s.lblEasing->setIsSecret(hidden);
+        s.lblPath->setIsSecret(hidden);
+        s.pathC1->setIsSecret(hidden);
+        s.pathC2->setIsSecret(hidden);
+        s.pathReset->setIsSecret(hidden);
 
         s.enabled->setIsSecret(hidden);
         s.setStart->setIsSecret(hidden);
@@ -532,6 +548,14 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
         if (p_ParamName == StageParam(kParamEasingPreset, i))
         {
             applyEasingPreset(i);
+            return;
+        }
+        if (p_ParamName == StageParam(kParamPathReset, i))
+        {
+            // Zero offsets restore an exactly straight line, not merely a
+            // nearly straight one -- see PathControlPoints.
+            _stage[i].pathC1->setValue(0.0, 0.0);
+            _stage[i].pathC2->setValue(0.0, 0.0);
             return;
         }
         if (p_ParamName == StageParam(kParamBounceType, i))
@@ -835,6 +859,27 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                      100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
     }
 
+    // --- Motion path ---
+    // The path belongs to the stage as a whole rather than to either end, since
+    // it is the route between them.
+    DefineDivider(desc, page, StageParam(kParamLabelPath, i),
+                  "\xE2\x80\x94  MOTION PATH  \xE2\x80\x94");
+
+    DefineDouble2D(desc, page, nullptr, StageParam(kParamPathC1, i), "Path Handle 1",
+                   "Bends the first part of the trajectory away from a straight line. Easier "
+                   "to drag on screen than to type: enable Open FX Overlay and pull the "
+                   "handles on the dotted path. 0,0 is a straight line.",
+                   0.0, 0.0);
+
+    DefineDouble2D(desc, page, nullptr, StageParam(kParamPathC2, i), "Path Handle 2",
+                   "Bends the second part of the trajectory. 0,0 is a straight line.",
+                   0.0, 0.0);
+
+    PushButtonParamDescriptor* pathReset = desc.definePushButtonParam(StageParam(kParamPathReset, i));
+    pathReset->setLabels("Straighten Path", "Straighten", "Straighten Path");
+    pathReset->setHint("Reset both handles, returning the motion to a straight line.");
+    page->addChild(*pathReset);
+
     // --- Easing ---
     DefineDivider(desc, page, StageParam(kParamLabelEasing, i),
                   "\xE2\x80\x94  EASING  \xE2\x80\x94");
@@ -971,6 +1016,15 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     target->appendOption("To (end)");
     target->setDefault(1);
     page->addChild(*target);
+
+    BooleanParamDescriptor* showCurve = p_Desc.defineBooleanParam(kParamShowCurve);
+    showCurve->setLabels("Show Curve Editor", "Curve Editor", "Show Curve Editor");
+    showCurve->setHint("Draw the easing curve panel in the viewer overlay. Turn it off when it "
+                       "sits over something you are trying to drag -- it covers the top-right "
+                       "of the image and takes clicks before the motion path does. Also "
+                       "toggled by the CURVE button in the overlay.");
+    showCurve->setDefault(true);
+    page->addChild(*showCurve);
 
     // --- Stages ---
     for (int i = 0; i < kMaxStages; ++i) DefineStage(p_Desc, page, i);

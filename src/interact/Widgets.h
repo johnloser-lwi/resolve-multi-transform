@@ -101,6 +101,31 @@ private:
     double   _yMax = kYMaxDefault;
 };
 
+/** @brief The trajectory the active stage travels, drawn over the image.
+ *
+ * Position otherwise interpolates in a straight line; dragging these two
+ * handles bends it. Easing still governs the speed along the route, so this
+ * changes where the move goes without touching how it accelerates.
+ */
+class PathWidget : public Widget
+{
+public:
+    void layout(const OverlayContext& c) override;
+    void draw(const OverlayContext& c) override;
+    bool penDown  (const OverlayContext& c, const OfxPointD& p) override;
+    bool penMotion(const OverlayContext& c, const OfxPointD& p) override;
+    bool penUp    (const OverlayContext& c, const OfxPointD& p) override;
+
+private:
+    enum DragMode { kNone = 0, kDragC1, kDragC2 };
+
+    /// Normalised position -> canonical image coordinates.
+    OfxPointD toScreen(const OverlayContext& c, float nx, float ny) const;
+    /// Canonical image coordinates -> normalised position.
+    void      toNormalised(const OverlayContext& c, const OfxPointD& p,
+                           double& nx, double& ny) const;
+};
+
 /** @brief On-image transform gizmo for the active stage.
  *
  * Shows either the From or the To state, so a stage's two ends can be posed
