@@ -22,7 +22,21 @@ constexpr int kMaxStages = 4;
 ////////////////////////////////////////////////////////////////////////////////
 // Easing
 
-/** @brief A CSS-style cubic-bezier easing curve.
+/** @brief How the curve behaves once it reaches the target.
+ *
+ * A cubic bezier has at most two turning points, so it can produce exactly one
+ * overshoot and one undershoot -- it cannot rebound repeatedly no matter where
+ * the handles go. Bouncing therefore needs a procedural oscillation added on
+ * top of the bezier rather than a different handle position.
+ */
+enum BounceType
+{
+    kBounceNone   = 0,
+    kBounceSpring = 1,   ///< crosses the target, settling above and below it
+    kBounceBall   = 2    ///< rebounds off the target, never passing through it
+};
+
+/** @brief A CSS-style cubic-bezier easing curve, optionally with a bounce.
  *
  * Control points are P0=(0,0), P1=(x1,y1), P2=(x2,y2), P3=(1,1). Progress is
  * the x axis, eased output the y axis. y may legitimately leave [0,1] -- that
@@ -31,6 +45,14 @@ constexpr int kMaxStages = 4;
 struct Easing
 {
     float x1, y1, x2, y2;
+
+    // Bounce. Zero-initialised by the presets below, where kBounceNone == 0
+    // means the bezier behaves exactly as it always has.
+    int   bounceType;
+    float bounceAmount;    ///< A: 0 = no oscillation, 1 = full
+    float bounceCount;     ///< N: how many rebounds
+    float bounceDamping;   ///< D: how quickly they die away
+    float bounceStart;     ///< S: fraction of the stage at which the move lands
 
     MTX_HD static Easing Linear()   { return { 0.0f,  0.0f,  1.0f,  1.0f  }; }
     MTX_HD static Easing Smooth()   { return { 0.42f, 0.0f,  0.58f, 1.0f  }; } // ease-in-out
@@ -54,13 +76,27 @@ struct Easing
  * "back" easing, cubic-bezier(.68, -.55, .27, 1.55).
  */
 MTX_HD inline Easing MakeEasing(float easeInPct, float easeOutPct,
-                                float anticipationPct, float overshootPct)
+                                float anticipationPct, float overshootPct,
+                                int bounceType = kBounceNone,
+                                float bounceAmountPct = 0.0f,
+                                float bounceCount = 3.0f,
+                                float bounceDampingPct = 50.0f,
+                                float bounceStartPct = 55.0f)
 {
     Easing e;
     e.x1 =        easeInPct  * 0.01f;
     e.x2 = 1.0f - easeOutPct * 0.01f;
     e.y1 =       -anticipationPct * 0.01f * 0.55f;
     e.y2 = 1.0f + overshootPct    * 0.01f * 0.55f;
+
+    e.bounceType   = bounceType;
+    e.bounceAmount = bounceAmountPct * 0.01f;
+    e.bounceCount  = bounceCount;
+    // Damping is exposed as a percentage but used as an exponential rate. 100%
+    // maps to a decay of 6, by which point the oscillation is under 0.3% of its
+    // starting amplitude -- effectively dead by the end of the move.
+    e.bounceDamping = bounceDampingPct * 0.06f;
+    e.bounceStart   = bounceStartPct * 0.01f;
     return e;
 }
 
@@ -118,9 +154,60 @@ MTX_HD inline float SolveBezierParam(float targetX, float x1, float x2)
 
 } // namespace detail
 
+namespace detail {
+
+/** @brief The plain bezier easing, before any bounce is applied. */
+MTX_HD inline float EvalBezier(float p, const Easing& e)
+{
+    // Linear is both the common case and exactly the one where the solver is
+    // pointless, so short-circuit it.
+    if (e.x1 == e.y1 && e.x2 == e.y2) return p;
+
+    const float u = SolveBezierParam(p, e.x1, e.x2);
+    return BezEval(u, e.y1, e.y2);
+}
+
+} // namespace detail
+
 /** @brief Apply an easing curve to a normalised progress value.
  *  @param p progress in [0,1]; values outside are clamped.
- *  @return eased value, which may exceed [0,1] for overshoot curves.
+ *  @return eased value, which may exceed [0,1] for overshoot and spring curves.
+ *
+ * ## How bounce is shaped
+ *
+ * A bounce happens *after* the move lands, not during it. So when a bounce type
+ * is active the curve is split in two at the arrival point `S`:
+ *
+ *     p <  S :  the bezier, compressed into [0, S], so the move reaches the
+ *               target early and leaves room for what follows
+ *     p >= S :  the target, plus a decaying oscillation that returns to exactly
+ *               zero at p = 1
+ *
+ * With `q = (p - S) / (1 - S)` running 0..1 across the bounce region:
+ *
+ *     env(q) = (1 - q) * exp(-D * q)          amplitude, 1 at q=0, 0 at q=1
+ *     spring : y = 1 + A * sin(pi*N*q) * env(q)
+ *     ball   : y = 1 - A * |sin(pi*N*q)| * env(q)
+ *
+ * Properties this buys, all of which matter:
+ *
+ *  - **The bounce is at the end**, which is the entire point. An earlier version
+ *    scaled the oscillation by the distance still to travel, which put the
+ *    largest wobble at p=0 before the move had gone anywhere and left nothing at
+ *    the end. That was backwards.
+ *  - **Endpoints are exact for any A, N, D and S.** At p=0 the compressed bezier
+ *    gives 0. At p=1, `env(1) = 0`, so y is exactly 1 no matter what the
+ *    oscillation is doing. An animation has to land on its target value.
+ *  - **Continuous at the join.** `sin(0) = 0`, so the bounce region starts at
+ *    exactly 1, which is where the compressed bezier finishes.
+ *  - **Ball only ever leaves the target on one side**, because `|sin|` never
+ *    changes sign, so its term is always applied in the same direction. It
+ *    touches the target exactly at each zero crossing and rebounds away. The
+ *    spring uses signed `sin` so it alternates either side.
+ *
+ * A negative Bounce Amount mirrors both models: the spring undershoots before
+ * it overshoots, and the ball rebounds off the near side of the target instead
+ * of the far side.
  */
 MTX_HD inline float ApplyEasing(float p, const Easing& e)
 {
@@ -128,12 +215,48 @@ MTX_HD inline float ApplyEasing(float p, const Easing& e)
     if (p <= 0.0f) return 0.0f;
     if (p >= 1.0f) return 1.0f;
 
-    // Linear is both the common case and exactly the one where the solver is
-    // pointless, so short-circuit it.
-    if (e.x1 == e.y1 && e.x2 == e.y2) return p;
+    // Signed: the sign chooses which side of the target the rebound leaves from.
+    // Positive springs overshoot first then undershoot; negative does the
+    // reverse. Positive balls rebound away from the target on the far side,
+    // negative on the near side -- bouncing off a ceiling rather than a floor.
+    const float A = e.bounceAmount < -1.0f ? -1.0f : (e.bounceAmount > 1.0f ? 1.0f : e.bounceAmount);
+    const bool bouncing = (e.bounceType != kBounceNone)
+                       && (A > 0.0f || A < 0.0f)
+                       && e.bounceCount > 0.0f;
 
-    const float u = detail::SolveBezierParam(p, e.x1, e.x2);
-    return detail::BezEval(u, e.y1, e.y2);
+    if (!bouncing) return detail::EvalBezier(p, e);
+
+    // Arrival point. Clamped away from both ends: at 0 there would be no move
+    // left to ease, at 1 no room left to bounce in.
+    float S = e.bounceStart;
+    if (S < 0.05f) S = 0.05f;
+    if (S > 0.95f) S = 0.95f;
+
+    // Before arrival: the user's easing curve, unchanged in shape, simply
+    // compressed into [0, S]. Ease In and Ease Out both still apply, so the
+    // approach looks exactly like the curve that was drawn.
+    //
+    // The one thing suppressed is *overshoot* in the approach. A y2 above 1
+    // would carry the bezier past the target, force it back down to exactly 1
+    // at the join, and only then let the bounce push past a second time. That
+    // reversal in the middle is what made the first rebound look like it went
+    // the wrong way. Bounce owns the overshoot behaviour; the bezier must not
+    // also try to provide it.
+    if (p < S)
+    {
+        Easing approach = e;
+        if (approach.y2 > 1.0f) approach.y2 = 1.0f;
+        return detail::EvalBezier(p / S, approach);
+    }
+
+    const float q    = (p - S) / (1.0f - S);
+    const float kPiF = static_cast<float>(kPi);
+
+    const float env = (1.0f - q) * expf(-e.bounceDamping * q);
+    const float osc = sinf(kPiF * e.bounceCount * q);
+
+    return (e.bounceType == kBounceSpring) ? 1.0f + A * osc * env
+                                           : 1.0f - A * fabsf(osc) * env;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -84,17 +84,21 @@ public:
 private:
     enum DragMode { kNone = 0, kDragP1, kDragP2 };
 
-    // The plotted y range is deliberately wider than 0..1 so anticipation and
-    // overshoot are visible rather than clipped off the top and bottom.
-    static constexpr double kYMin = -0.65;
-    static constexpr double kYMax =  1.65;
+    // The plotted y range is wider than 0..1 so anticipation and overshoot are
+    // visible rather than clipped. A spring can exceed even this, so the view
+    // grows to fit the curve actually being drawn -- see fitRange().
+    static constexpr double kYMinDefault = -0.65;
+    static constexpr double kYMaxDefault =  1.65;
 
+    void      fitRange(const OverlayContext& c);
     OfxPointD unitToPanel(double ux, double uy) const;
     OfxPointD panelToUnit(const OfxPointD& p) const;
     void      writeHandle(const OverlayContext& c, int which, const OfxPointD& unit);
 
     OfxRectD _rect{};
     OfxRectD _plot{};
+    double   _yMin = kYMinDefault;
+    double   _yMax = kYMaxDefault;
 };
 
 /** @brief On-image transform gizmo for the active stage.

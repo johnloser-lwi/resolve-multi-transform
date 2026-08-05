@@ -1,4 +1,4 @@
-#include "OverlayInteract.h"
+﻿#include "OverlayInteract.h"
 
 #include "AnimEngine.h"
 #include "HostProbe.h"
@@ -52,6 +52,11 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamEaseOut,      i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamAnticipation, i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamOvershoot,    i)));
+            addParamToSlaveTo(_effect->fetchChoiceParam  (StageParam(kParamBounceType,   i)));
+            addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamBounceAmount, i)));
+            addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamBounceCount,  i)));
+            addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamBounceDamping,i)));
+            addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamBounceStart,  i)));
         }
     }
     catch (...)
@@ -129,10 +134,15 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         s.anchorX  = static_cast<float>(x); s.anchorY  = static_cast<float>(y);
 
         s.easing = MakeEasing(
-            static_cast<float>(GetDouble(_effect, StageParam(kParamEaseIn,       i), time)),
-            static_cast<float>(GetDouble(_effect, StageParam(kParamEaseOut,      i), time)),
-            static_cast<float>(GetDouble(_effect, StageParam(kParamAnticipation, i), time)),
-            static_cast<float>(GetDouble(_effect, StageParam(kParamOvershoot,    i), time)));
+            static_cast<float>(GetDouble(_effect, StageParam(kParamEaseIn,        i), time)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamEaseOut,       i), time)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamAnticipation,  i), time)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamOvershoot,     i), time)),
+            GetChoice(_effect, StageParam(kParamBounceType, i)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamBounceAmount,  i), time)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamBounceCount,   i), time)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamBounceDamping, i), time)),
+            static_cast<float>(GetDouble(_effect, StageParam(kParamBounceStart,   i), time)));
     }
 
     return true;

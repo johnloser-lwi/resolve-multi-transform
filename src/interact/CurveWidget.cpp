@@ -18,8 +18,34 @@ constexpr int    kCurveSegments = 96;
 double Clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 } // namespace
 
+void CurveWidget::fitRange(const OverlayContext& c)
+{
+    // Grow the plotted range to contain whatever the curve actually does. A
+    // spring bounce can swing well past the default window, and a curve drawn
+    // flat against the panel edge tells you nothing about its shape.
+    const Easing e = c.anim.stages[c.activeStage].easing;
+
+    double lo = 0.0, hi = 1.0;
+    for (int i = 0; i <= kCurveSegments; ++i)
+    {
+        const double y = ApplyEasing(static_cast<float>(i) / kCurveSegments, e);
+        if (y < lo) lo = y;
+        if (y > hi) hi = y;
+    }
+
+    // Include the bezier handles, which are draggable and so must stay reachable.
+    lo = std::min({ lo, static_cast<double>(e.y1), static_cast<double>(e.y2) });
+    hi = std::max({ hi, static_cast<double>(e.y1), static_cast<double>(e.y2) });
+
+    const double margin = 0.12 * std::max(1.0, hi - lo);
+    _yMin = std::min(kYMinDefault, lo - margin);
+    _yMax = std::max(kYMaxDefault, hi + margin);
+}
+
 void CurveWidget::layout(const OverlayContext& c)
 {
+    fitRange(c);
+
     const double size = c.sx(kPanelPx);
 
     // Top-right of the image, clear of the timeline strip along the bottom.
@@ -38,7 +64,7 @@ OfxPointD CurveWidget::unitToPanel(double ux, double uy) const
 {
     OfxPointD p;
     p.x = _plot.x1 + ux * (_plot.x2 - _plot.x1);
-    p.y = _plot.y1 + (uy - kYMin) / (kYMax - kYMin) * (_plot.y2 - _plot.y1);
+    p.y = _plot.y1 + (uy - _yMin) / (_yMax - _yMin) * (_plot.y2 - _plot.y1);
     return p;
 }
 
@@ -48,7 +74,7 @@ OfxPointD CurveWidget::panelToUnit(const OfxPointD& p) const
     const double h = (_plot.y2 - _plot.y1) > 1e-9 ? (_plot.y2 - _plot.y1) : 1.0;
     OfxPointD u;
     u.x = (p.x - _plot.x1) / w;
-    u.y = kYMin + (p.y - _plot.y1) / h * (kYMax - kYMin);
+    u.y = _yMin + (p.y - _plot.y1) / h * (_yMax - _yMin);
     return u;
 }
 
@@ -134,7 +160,7 @@ void CurveWidget::draw(const OverlayContext& c)
 void CurveWidget::writeHandle(const OverlayContext& c, int which, const OfxPointD& unit)
 {
     const double ux = Clamp(unit.x, 0.0, 1.0);
-    const double uy = Clamp(unit.y, kYMin, kYMax);
+    const double uy = Clamp(unit.y, _yMin, _yMax);
 
     // Horizontal movement is clamped to 0..1 because outside that range the
     // bezier folds back on itself and a single time maps to two values -- the

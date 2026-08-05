@@ -215,6 +215,30 @@ int main()
                           kFilterBilinear, kEdgeMirror, b });
     }
 
+    // --- Bounce ---
+    // The oscillator uses cosf/expf, which are separate device implementations
+    // on the GPU; these confirm they agree with the host build.
+    {
+        AnimParams spring = MakeAnim(1.6f, 0.0f, 0.25f, 0.0f);
+        spring.stages[0].easing = MakeEasing(0.0f, 20.0f, 0.0f, 0.0f,
+                                             kBounceSpring, 60.0f, 3.0f, 40.0f);
+        cases.push_back({ "spring bounce, mid-settle", spring, 12.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        AnimParams ball = MakeAnim(1.4f, 0.0f, 0.2f, 0.0f);
+        ball.stages[0].easing = MakeEasing(30.0f, 0.0f, 0.0f, 0.0f,
+                                           kBounceBall, 80.0f, 4.0f, 50.0f);
+        cases.push_back({ "ball bounce, mid-rebound", ball, 14.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        // Bounce plus motion blur: the transform changes fast during a rebound,
+        // so this is where host/device drift would show up first.
+        BlurParams b = BlurParams::Default();
+        b.enabled = true; b.adaptive = false; b.samples = 16;
+        cases.push_back({ "spring bounce + motion blur", spring, 12.0f,
+                          kFilterBilinear, kEdgeBlack, b });
+    }
+
     // --- Opacity ---
     {
         AnimParams a = MakeAnim(1.2f, 0.0f, 0.1f, 0.0f);

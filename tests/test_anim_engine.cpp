@@ -366,6 +366,349 @@ static void TestSubFrameContinuity()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Bounce
+
+static Easing SpringEasing(float amount = 45.0f, float count = 3.0f, float damping = 55.0f)
+{
+    return MakeEasing(0.0f, 20.0f, 0.0f, 0.0f, kBounceSpring, amount, count, damping);
+}
+
+static Easing BallEasing(float amount = 70.0f, float count = 4.0f, float damping = 60.0f)
+{
+    return MakeEasing(30.0f, 0.0f, 0.0f, 0.0f, kBounceBall, amount, count, damping);
+}
+
+static void TestBounceEndpointsExact()
+{
+    std::printf("Bounce endpoints stay exact\n");
+
+    // The entire formulation is built so the endpoints hold for ANY parameters.
+    // If this ever fails, animations stop landing on their target values --
+    // which is far worse than the bounce looking wrong.
+    const float amounts[]  = { -100.0f, -45.0f, 0.0f, 25.0f, 60.0f, 100.0f };
+    const float counts[]   = { 0.0f, 1.0f, 3.5f, 8.0f, 12.0f };
+    const float dampings[] = { 0.0f, 30.0f, 100.0f };
+
+    bool ok = true;
+    for (float a : amounts)
+        for (float n : counts)
+            for (float d : dampings)
+                for (int type = kBounceSpring; type <= kBounceBall; ++type)
+                {
+                    const Easing e = MakeEasing(20.0f, 30.0f, 0.0f, 0.0f, type, a, n, d);
+                    if (std::fabs(ApplyEasing(0.0f, e) - 0.0f) > 1e-5f) ok = false;
+                    if (std::fabs(ApplyEasing(1.0f, e) - 1.0f) > 1e-5f) ok = false;
+
+                    // Just inside the endpoints too, where the analytic form is
+                    // actually exercised rather than short-circuited.
+                    if (!std::isfinite(ApplyEasing(0.001f, e))) ok = false;
+                    if (!std::isfinite(ApplyEasing(0.999f, e))) ok = false;
+                }
+    Check(ok, "endpoints exact and finite across the whole bounce parameter sweep");
+
+    // Approaching 1 must converge to 1, not merely be finite: the residual
+    // (1 - base) is what forces this.
+    const Easing spring = SpringEasing(100.0f, 8.0f, 0.0f);   // worst case: no damping
+    CheckNear(ApplyEasing(0.9999f, spring), 1.0f, 1e-2f, "undamped spring still converges to 1");
+}
+
+static void TestBounceNoneIsUnchanged()
+{
+    std::printf("Bounce type None leaves the bezier untouched\n");
+
+    // Not "close to" the old behaviour -- identical, so existing projects and
+    // the four standard presets are unaffected.
+    const Easing plain  = MakeEasing(42.0f, 42.0f, 0.0f, 0.0f);
+    const Easing withNone = MakeEasing(42.0f, 42.0f, 0.0f, 0.0f, kBounceNone, 80.0f, 5.0f, 20.0f);
+
+    bool identical = true;
+    for (int i = 0; i <= 100; ++i)
+    {
+        const float p = i / 100.0f;
+        if (ApplyEasing(p, plain) != ApplyEasing(p, withNone)) { identical = false; break; }
+    }
+    Check(identical, "None ignores the bounce amounts entirely, bit for bit");
+
+    // Zero amount is likewise a no-op even with a type selected.
+    const Easing zeroAmount = MakeEasing(42.0f, 42.0f, 0.0f, 0.0f, kBounceSpring, 0.0f, 5.0f, 20.0f);
+    CheckNear(ApplyEasing(0.5f, zeroAmount), ApplyEasing(0.5f, plain), 1e-6f,
+              "zero bounce amount is a no-op");
+}
+
+static void TestBounceHappensAtTheEnd()
+{
+    std::printf("Bounce happens at the END of the curve\n");
+
+    // This is the property the first implementation got exactly backwards: it
+    // scaled the oscillation by the distance still to travel, which put the
+    // biggest wobble at p=0 -- before the move had gone anywhere -- and left
+    // nothing at the end. A bounce is what happens *after* something lands.
+    const auto swingIn = [](const Easing& e, double lo, double hi)
+    {
+        float worst = 0.0f;
+        const int i0 = static_cast<int>(lo * 1000.0);
+        const int i1 = static_cast<int>(hi * 1000.0);
+        for (int i = i0; i < i1; ++i)
+        {
+            const float y = ApplyEasing(i / 1000.0f, e);
+            const float d = std::fabs(y - 1.0f);   // distance from the target
+            if (d > worst) worst = d;
+        }
+        return worst;
+    };
+
+    for (int type = kBounceSpring; type <= kBounceBall; ++type)
+    {
+        const Easing e = MakeEasing(0.0f, 25.0f, 0.0f, 0.0f, type, 50.0f, 3.0f, 40.0f, 55.0f);
+
+        // Once past the arrival point the curve must still be moving around the
+        // target, rather than having already gone quiet.
+        const float lateSwing = swingIn(e, 0.60, 0.95);
+        Check(lateSwing > 0.02f, "curve is still oscillating late in the stage");
+
+        // And it must actually reach the target near the arrival point, instead
+        // of wobbling its way there from the very beginning.
+        const float atArrival = ApplyEasing(0.55f, e);
+        CheckNear(atArrival, 1.0f, 1e-3f, "move lands on the target at Bounce Start");
+    }
+
+    // Bounce Start genuinely moves the landing: an earlier start means the
+    // curve has arrived by a point where a later start has not.
+    const Easing early = MakeEasing(0.0f, 25.0f, 0.0f, 0.0f, kBounceSpring, 50.0f, 3.0f, 40.0f, 25.0f);
+    const Easing late  = MakeEasing(0.0f, 25.0f, 0.0f, 0.0f, kBounceSpring, 50.0f, 3.0f, 40.0f, 80.0f);
+    CheckNear(ApplyEasing(0.25f, early), 1.0f, 1e-3f, "early Bounce Start lands at 25%");
+    Check(ApplyEasing(0.25f, late) < 0.9f, "late Bounce Start has not landed at 25%");
+}
+
+static void TestApproachKeepsItsShape()
+{
+    std::printf("Bounce leaves the approach curve's shape intact\n");
+
+    const float S = 0.55f;
+
+    // Turning a bounce on must not redraw the move that leads into it. An
+    // earlier attempt forced the approach to arrive at speed, which flattened
+    // every curve into the same accelerating ramp and threw Ease Out away.
+    for (int type = kBounceSpring; type <= kBounceBall; ++type)
+    {
+        const Easing bouncing = MakeEasing(30.0f, 70.0f, 0.0f, 0.0f,
+                                           type, 50.0f, 3.0f, 40.0f, S * 100.0f);
+        const Easing plain    = MakeEasing(30.0f, 70.0f, 0.0f, 0.0f);
+
+        bool matches = true;
+        for (int i = 1; i < 54; ++i)
+        {
+            const float p = i / 100.0f;                 // strictly inside [0, S)
+            const float withBounce = ApplyEasing(p, bouncing);
+            const float compressed = ApplyEasing(p / S, plain);
+            if (std::fabs(withBounce - compressed) > 1e-4f) { matches = false; break; }
+        }
+        Check(matches, "approach is exactly the chosen curve, just time-compressed");
+    }
+
+    // Ease Out must still visibly do something: a heavily eased-out approach
+    // decelerates into the landing, a linear one does not.
+    const auto arrivalSlope = [&](float easeOut)
+    {
+        const Easing e = MakeEasing(0.0f, easeOut, 0.0f, 0.0f,
+                                    kBounceSpring, 50.0f, 3.0f, 40.0f, S * 100.0f);
+        return ApplyEasing(S - 0.005f, e) - ApplyEasing(S - 0.030f, e);
+    };
+    Check(arrivalSlope(90.0f) < arrivalSlope(0.0f),
+          "Ease Out still decelerates the approach when bouncing");
+}
+
+static void TestNoDoubleOvershoot()
+{
+    std::printf("Overshoot does not add a second bump before the bounce\n");
+
+    const float S = 0.55f;
+
+    // The original defect: with Overshoot set, the bezier carried past the
+    // target inside the approach, was forced back down to exactly 1 at the
+    // join, and only then did the spring push past again. That downward leg in
+    // the middle is what read as the first rebound going the wrong way.
+    const Easing both = MakeEasing(30.0f, 40.0f, 0.0f, 90.0f,
+                                   kBounceSpring, 50.0f, 3.0f, 40.0f, S * 100.0f);
+
+    // Nothing may cross above the target before the landing point.
+    bool earlyOvershoot = false;
+    for (int i = 1; i < static_cast<int>(S * 1000.0f); ++i)
+        if (ApplyEasing(i / 1000.0f, both) > 1.0f + 1e-4f) { earlyOvershoot = true; break; }
+    Check(!earlyOvershoot, "no overshoot inside the approach, so no reversal at the join");
+
+    // And the approach must be monotonic: no rise-then-fall before landing.
+    bool monotonic = true;
+    float prev = 0.0f;
+    for (int i = 1; i < static_cast<int>(S * 1000.0f); ++i)
+    {
+        const float y = ApplyEasing(i / 1000.0f, both);
+        if (y < prev - 1e-4f) { monotonic = false; break; }
+        prev = y;
+    }
+    Check(monotonic, "approach rises steadily into the landing");
+
+    // The first excursion past the target is the spring's, and it is upward.
+    Check(ApplyEasing(S + 0.02f, both) > 1.0f,
+          "first move past the target is the rebound, in the direction of travel");
+}
+
+static void TestSpringCrossesTarget()
+{
+    std::printf("Spring bounce crosses the target\n");
+
+    const Easing e = SpringEasing();
+
+    bool above = false, below = false;
+    for (int i = 1; i < 400; ++i)
+    {
+        const float y = ApplyEasing(i / 400.0f, e);
+        if (y > 1.0005f) above = true;
+        // "Below" means dipping back under the target after having passed it.
+        if (above && y < 0.9995f) below = true;
+    }
+    Check(above, "spring overshoots past the target");
+    Check(below, "spring settles back under the target after overshooting");
+}
+
+static void TestBallNeverPassesTarget()
+{
+    std::printf("Ball bounce rebounds without passing the target\n");
+
+    const Easing e = BallEasing();
+
+    bool exceeded = false;
+    int  touches  = 0;
+    bool wasAway  = true;
+    for (int i = 1; i < 1000; ++i)
+    {
+        const float y = ApplyEasing(i / 1000.0f, e);
+
+        // The defining property: |cos| is never negative, so the curve can
+        // approach the target but never pass through it.
+        if (y > 1.0f + 1e-4f) exceeded = true;
+
+        // A "touch" is the curve reaching the target; the clamp in ApplyBounce
+        // makes these exact rather than merely close.
+        if (y > 0.9995f) { if (wasAway) { ++touches; wasAway = false; } }
+        else             { wasAway = true; }
+    }
+    Check(!exceeded, "ball bounce never exceeds the target");
+    Check(touches >= 2, "ball bounce touches the target repeatedly");
+}
+
+static void TestNegativeBounceMirrorsDirection()
+{
+    std::printf("Negative bounce amount flips the rebound direction\n");
+
+    const float S = 0.55f;
+
+    // Spring: positive overshoots first, negative undershoots first. Same shape,
+    // mirrored about the target.
+    const Easing springPos = MakeEasing(0.0f, 30.0f, 0.0f, 0.0f,
+                                        kBounceSpring, 50.0f, 3.0f, 40.0f, S * 100.0f);
+    const Easing springNeg = MakeEasing(0.0f, 30.0f, 0.0f, 0.0f,
+                                        kBounceSpring, -50.0f, 3.0f, 40.0f, S * 100.0f);
+
+    Check(ApplyEasing(S + 0.02f, springPos) > 1.0f, "positive spring overshoots first");
+    Check(ApplyEasing(S + 0.02f, springNeg) < 1.0f, "negative spring undershoots first");
+
+    // The two must be exact mirror images about the target in the bounce region.
+    bool mirrored = true;
+    for (int i = static_cast<int>(S * 1000.0f) + 1; i < 1000; ++i)
+    {
+        const float p    = i / 1000.0f;
+        const float pos  = ApplyEasing(p, springPos);
+        const float neg  = ApplyEasing(p, springNeg);
+        if (std::fabs((pos - 1.0f) + (neg - 1.0f)) > 1e-4f) { mirrored = false; break; }
+    }
+    Check(mirrored, "negative spring is the exact mirror of the positive one");
+
+    // Ball: positive stays on one side of the target, negative on the other.
+    const Easing ballPos = MakeEasing(20.0f, 0.0f, 0.0f, 0.0f,
+                                      kBounceBall, 55.0f, 4.0f, 35.0f, S * 100.0f);
+    const Easing ballNeg = MakeEasing(20.0f, 0.0f, 0.0f, 0.0f,
+                                      kBounceBall, -55.0f, 4.0f, 35.0f, S * 100.0f);
+
+    bool posStaysBelow = true, negStaysAbove = true;
+    for (int i = static_cast<int>(S * 1000.0f); i <= 1000; ++i)
+    {
+        const float p = i / 1000.0f;
+        if (ApplyEasing(p, ballPos) > 1.0f + 1e-4f) posStaysBelow = false;
+        if (ApplyEasing(p, ballNeg) < 1.0f - 1e-4f) negStaysAbove = false;
+    }
+    Check(posStaysBelow, "positive ball never crosses above the target");
+    Check(negStaysAbove, "negative ball never crosses below the target");
+
+    // Flipping the sign must not disturb the approach, only the bounce.
+    bool approachSame = true;
+    for (int i = 1; i < static_cast<int>(S * 1000.0f); ++i)
+    {
+        const float p = i / 1000.0f;
+        if (std::fabs(ApplyEasing(p, springPos) - ApplyEasing(p, springNeg)) > 1e-5f)
+        { approachSame = false; break; }
+    }
+    Check(approachSame, "sign of the bounce does not change the approach");
+}
+
+static void TestBounceDampingReducesLateMotion()
+{
+    std::printf("Bounce damping shrinks the later rebounds\n");
+
+    // Measure how far the curve strays from the base near the end of the move.
+    const auto lateSwing = [](const Easing& e)
+    {
+        float worst = 0.0f;
+        for (int i = 600; i < 950; ++i)
+        {
+            const float y = ApplyEasing(i / 1000.0f, e);
+            const float d = std::fabs(y - 1.0f);
+            if (d > worst) worst = d;
+        }
+        return worst;
+    };
+
+    const float light = lateSwing(SpringEasing(60.0f, 4.0f, 10.0f));
+    const float heavy = lateSwing(SpringEasing(60.0f, 4.0f, 95.0f));
+    Check(heavy < light, "more damping means less movement late in the curve");
+
+    // Undamped rebounds should stay roughly even rather than decaying.
+    const float undamped = lateSwing(SpringEasing(60.0f, 4.0f, 0.0f));
+    Check(undamped > heavy, "zero damping sustains the oscillation");
+}
+
+static void TestBounceCountControlsRebounds()
+{
+    std::printf("Bounce count controls how many rebounds occur\n");
+
+    const auto countPeaks = [](const Easing& e)
+    {
+        int peaks = 0;
+        float prev = ApplyEasing(0.0f, e);
+        float cur  = ApplyEasing(0.001f, e);
+        for (int i = 2; i <= 1000; ++i)
+        {
+            const float next = ApplyEasing(i / 1000.0f, e);
+            if (cur > prev && cur >= next) ++peaks;
+            prev = cur;
+            cur  = next;
+        }
+        return peaks;
+    };
+
+    const int few  = countPeaks(SpringEasing(60.0f, 2.0f, 20.0f));
+    const int many = countPeaks(SpringEasing(60.0f, 6.0f, 20.0f));
+    Check(many > few, "a higher bounce count produces more rebounds");
+
+    // Zero bounces must degrade to no oscillation rather than dividing by zero
+    // or oscillating infinitely fast.
+    const Easing none = SpringEasing(60.0f, 0.0f, 20.0f);
+    const Easing base = MakeEasing(0.0f, 20.0f, 0.0f, 0.0f);
+    CheckNear(ApplyEasing(0.5f, none), ApplyEasing(0.5f, base), 1e-5f,
+              "zero bounces is a no-op");
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Opacity
 
 static void TestOpacityFade()
@@ -628,6 +971,16 @@ int main()
     TestCompositionOrderAndDisabledStages();
     TestIdentityWhenNothingAnimates();
     TestSubFrameContinuity();
+    TestBounceEndpointsExact();
+    TestBounceNoneIsUnchanged();
+    TestBounceHappensAtTheEnd();
+    TestApproachKeepsItsShape();
+    TestNoDoubleOvershoot();
+    TestSpringCrossesTarget();
+    TestBallNeverPassesTarget();
+    TestNegativeBounceMirrorsDirection();
+    TestBounceDampingReducesLateMotion();
+    TestBounceCountControlsRebounds();
     TestOpacityFade();
     TestOpacityComposition();
     TestOpacityBlursAcrossShutter();

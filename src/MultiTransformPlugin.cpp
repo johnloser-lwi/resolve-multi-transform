@@ -1,4 +1,4 @@
-// Multi Transform -- a multi-stage animated transform for DaVinci Resolve.
+﻿// Multi Transform -- a multi-stage animated transform for DaVinci Resolve.
 //
 // Phase 1: the animation engine drives a CPU reference renderer. The CUDA path
 // (Phase 2) and motion blur (Phase 3) reuse the same header-only maths, so this
@@ -204,6 +204,11 @@ private:
         OFX::DoubleParam*   easeOut;
         OFX::DoubleParam*   anticipation;
         OFX::DoubleParam*   overshoot;
+        OFX::ChoiceParam*   bounceType;
+        OFX::DoubleParam*   bounceAmount;
+        OFX::DoubleParam*   bounceCount;
+        OFX::DoubleParam*   bounceDamping;
+        OFX::DoubleParam*   bounceStart;
     };
     StageParamHandles _stage[kMaxStages];
 
@@ -259,6 +264,11 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.easeOut       = fetchDoubleParam  (StageParam(kParamEaseOut,       i));
         s.anticipation  = fetchDoubleParam  (StageParam(kParamAnticipation,  i));
         s.overshoot     = fetchDoubleParam  (StageParam(kParamOvershoot,     i));
+        s.bounceType    = fetchChoiceParam  (StageParam(kParamBounceType,    i));
+        s.bounceAmount  = fetchDoubleParam  (StageParam(kParamBounceAmount,  i));
+        s.bounceCount   = fetchDoubleParam  (StageParam(kParamBounceCount,   i));
+        s.bounceDamping = fetchDoubleParam  (StageParam(kParamBounceDamping, i));
+        s.bounceStart   = fetchDoubleParam  (StageParam(kParamBounceStart,   i));
     }
 
     mtx::ProbeHostOnce();
@@ -327,12 +337,20 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         h.anchor->getValueAtTime(p_Time, x, y);
         s.anchorX  = static_cast<float>(x); s.anchorY  = static_cast<float>(y);
 
-        // The four amounts are the single source of truth; the preset dropdown
-        // only ever stamps values into them.
+        // The amounts are the single source of truth; the preset dropdown only
+        // ever stamps values into them.
+        int bounceType = kBounceNone;
+        h.bounceType->getValueAtTime(p_Time, bounceType);
+
         s.easing = MakeEasing(static_cast<float>(h.easeIn->getValueAtTime(p_Time)),
                               static_cast<float>(h.easeOut->getValueAtTime(p_Time)),
                               static_cast<float>(h.anticipation->getValueAtTime(p_Time)),
-                              static_cast<float>(h.overshoot->getValueAtTime(p_Time)));
+                              static_cast<float>(h.overshoot->getValueAtTime(p_Time)),
+                              bounceType,
+                              static_cast<float>(h.bounceAmount->getValueAtTime(p_Time)),
+                              static_cast<float>(h.bounceCount->getValueAtTime(p_Time)),
+                              static_cast<float>(h.bounceDamping->getValueAtTime(p_Time)),
+                              static_cast<float>(h.bounceStart->getValueAtTime(p_Time)));
     }
 
     return a;
@@ -412,6 +430,20 @@ void MultiTransformPlugin::syncStageVisibility()
         s.easeOut->setIsSecret(hidden);
         s.anticipation->setIsSecret(hidden);
         s.overshoot->setIsSecret(hidden);
+        s.bounceType->setIsSecret(hidden);
+
+        // Two rules decide these: the stage must be the active one, AND a bounce
+        // type must be selected. Combined in one place deliberately -- as two
+        // independent passes they would overwrite each other and leave a control
+        // stranded hidden.
+        int bounceType = kBounceNone;
+        s.bounceType->getValue(bounceType);
+        const bool bounceHidden = hidden || (bounceType == kBounceNone);
+
+        s.bounceAmount->setIsSecret(bounceHidden);
+        s.bounceCount->setIsSecret(bounceHidden);
+        s.bounceDamping->setIsSecret(bounceHidden);
+        s.bounceStart->setIsSecret(bounceHidden);
     }
 }
 
@@ -428,7 +460,16 @@ void MultiTransformPlugin::applyEasingPreset(int stageIndex)
     _stage[stageIndex].easeOut->setValue(v.easeOut);
     _stage[stageIndex].anticipation->setValue(v.anticipation);
     _stage[stageIndex].overshoot->setValue(v.overshoot);
+    _stage[stageIndex].bounceType->setValue(v.bounceType);
+    _stage[stageIndex].bounceAmount->setValue(v.bounceAmount);
+    _stage[stageIndex].bounceCount->setValue(v.bounceCount);
+    _stage[stageIndex].bounceDamping->setValue(v.bounceDamping);
+    _stage[stageIndex].bounceStart->setValue(v.bounceStart);
     _syncingEasing = false;
+
+    // The preset may have switched the bounce type on or off, which changes
+    // which bounce controls are relevant.
+    syncStageVisibility();
 }
 
 void MultiTransformPlugin::markEasingCustom(int stageIndex)
@@ -493,10 +534,19 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
             applyEasingPreset(i);
             return;
         }
-        if (p_ParamName == StageParam(kParamEaseIn, i)       ||
-            p_ParamName == StageParam(kParamEaseOut, i)      ||
-            p_ParamName == StageParam(kParamAnticipation, i) ||
-            p_ParamName == StageParam(kParamOvershoot, i))
+        if (p_ParamName == StageParam(kParamBounceType, i))
+        {
+            markEasingCustom(i);
+            syncStageVisibility();   // reveals or hides the bounce amounts
+            return;
+        }
+        if (p_ParamName == StageParam(kParamEaseIn, i)        ||
+            p_ParamName == StageParam(kParamEaseOut, i)       ||
+            p_ParamName == StageParam(kParamAnticipation, i)  ||
+            p_ParamName == StageParam(kParamOvershoot, i)     ||
+            p_ParamName == StageParam(kParamBounceAmount, i)  ||
+            p_ParamName == StageParam(kParamBounceCount, i)   ||
+            p_ParamName == StageParam(kParamBounceDamping, i))
         {
             markEasingCustom(i);
             return;
@@ -798,6 +848,8 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     ease->appendOption("Ease In");
     ease->appendOption("Ease Out");
     ease->appendOption("Overshoot (Back)");
+    ease->appendOption("Spring");
+    ease->appendOption("Bounce");
     ease->appendOption("Custom");
     ease->setDefault(kEasingSmooth);
     page->addChild(*ease);
@@ -813,7 +865,8 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
 
     DefineDouble(desc, page, nullptr, StageParam(kParamEaseOut, i), "Ease Out",
                  "Damping at the end. 0 stops dead; 100 glides to a halt. This is the one "
-                 "to reach for when a move feels like it arrives too abruptly.",
+                 "to reach for when a move feels like it arrives too abruptly. Still applies "
+                 "when a Bounce is active: it shapes the approach into the landing.",
                  42.0, 0.0, 100.0, 0.0, 100.0, 1.0);
 
     // Negative values are meaningful and deliberately allowed: they push the
@@ -829,8 +882,49 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     DefineDouble(desc, page, nullptr, StageParam(kParamOvershoot, i), "Overshoot",
                  "Travels past the target and settles back; around 80 gives the classic "
                  "springy 'back' ease. 0 is off. Negative values undershoot instead, "
-                 "creeping up to the target from below.",
+                 "creeping up to the target from below. This is a single smooth overshoot -- "
+                 "for repeated rebounds use Bounce below, which supersedes this.",
                  0.0, -200.0, 200.0, -100.0, 100.0, 1.0);
+
+    // Bounce. A bezier curve is a cubic, so it has at most one overshoot and one
+    // undershoot in it -- repeated rebounds are mathematically out of reach for
+    // any handle position, and need this separate oscillation instead.
+    ChoiceParamDescriptor* bounce = desc.defineChoiceParam(StageParam(kParamBounceType, i));
+    bounce->setLabels("Bounce", "Bounce", "Bounce");
+    bounce->setHint("Adds repeated rebounds after the move, which the Overshoot handle alone "
+                    "cannot do. Spring settles through the target, above then below. Bounce "
+                    "rebounds off the target like a ball off a floor, never passing it.");
+    bounce->appendOption("None");
+    bounce->appendOption("Spring (settles through target)");
+    bounce->appendOption("Ball (rebounds off target)");
+    bounce->setDefault(kBounceNone);
+    page->addChild(*bounce);
+
+    DefineDouble(desc, page, nullptr, StageParam(kParamBounceAmount, i), "Bounce Amount",
+                 "How far the first rebound travels, as a fraction of the whole move. 0 is no "
+                 "bounce at all. Negative values flip which way it bounces: a spring "
+                 "undershoots before it overshoots, and a ball rebounds off the near side of "
+                 "the target rather than the far side. Reach for a negative value when the "
+                 "bounce is going the wrong way for the move. Either way the move still lands "
+                 "exactly on its target value.",
+                 35.0, -100.0, 100.0, -100.0, 100.0, 1.0);
+
+    DefineDouble(desc, page, nullptr, StageParam(kParamBounceCount, i), "Bounces",
+                 "How many rebounds happen before the move settles. Fractional values are "
+                 "allowed and are useful for landing mid-rebound.",
+                 3.0, 0.0, 12.0, 1.0, 8.0, 0.5);
+
+    DefineDouble(desc, page, nullptr, StageParam(kParamBounceDamping, i), "Bounce Damping",
+                 "How quickly the rebounds shrink. 0 keeps them all the same size, which "
+                 "reads as mechanical; higher values decay them away for a natural settle.",
+                 45.0, 0.0, 100.0, 0.0, 100.0, 1.0);
+
+    DefineDouble(desc, page, nullptr, StageParam(kParamBounceStart, i), "Bounce Start",
+                 "Where in the stage the move lands and the bouncing begins, as a percentage "
+                 "of its duration. The easing curve is compressed into the part before this, "
+                 "and everything after it is the bounce -- so lower values give a quicker "
+                 "arrival and a longer bounce.",
+                 55.0, 5.0, 95.0, 5.0, 95.0, 1.0);
 }
 
 } // namespace

@@ -170,6 +170,58 @@ Each stage's curve is controlled by four amounts, all of which stay editable at 
 | **Anticipation** | Pulls back before moving, like a crouch before a jump. **Negative steepens the start.** |
 | **Overshoot** | Travels past the target and settles back (~80 = classic springy). **Negative undershoots.** |
 
+### Bounce
+
+**Overshoot** gives a single smooth overshoot. It cannot give you more than that: it is the `y2`
+handle of a cubic bezier, and a cubic has at most two turning points, so one overshoot and one
+undershoot is the mathematical ceiling regardless of where the handle goes. Repeated rebounds
+need a separate oscillation, which is what **Bounce** adds.
+
+| Control | Effect |
+|---|---|
+| **Bounce** | *None*, *Spring* (settles through the target, above then below), or *Ball* (rebounds off the target, never passing it) |
+| **Bounce Amount** | How far the first rebound travels, as a fraction of the whole move. **Negative flips the direction.** |
+| **Bounces** | How many rebounds before it settles. Fractional values are allowed. |
+| **Bounce Damping** | How fast rebounds shrink. 0 keeps them equal — mechanical; higher decays them naturally. |
+| **Bounce Start** | Where in the stage the move **lands** and bouncing begins, as a % of its duration. |
+
+**Your easing curve still shapes the approach.** Ease In, Ease Out and Anticipation all apply
+normally to the part of the move before the landing — turning a bounce on does not redraw the
+curve you set, it only compresses it into the time before Bounce Start.
+
+The single exception is **Overshoot, which is suppressed while bouncing.** If the bezier also
+overshot, the curve would pass the target during the approach, get pulled back down to the
+target at the landing, and only then let the bounce push past a second time. That downward leg
+in the middle makes the first rebound look like it goes the wrong way. Bounce owns the
+overshoot behaviour; the bezier must not compete with it.
+
+**If the bounce goes the wrong way, use a negative Bounce Amount.** The sign chooses which side
+of the target the rebound leaves from — a spring undershoots before it overshoots, and a ball
+rebounds off the near side rather than the far side. It is an exact mirror: nothing else about
+the curve changes, including the approach.
+
+**Bounce Start is the control to reach for when the timing feels wrong.** The easing curve is
+compressed into the part of the stage *before* it, and everything after it is the bounce. So a
+lower value lands the move sooner and leaves a longer bounce; a higher value keeps the move
+going longer and bounces briefly at the end. The bounce always happens *after* the move arrives,
+never during it.
+
+Two presets set these up: **Spring** and **Bounce**. The amount/count/damping controls only
+appear once a bounce type is selected.
+
+Whatever you set, **the move always lands exactly on its target value.** The oscillation is
+scaled by the distance still to travel, so it is mathematically zero at the end — a stage
+animating scale to 1.5 finishes at exactly 1.5, never 1.497. There is a test sweeping the whole
+parameter space for this.
+
+The *Ball* model can never pass the target, by construction rather than by tuning: its
+oscillator is `|cos|`, which is never negative, and it is clamped at the target so the rebound
+touches exactly. *Spring* is deliberately left unclamped so it can cross.
+
+Bounce is free at render time — easing is evaluated per shutter sample on the host, never per
+pixel. Note though that a bounce genuinely moves the image faster, so adaptive motion blur will
+correctly spend more samples during the rebounds.
+
 ### Getting a steeper curve
 
 Two ways, and both are reachable by dragging the handles in the overlay:
