@@ -1,0 +1,8 @@
+build/
+out/
+.vs/
+*.user
+*.suo
+*.sdf
+*.opendb
+CMakeUserPresets.json
