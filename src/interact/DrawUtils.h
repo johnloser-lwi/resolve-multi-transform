@@ -53,7 +53,13 @@ struct OverlayContext
 {
     OFX::ImageEffect*    effect = nullptr;
     OfxDrawContextHandle ctx    = nullptr;
+
+    /// Clip-relative: 0 is the clip's first frame, matching how stage timing is
+    /// authored, so nothing in the overlay has to know about timeline position.
     double               time   = 0.0;
+
+    /// Length of the clip in frames, or 0 when the host does not report it.
+    double               clipLength = 0.0;
     OfxPointD            pixelScale{ 1.0, 1.0 };
     OfxRectD             rod{ 0.0, 0.0, 0.0, 0.0 };   ///< image bounds, canonical
 

@@ -291,18 +291,69 @@ of the slider while a whip pan still gets the full count.
 Turning motion blur off, setting Shutter Angle to 0, or setting Samples to 1 all collapse to
 *exactly* the un-blurred render path — bit-identical, not merely similar. There is a test for it.
 
-### Timing is on the timeline, not the clip
+### Timing anchors
 
-Resolve passes plugins timeline-absolute frame numbers and reports a useless clip frame range,
-so the plugin genuinely cannot tell where a clip starts. That is why the timing is captured
-from the playhead. If nothing appears to animate, this is almost always why: the stage's frames
-are still at their defaults (0 and 24) while your timeline starts at hour one, so every visible
-frame is past the end and sits at the final value. Click *Set Start* / *Set End* and it will
-come to life.
+Each stage has an **Anchor** deciding what its Start and End frames are measured from:
 
-One consequence worth knowing: because frames are timeline-absolute, **moving the clip along
-the timeline does not carry the animation with it** — you would re-click the buttons. If that
-becomes annoying in practice, the timing can be made relative to a single anchor instead.
+| Anchor | Start / End mean | Use it for |
+|---|---|---|
+| **Clip Start** (default) | frames from the clip's first frame | intros — survives moving the clip and trimming its head |
+| **Clip End** | frames back from the **last** frame | outros — `-20 → 0` always finishes exactly on the final frame |
+| **Stretch** | **percentages of the clip** | moves that should fill the same proportion of any clip |
+| **Timeline** | absolute timeline frames | pinning to a timeline position, ignoring the clip |
+
+**Stretch** scales rather than shifts: `0 → 100` always fills the whole clip, and `0 → 50` always
+the first half, whatever the clip's length. Trim the clip and the move compresses to match
+instead of running off the end. Under Stretch the fields relabel themselves to *Start (% of
+clip)* and so on, so 50 is never mistaken for frame 50.
+
+Anchors are **per stage**, so one effect can hold an intro and an outro at once:
+
+```
+Stage 1   Anchor: Clip Start    0 → 20     fade and push in as the clip opens
+Stage 2   Anchor: Clip End    -18 → 0      fade out onto the final frame
+Stage 3   Anchor: Stretch       0 → 100    slow drift across the whole clip
+```
+
+Trim either end of the clip and each stage follows what it is anchored to — the intro stays on
+the head, the outro on the tail, and the drift rescales to the new length.
+
+The end anchor references frame `length - 1`, not `length`. The clip's last visible frame *is*
+`length - 1`, so anchoring to the length itself would place zero one frame past the end and an
+outro would finish a few percent short on the final visible frame instead of landing exactly.
+
+**Frame 0 is the clip's first frame** under the default anchor. Move the clip along the
+timeline, or trim its head, and the animation goes with it — the timing means "this far into the
+clip", not "at this timeline position".
+
+Finding the clip's extent took measuring, because most of the obvious routes report nothing
+usable in Resolve:
+
+| Source | Reports |
+|---|---|
+| `getFrameRange` (src and dst) | `[0, 1798200]` — a sentinel, exactly 1000 minutes |
+| `getUnmappedFrameRange` | `[0, 0]` — not populated |
+| `timeLineGetTime` | `0` — not populated |
+| **`timeLineGetBounds`** | **`[107961, 108116]` — the clip, 155 frames** |
+
+Only the last is usable, so the plugin validates what it gets and falls back to treating times
+as absolute if a host reports nothing sensible.
+
+**Existing projects convert themselves, losslessly.** Timing used to be stored as absolute
+timeline frames. Subtracting the clip's *current* start reproduces exactly where each animation
+plays today — nothing shifts — and only then does it start travelling with the clip. Old and new
+values are told apart by magnitude, with roughly half an hour of margin between the two, so it
+cannot misfire.
+
+The conversion is applied **on every read**, not as a one-time rewrite, and that distinction
+matters. Rewriting needs the clip's start, which is not dependable at every point in an effect's
+life: asked during construction, before the clip is attached, the host returns a placeholder
+(`[0, 1999]`). An earlier version took that at face value, converted nothing against a start of
+zero, and recorded the migration as complete — locking the effect out of ever converting, which
+is worse than not having tried. Normalising on read is idempotent, because an already-relative
+value is bounded by the clip length and can never look absolute, so correctness no longer depends
+on when the rewrite happens. The stored values are still tidied up when the clip is attached
+(`changedClip`) or any parameter changes, but that is now cosmetic rather than load-bearing.
 
 ## The viewer overlay
 
@@ -438,9 +489,8 @@ for an effect that animates internally**:
 Resolve is lenient about all three and never showed any of the problems; Fusion honours all
 three, and is the one behaving correctly.
 
-If playback ever looks frozen in some other host, `probe.log` traces the first eight render
-times. Times that do not advance mean the host is caching; times that advance normally mean the
-animation's own start/end frames are outside the range being played.
+`probe.log` records the host's capabilities on load, which render path was chosen, and any
+error thrown in the overlay or the CUDA kernel. It is quiet during normal playback.
 
 ## Host capability probe
 

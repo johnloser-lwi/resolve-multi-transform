@@ -1,6 +1,7 @@
-﻿#include "OverlayInteract.h"
+#include "OverlayInteract.h"
 
 #include "AnimEngine.h"
+#include "ClipTime.h"
 #include "EditBlock.h"
 #include "HostProbe.h"
 #include "ParamNames.h"
@@ -122,9 +123,23 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     if (!src || !src->isConnected()) return false;
 
     out.effect     = _effect;
-    out.time       = time;
     out.pixelScale = pixelScale;
     out.rod        = src->getRegionOfDefinition(time);
+
+    // Everything the overlay shows and edits is in clip time, so the timeline
+    // lanes read 0..clip length rather than raw timeline frame numbers, and a
+    // dragged bar means the same thing after the clip is moved.
+    double clipStart = 0.0, clipLength = 0.0;
+    if (GetClipRange(_effect, clipStart, clipLength))
+    {
+        out.time       = time - clipStart;
+        out.clipLength = clipLength;
+    }
+    else
+    {
+        out.time       = time;
+        out.clipLength = 0.0;
+    }
 
     if (out.rodWidth() <= 0.0 || out.rodHeight() <= 0.0) return false;
 
@@ -145,12 +160,26 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     // shows what will actually render.
     out.anim = AnimParams::Default();
     out.anim.stageCount = out.stageCount;
+    out.anim.clipStart  = static_cast<float>(clipStart);
+    out.anim.clipLength = static_cast<float>(clipLength);
     for (int i = 0; i < kMaxStages; ++i)
     {
         Stage& s = out.anim.stages[i];
         s.enabled    = GetBool  (_effect, StageParam(kParamEnabled,    i), time);
-        s.startFrame = static_cast<float>(GetDouble(_effect, StageParam(kParamStartFrame, i), time));
-        s.endFrame   = static_cast<float>(GetDouble(_effect, StageParam(kParamEndFrame,   i), time));
+        s.anchor = GetChoice(_effect, StageParam(kParamAnchor2, i));
+
+        // Normalised the same way the renderer does, so a not-yet-rewritten
+        // legacy value is drawn where it actually plays rather than off-screen.
+        // A stage anchored to the timeline stores absolute frames deliberately,
+        // so it is left alone.
+        const double rawStart = GetDouble(_effect, StageParam(kParamStartFrame, i), time);
+        const double rawEnd   = GetDouble(_effect, StageParam(kParamEndFrame,   i), time);
+        const bool   relative = (s.anchor != kAnchorTimeline);
+
+        s.startFrame = static_cast<float>(
+            relative ? NormaliseStageFrame(rawStart, clipStart) : rawStart);
+        s.endFrame   = static_cast<float>(
+            relative ? NormaliseStageFrame(rawEnd, clipStart) : rawEnd);
         s.scaleFrom  = static_cast<float>(GetDouble(_effect, StageParam(kParamScaleFrom,  i), time));
         s.scaleTo    = static_cast<float>(GetDouble(_effect, StageParam(kParamScaleTo,    i), time));
         s.rotFrom    = static_cast<float>(GetDouble(_effect, StageParam(kParamRotFrom,    i), time));

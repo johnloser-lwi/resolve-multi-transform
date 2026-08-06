@@ -4,10 +4,12 @@
 // there is not enough here to justify pulling in gtest.
 
 #include "AnimEngine.h"
+#include "ClipRange.h"
 #include "MotionBlur.h"
 #include "TransformMath.h"
 
 #include <cmath>
+#include <limits>
 #include <cstdio>
 #include <string>
 
@@ -709,6 +711,271 @@ static void TestBounceCountControlsRebounds()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Timing anchors
+
+static AnimParams AnchoredAnim(int anchor, float start, float end)
+{
+    // A 155-frame clip sitting an hour into the timeline, matching the measured
+    // real-world case.
+    AnimParams a = AnimParams::Default();
+    a.clipStart  = 107961.0f;
+    a.clipLength = 155.0f;
+    a.stages[0].enabled    = true;
+    a.stages[0].easing     = Easing::Linear();
+    a.stages[0].anchor     = anchor;
+    a.stages[0].startFrame = start;
+    a.stages[0].endFrame   = end;
+    return a;
+}
+
+static void TestAnchorMappings()
+{
+    std::printf("Timing anchor mappings\n");
+
+    // Clip time 0 is the first frame; 154 is the last of a 155-frame clip.
+    const AnimParams start = AnchoredAnim(kAnchorClipStart, 0.0f, 20.0f);
+    CheckNear(StageLocalTime(start, start.stages[0], 0.0f),   0.0f,   1e-4f, "clip-start: head is 0");
+    CheckNear(StageLocalTime(start, start.stages[0], 154.0f), 154.0f, 1e-4f, "clip-start: tail is 154");
+
+    // Zero must land on the clip's LAST frame, which is length - 1. Using the
+    // length itself would put it one frame past the end, and an outro would
+    // finish fractionally short on the final visible frame.
+    const AnimParams end = AnchoredAnim(kAnchorClipEnd, -20.0f, 0.0f);
+    CheckNear(StageLocalTime(end, end.stages[0], 154.0f),   0.0f,   1e-4f, "clip-end: tail is 0");
+    CheckNear(StageLocalTime(end, end.stages[0], 134.0f), -20.0f,   1e-4f, "clip-end: counts backwards");
+
+    const AnimParams abs = AnchoredAnim(kAnchorTimeline, 107981.0f, 108001.0f);
+    CheckNear(StageLocalTime(abs, abs.stages[0], 20.0f), 107981.0f, 1e-1f,
+              "timeline: clip time converts back to absolute");
+
+    // Stretch turns frames into percentages of the clip.
+    const AnimParams pct = AnchoredAnim(kAnchorStretch, 0.0f, 100.0f);
+    CheckNear(StageLocalTime(pct, pct.stages[0], 0.0f),     0.0f,  1e-3f, "stretch: head is 0%");
+    CheckNear(StageLocalTime(pct, pct.stages[0], 77.0f),   50.0f,  1e-1f, "stretch: middle is 50%");
+    CheckNear(StageLocalTime(pct, pct.stages[0], 154.0f), 100.0f,  1e-3f, "stretch: tail is 100%");
+
+    // Degenerate clips must not divide by zero or count back from nothing.
+    for (int anchor = kAnchorClipStart; anchor <= kAnchorStretch; ++anchor)
+    {
+        AnimParams tiny = AnchoredAnim(anchor, 0.0f, 10.0f);
+        tiny.clipLength = 0.0f;
+        const float v = StageLocalTime(tiny, tiny.stages[0], 5.0f);
+        Check(v == v && v > -1e9f && v < 1e9f, "unknown clip length degrades to a finite value");
+    }
+}
+
+static void TestStretchScalesWithTheClip()
+{
+    std::printf("Stretch anchor scales with clip length\n");
+
+    // The point of Stretch: the same animation fills the same proportion of the
+    // clip whatever its length, so trimming compresses the move instead of
+    // leaving it running off the end.
+    AnimParams longClip = AnchoredAnim(kAnchorStretch, 0.0f, 100.0f);
+    longClip.clipLength = 155.0f;
+
+    AnimParams shortClip = AnchoredAnim(kAnchorStretch, 0.0f, 100.0f);
+    shortClip.clipLength = 41.0f;
+
+    const Stage& sl = longClip.stages[0];
+    const Stage& ss = shortClip.stages[0];
+
+    // Head, midpoint and tail line up in both, despite very different lengths.
+    CheckNear(StageProgress(sl, StageLocalTime(longClip,  sl, 0.0f)),   0.0f, 1e-3f, "long: 0 at head");
+    CheckNear(StageProgress(ss, StageLocalTime(shortClip, ss, 0.0f)),   0.0f, 1e-3f, "short: 0 at head");
+
+    CheckNear(StageProgress(sl, StageLocalTime(longClip,  sl, 77.0f)),  0.5f, 1e-2f, "long: half way");
+    CheckNear(StageProgress(ss, StageLocalTime(shortClip, ss, 20.0f)),  0.5f, 1e-2f, "short: half way");
+
+    CheckNear(StageProgress(sl, StageLocalTime(longClip,  sl, 154.0f)), 1.0f, 1e-3f, "long: done at tail");
+    CheckNear(StageProgress(ss, StageLocalTime(shortClip, ss, 40.0f)),  1.0f, 1e-3f, "short: done at tail");
+
+    // A partial span works the same way: 0-50% covers the first half.
+    AnimParams half = AnchoredAnim(kAnchorStretch, 0.0f, 50.0f);
+    half.clipLength = 101.0f;
+    CheckNear(StageProgress(half.stages[0], StageLocalTime(half, half.stages[0], 50.0f)),
+              1.0f, 1e-2f, "0-50% completes at the clip midpoint");
+}
+
+static void TestClipTimeRoundTrip()
+{
+    std::printf("Stage frames round-trip through clip time\n");
+
+    // The overlay draws on a clip-time ruler but edits values in stage units,
+    // so the two conversions have to be exact inverses or bars would drift from
+    // where they are dragged.
+    const int anchors[] = { kAnchorClipStart, kAnchorClipEnd, kAnchorTimeline, kAnchorStretch };
+    const float frames[] = { -20.0f, 0.0f, 12.5f, 100.0f };
+
+    for (int anchor : anchors)
+    {
+        const AnimParams a = AnchoredAnim(anchor, 0.0f, 20.0f);
+        for (float f : frames)
+        {
+            const float clip = ClipTimeFromStageFrame(a, a.stages[0], f);
+            const float back = StageLocalTime(a, a.stages[0], clip);
+            CheckNear(back, f, 1e-2f, "stage frame survives the round trip");
+        }
+    }
+}
+
+static void TestOutroLandsOnTheLastFrame()
+{
+    std::printf("Clip-end anchored stage lands on the final frame\n");
+
+    // The point of the end anchor: a fade-out that completes exactly on the
+    // clip's last visible frame, whatever the clip's length.
+    const AnimParams a = AnchoredAnim(kAnchorClipEnd, -20.0f, 0.0f);
+    const Stage& s = a.stages[0];
+    const float off = AnchorMap(a, s).offset;
+
+    // Times below are clip-relative, so the last visible frame is 154.
+    CheckNear(StageProgress(s, 154.0f - off), 1.0f, 1e-4f, "complete on the last frame");
+    CheckNear(StageProgress(s, 144.0f - off), 0.5f, 1e-4f, "half way ten frames earlier");
+    CheckNear(StageProgress(s, 134.0f - off), 0.0f, 1e-4f, "not started twenty frames earlier");
+    CheckNear(StageProgress(s, 0.0f   - off), 0.0f, 1e-4f, "idle at the head of the clip");
+
+    // Trimming the clip shorter must move the outro with it rather than leaving
+    // it stranded mid-clip.
+    AnimParams shorter = a;
+    shorter.clipLength = 100.0f;
+    const float offShort = AnchorMap(shorter, shorter.stages[0]).offset;
+    CheckNear(StageProgress(shorter.stages[0], 99.0f - offShort), 1.0f, 1e-4f,
+              "still completes on the last frame after a trim");
+}
+
+static void TestAnchorsCoexistInOneEffect()
+{
+    std::printf("Intro and outro anchors coexist in one effect\n");
+
+    // The reason anchors are per stage: one effect holding an intro anchored to
+    // the head and an outro anchored to the tail.
+    AnimParams a = AnimParams::Default();
+    a.clipStart  = 107961.0f;
+    a.clipLength = 155.0f;
+    a.stageCount = 2;
+
+    a.stages[0].enabled    = true;
+    a.stages[0].easing     = Easing::Linear();
+    a.stages[0].anchor     = kAnchorClipStart;
+    a.stages[0].startFrame = 0.0f;
+    a.stages[0].endFrame   = 20.0f;
+    a.stages[0].opacityFrom = 0.0f;
+    a.stages[0].opacityTo   = 1.0f;
+
+    a.stages[1].enabled    = true;
+    a.stages[1].easing     = Easing::Linear();
+    a.stages[1].anchor     = kAnchorClipEnd;
+    a.stages[1].startFrame = -20.0f;
+    a.stages[1].endFrame   = 0.0f;
+    a.stages[1].opacityFrom = 1.0f;
+    a.stages[1].opacityTo   = 0.0f;
+
+    CheckNear(EvaluateOpacity(a, 0.0f),   0.0f, 1e-4f, "transparent on the first frame");
+    CheckNear(EvaluateOpacity(a, 20.0f),  1.0f, 1e-4f, "opaque once the intro finishes");
+    CheckNear(EvaluateOpacity(a, 80.0f),  1.0f, 1e-4f, "opaque through the middle");
+    CheckNear(EvaluateOpacity(a, 144.0f), 0.5f, 1e-4f, "half faded ten frames from the end");
+    CheckNear(EvaluateOpacity(a, 154.0f), 0.0f, 1e-4f, "transparent on the last frame");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Clip time
+
+static void TestClipRangeValidation()
+{
+    std::printf("Clip range validation\n");
+
+    double start = -1.0, length = -1.0;
+
+    // The measured real answer from timeLineGetBounds: a 155-frame clip sitting
+    // an hour into the timeline.
+    Check(ValidateClipRange(107961.0, 108116.0, start, length), "accepts a real clip range");
+    CheckNear(static_cast<float>(start),  107961.0f, 1e-3f, "clip start is the lower bound");
+    CheckNear(static_cast<float>(length), 155.0f,    1e-3f, "clip length is the span");
+
+    // Resolve's getFrameRange sentinel: exactly 1000 minutes at 29.97. Accepting
+    // it would place every clip's frame 0 at timeline zero and mis-time
+    // everything, so it has to be rejected rather than used.
+    Check(!ValidateClipRange(0.0, 1798200.0, start, length), "rejects the unbounded sentinel");
+
+    // getUnmappedFrameRange came back as [0, 0].
+    Check(!ValidateClipRange(0.0, 0.0, start, length), "rejects an empty range");
+
+    // Inverted or nonsensical input must not be trusted.
+    Check(!ValidateClipRange(500.0, 100.0, start, length), "rejects an inverted range");
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Check(!ValidateClipRange(nan, 100.0, start, length), "rejects NaN");
+
+    // A single-frame clip is legitimate and must survive.
+    Check(ValidateClipRange(10.0, 11.0, start, length), "accepts a one-frame clip");
+
+    // A long but plausible clip -- an hour at 30fps -- must not trip the
+    // sentinel guard.
+    Check(ValidateClipRange(0.0, 108000.0, start, length), "accepts an hour-long clip");
+}
+
+static void TestLegacyTimingDetection()
+{
+    std::printf("Legacy absolute timing detection\n");
+
+    // A Resolve timeline starts at 01:00:00:00, so a clip's start sits around
+    // 107892 frames and any legacy value sits near it.
+    const double clipStart = 107961.0;
+
+    Check(LooksTimelineAbsolute(107961.0, clipStart), "clip start itself is absolute");
+    Check(LooksTimelineAbsolute(107981.0, clipStart), "a value just inside the clip is absolute");
+    Check(LooksTimelineAbsolute(108116.0, clipStart), "the clip end is absolute");
+
+    // Already-converted values must be left alone, or a second pass would
+    // subtract the clip start twice and throw the animation an hour backwards.
+    Check(!LooksTimelineAbsolute(0.0,    clipStart), "frame 0 is already relative");
+    Check(!LooksTimelineAbsolute(20.0,   clipStart), "a small value is already relative");
+    Check(!LooksTimelineAbsolute(3000.0, clipStart), "even a long clip's value stays relative");
+
+    // The margin between the two populations is enormous: a relative value
+    // would have to be half an hour into the clip to be misread.
+    Check(!LooksTimelineAbsolute(53000.0, clipStart), "the threshold sits far above any real clip");
+
+    // Hosts whose timelines start at zero need no conversion, and must not get
+    // one -- absolute and relative already coincide there.
+    Check(!LooksTimelineAbsolute(50.0,  0.0),   "no conversion when the clip starts at zero");
+    Check(!LooksTimelineAbsolute(150.0, 100.0), "no conversion for a small clip start");
+}
+
+static void TestNormaliseStageFrameIsIdempotent()
+{
+    std::printf("Frame normalisation is idempotent\n");
+
+    const double clipStart = 107961.0;
+
+    // A legacy absolute value converts to its clip-relative equivalent.
+    CheckNear(static_cast<float>(NormaliseStageFrame(107981.0, clipStart)), 20.0f, 1e-3f,
+              "absolute value converts to clip-relative");
+
+    // Applying it again must not convert a second time. The render path runs
+    // this on every read, so a value that shrank each pass would walk the
+    // animation backwards frame by frame.
+    double v = 107981.0;
+    for (int i = 0; i < 10; ++i) v = NormaliseStageFrame(v, clipStart);
+    CheckNear(static_cast<float>(v), 20.0f, 1e-3f, "repeated normalisation is stable");
+
+    // Values already relative pass through untouched.
+    CheckNear(static_cast<float>(NormaliseStageFrame(0.0,   clipStart)), 0.0f,   1e-3f, "0 passes through");
+    CheckNear(static_cast<float>(NormaliseStageFrame(155.0, clipStart)), 155.0f, 1e-3f, "155 passes through");
+
+    // With no clip information the value must be left exactly alone rather than
+    // silently shifted toward zero.
+    CheckNear(static_cast<float>(NormaliseStageFrame(107981.0, 0.0)), 107981.0f, 1e-3f,
+              "unknown clip start leaves the value untouched");
+
+    // The placeholder range the host returns before the clip is connected --
+    // [0, 1999] -- must likewise change nothing.
+    CheckNear(static_cast<float>(NormaliseStageFrame(107981.0, 0.0)), 107981.0f, 1e-3f,
+              "placeholder clip start converts nothing");
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // No-op detection
 
 static void TestIsNoOpIsTimeIndependent()
@@ -1192,6 +1459,14 @@ int main()
     TestNegativeBounceMirrorsDirection();
     TestBounceDampingReducesLateMotion();
     TestBounceCountControlsRebounds();
+    TestAnchorMappings();
+    TestStretchScalesWithTheClip();
+    TestClipTimeRoundTrip();
+    TestOutroLandsOnTheLastFrame();
+    TestAnchorsCoexistInOneEffect();
+    TestClipRangeValidation();
+    TestLegacyTimingDetection();
+    TestNormaliseStageFrameIsIdempotent();
     TestIsNoOpIsTimeIndependent();
     TestIsNoOpCatchesEveryChannel();
     TestStraightPathIsExact();

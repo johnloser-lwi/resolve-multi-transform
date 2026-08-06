@@ -15,6 +15,14 @@ constexpr const char* kParamStageCount     = "stageCount";
 constexpr const char* kParamActiveStage    = "activeStage";   ///< which stage the overlay edits
 constexpr const char* kParamEditTarget     = "editTarget";    ///< 0 = From, 1 = To
 constexpr const char* kParamShowCurve      = "showCurveEditor";
+
+// Note: there is deliberately no timing-version parameter. An earlier design
+// gated the absolute-to-clip-relative conversion on one, which failed badly --
+// asked before the clip was attached the host reported a placeholder clip
+// start, so the conversion did nothing and then stamped itself complete,
+// locking the effect out permanently. Legacy values are recognised by magnitude
+// on every read instead (see LooksTimelineAbsolute), which is self-correcting
+// and needs no flag.
 constexpr const char* kParamFilter         = "filterMode";
 constexpr const char* kParamEdge           = "edgeMode";
 
@@ -35,6 +43,7 @@ constexpr const char* kParamLabelTo        = "lblTo";
 constexpr const char* kParamLabelEasing    = "lblEasing";
 constexpr const char* kParamLabelPath      = "lblPath";
 constexpr const char* kParamEnabled        = "enabled";
+constexpr const char* kParamAnchor2        = "timingAnchor";   ///< TimingAnchor
 constexpr const char* kParamStartFrame     = "startFrame";
 constexpr const char* kParamEndFrame       = "endFrame";
 constexpr const char* kParamSetStart       = "setStart";

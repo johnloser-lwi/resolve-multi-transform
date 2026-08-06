@@ -1,4 +1,4 @@
-﻿// Multi Transform -- a multi-stage animated transform for DaVinci Resolve.
+// Multi Transform -- a multi-stage animated transform for DaVinci Resolve.
 //
 // Phase 1: the animation engine drives a CPU reference renderer. The CUDA path
 // (Phase 2) and motion blur (Phase 3) reuse the same header-only maths, so this
@@ -15,6 +15,7 @@
 #include "MultiTransformPlugin.h"
 
 #include "AnimEngine.h"
+#include "ClipTime.h"
 #include "EditBlock.h"
 #include "HostProbe.h"
 #include "ParamNames.h"
@@ -162,6 +163,8 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args,
                               const std::string& p_ParamName) override;
     virtual void getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences) override;
+    virtual void changedClip(const OFX::InstanceChangedArgs& p_Args,
+                             const std::string& p_ClipName) override;
 
     /** Gather every parameter into the plain structs the renderer consumes. */
     AnimParams fetchAnimParams(double p_Time) const;
@@ -172,6 +175,9 @@ public:
 
 private:
     void syncStageVisibility();
+    void migrateTimingIfNeeded();
+    /** The playhead expressed in the units a given stage's frames use. */
+    double playheadInStageFrames(int stageIndex, double absoluteTime) const;
     void updateDuration(int stageIndex);
     void applyEasingPreset(int stageIndex);
     void markEasingCustom(int stageIndex);
@@ -201,6 +207,7 @@ private:
         OFX::Double2DParam* pathC2;
         OFX::PushButtonParam* pathReset;
         OFX::BooleanParam*  enabled;
+        OFX::ChoiceParam*   timingAnchor;
         OFX::DoubleParam*   startFrame;
         OFX::DoubleParam*   endFrame;
         OFX::PushButtonParam* setStart;
@@ -232,10 +239,6 @@ private:
     /// preset writes the amounts, and writing an amount selects Custom.
     bool _syncingEasing = false;
 
-    /// Diagnostic only: how many frames reached the renderer, and how many were
-    /// reported as identity and so may have been passed straight through.
-    long long _renderCount   = 0;
-    long long _identityCount = 0;
 };
 
 MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
@@ -267,6 +270,8 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.pathC2        = fetchDouble2DParam(StageParam(kParamPathC2,        i));
         s.pathReset     = fetchPushButtonParam(StageParam(kParamPathReset,   i));
         s.enabled       = fetchBooleanParam (StageParam(kParamEnabled,       i));
+        s.timingAnchor  = fetchChoiceParam  (StageParam(kParamAnchor2,       i));
+        s.timingAnchor  = fetchChoiceParam  (StageParam(kParamAnchor2,       i));
         s.startFrame    = fetchDoubleParam  (StageParam(kParamStartFrame,    i));
         s.endFrame      = fetchDoubleParam  (StageParam(kParamEndFrame,      i));
         s.setStart      = fetchPushButtonParam(StageParam(kParamSetStart,    i));
@@ -295,9 +300,12 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
 
     mtx::ProbeHostOnce();
 
-    // Secrecy must be established here rather than in describe(): some OFX hosts
-    // permanently lock a parameter that was declared secret at describe time,
-    // making it impossible to reveal later.
+    // Deliberately not migrating here. At construction the clip is not
+    // necessarily connected, so the clip start reads back as a placeholder, and
+    // the OFX spec restricts parameter edit blocks to instance-changed and
+    // interact actions in any case. changedClip is the correct hook: it fires
+    // once the clip is attached, which is exactly when its extent is knowable.
+
     syncStageVisibility();
     for (int i = 0; i < kMaxStages; ++i)
     {
@@ -315,6 +323,20 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
 AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
 {
     AnimParams a = AnimParams::Default();
+
+    // Legacy timeline-absolute values are converted here, on read, rather than
+    // depending on a one-time rewrite having succeeded. The rewrite needs the
+    // clip's start, which is not dependable at every point in an effect's life,
+    // so making the render path self-correcting removes the timing question
+    // from the correctness path entirely.
+    double clipStart = 0.0, clipLength = 0.0;
+    if (!mtx::GetClipRange(const_cast<MultiTransformPlugin*>(this), clipStart, clipLength))
+    {
+        clipStart  = 0.0;
+        clipLength = 0.0;
+    }
+    a.clipStart  = static_cast<float>(clipStart);
+    a.clipLength = static_cast<float>(clipLength);
 
     int stageCountIndex = 0;
     _stageCount->getValueAtTime(p_Time, stageCountIndex);
@@ -340,8 +362,21 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
             continue;
         }
 
-        s.startFrame    = static_cast<float>(h.startFrame->getValueAtTime(p_Time));
-        s.endFrame      = static_cast<float>(h.endFrame->getValueAtTime(p_Time));
+        int anchor = kAnchorClipStart;
+        h.timingAnchor->getValueAtTime(p_Time, anchor);
+        s.anchor = anchor;
+
+        // The legacy-absolute conversion only applies to values that are meant
+        // to be clip-relative. A stage explicitly anchored to the timeline
+        // stores absolute frames on purpose, so converting them would be wrong.
+        const double rawStart = h.startFrame->getValueAtTime(p_Time);
+        const double rawEnd   = h.endFrame->getValueAtTime(p_Time);
+        const bool   relative = (anchor != kAnchorTimeline);
+
+        s.startFrame = static_cast<float>(
+            relative ? mtx::NormaliseStageFrame(rawStart, clipStart) : rawStart);
+        s.endFrame   = static_cast<float>(
+            relative ? mtx::NormaliseStageFrame(rawEnd, clipStart) : rawEnd);
         s.scaleFrom     = static_cast<float>(h.scaleFrom->getValueAtTime(p_Time));
         s.scaleTo       = static_cast<float>(h.scaleTo->getValueAtTime(p_Time));
         s.rotFrom       = static_cast<float>(h.rotFrom->getValueAtTime(p_Time));
@@ -406,8 +441,80 @@ void MultiTransformPlugin::getClipPreferences(OFX::ClipPreferencesSetter& p_Clip
     // live. Resolve happened to re-render regardless, which is why this went
     // unnoticed there.
     p_ClipPreferences.setOutputFrameVarying(true);
+}
 
-    mtx::ProbeOnce("clip-prefs", "getClipPreferences: declared output frame-varying");
+void MultiTransformPlugin::changedClip(const OFX::InstanceChangedArgs& /*p_Args*/,
+                                       const std::string& /*p_ClipName*/)
+{
+    // The clip has just been attached or replaced, so its extent is now
+    // knowable and a legacy absolute timing can be rewritten. This is also an
+    // instance-changed action, which is where the OFX spec permits parameter
+    // edit blocks -- the constructor is not.
+    migrateTimingIfNeeded();
+}
+
+void MultiTransformPlugin::migrateTimingIfNeeded()
+{
+    // Convert stage timing from timeline-absolute frames to clip-relative ones,
+    // once per effect.
+    //
+    // Subtracting the clip's *current* start is what makes this lossless: an
+    // existing animation carries on playing at exactly the frames it plays at
+    // today, and only afterwards gains the ability to travel with the clip. The
+    // conversion is guarded by a version parameter that defaults to 0, so a
+    // project saved before that parameter existed -- where the host hands back
+    // the default -- is correctly recognised as needing it.
+    double clipStart = 0.0, clipLength = 0.0;
+    if (!mtx::GetClipRange(this, clipStart, clipLength)) return;
+
+    // Only act on a believable clip start.
+    //
+    // Asked too early -- before the clip is connected -- the host returns a
+    // placeholder such as [0, 1999]. That passes the range validation, and a
+    // previous version accepted it, converted nothing against a start of zero,
+    // and then recorded the migration as complete. The effect locked itself out
+    // of ever converting, which is strictly worse than not having tried. Below
+    // this threshold there is nothing to convert anyway, since absolute and
+    // relative frames coincide when a timeline starts near zero.
+    if (clipStart <= 1000.0) return;
+
+    // Nothing to do unless a value actually looks legacy. Checked before
+    // opening an edit block so that the common case is completely silent.
+    bool any = false;
+    for (int i = 0; i < kMaxStages && !any; ++i)
+    {
+        any = mtx::LooksTimelineAbsolute(_stage[i].startFrame->getValue(), clipStart)
+           || mtx::LooksTimelineAbsolute(_stage[i].endFrame->getValue(),   clipStart);
+    }
+    if (!any) return;
+
+    int converted = 0;
+    {
+        mtx::EditBlock block(this, "Convert timing to clip-relative");
+        for (int i = 0; i < kMaxStages; ++i)
+        {
+            const double s = _stage[i].startFrame->getValue();
+            const double e = _stage[i].endFrame->getValue();
+
+            if (mtx::LooksTimelineAbsolute(s, clipStart))
+            {
+                _stage[i].startFrame->setValue(s - clipStart);
+                ++converted;
+            }
+            if (mtx::LooksTimelineAbsolute(e, clipStart))
+            {
+                _stage[i].endFrame->setValue(e - clipStart);
+                ++converted;
+            }
+        }
+    }
+
+    for (int i = 0; i < kMaxStages; ++i) updateDuration(i);
+
+    std::ostringstream o;
+    o << "timing migration: clipStart=" << clipStart << " length=" << clipLength
+      << " -- converted " << converted << " value(s) to clip-relative";
+    mtx::ProbeLog(o.str());
 }
 
 bool MultiTransformPlugin::sourceSize(double p_Time, float& outW, float& outH) const
@@ -455,6 +562,8 @@ void MultiTransformPlugin::syncStageVisibility()
         s.pathReset->setIsSecret(hidden);
 
         s.enabled->setIsSecret(hidden);
+        s.timingAnchor->setIsSecret(hidden);
+        s.timingAnchor->setIsSecret(hidden);
         s.setStart->setIsSecret(hidden);
         s.setEnd->setIsSecret(hidden);
         s.startFrame->setIsSecret(hidden);
@@ -491,6 +600,17 @@ void MultiTransformPlugin::syncStageVisibility()
         s.bounceCount->setIsSecret(bounceHidden);
         s.bounceDamping->setIsSecret(bounceHidden);
         s.bounceStart->setIsSecret(bounceHidden);
+
+        // Under Stretch these fields hold percentages, not frames. Relabelling
+        // costs nothing and heads off the obvious misreading -- a "Start Frame"
+        // of 50 meaning halfway through the clip rather than frame 50.
+        int anchor = kAnchorClipStart;
+        s.timingAnchor->getValue(anchor);
+        const bool pct = (anchor == kAnchorStretch);
+
+        s.startFrame->setLabel(pct ? "Start (% of clip)"  : "Start Frame");
+        s.endFrame->setLabel  (pct ? "End (% of clip)"    : "End Frame");
+        s.duration->setLabel  (pct ? "Duration (% of clip)" : "Duration (frames)");
     }
 }
 
@@ -536,6 +656,29 @@ void MultiTransformPlugin::markEasingCustom(int stageIndex)
     _syncingEasing = false;
 }
 
+double MultiTransformPlugin::playheadInStageFrames(int stageIndex, double absoluteTime) const
+{
+    // Capture the playhead in whatever units this stage's frames are expressed
+    // in, so the button reads back the same number the Inspector shows.
+    int anchor = kAnchorClipStart;
+    _stage[stageIndex].timingAnchor->getValue(anchor);
+
+    if (anchor == kAnchorTimeline) return absoluteTime;
+
+    double clipStart = 0.0, clipLength = 0.0;
+    if (!mtx::GetClipRange(const_cast<MultiTransformPlugin*>(this), clipStart, clipLength))
+        return absoluteTime;
+
+    // Reuse the engine's own mapping rather than repeating it, so the button
+    // can never disagree with what actually renders.
+    AnimParams a = AnimParams::Default();
+    a.clipStart  = static_cast<float>(clipStart);
+    a.clipLength = static_cast<float>(clipLength);
+    a.stages[0].anchor = anchor;
+
+    return StageLocalTime(a, a.stages[0], static_cast<float>(absoluteTime - clipStart));
+}
+
 void MultiTransformPlugin::updateDuration(int stageIndex)
 {
     const double start = _stage[stageIndex].startFrame->getValue();
@@ -548,6 +691,11 @@ void MultiTransformPlugin::updateDuration(int stageIndex)
 void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
                                         const std::string& p_ParamName)
 {
+    // Retry point: if the constructor ran before the clip was connected, the
+    // clip extent was unknown and the conversion was deferred. It is a no-op
+    // once done.
+    migrateTimingIfNeeded();
+
     // Both the count and the selection change which stage's controls are shown.
     // Active Stage is also written by the overlay's stage tabs and timeline
     // lanes, so this keeps the Inspector following what is clicked in the viewer.
@@ -559,14 +707,24 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
 
     for (int i = 0; i < kMaxStages; ++i)
     {
+        if (p_ParamName == StageParam(kParamAnchor2, i))
+        {
+            // Switching to or from Stretch changes what the frame fields mean,
+            // so their labels have to follow.
+            syncStageVisibility();
+            return;
+        }
+
         // Capturing the playhead is the only way to learn a timeline position:
         // Resolve hands the plugin timeline-absolute times and no usable clip
         // range, so park-and-click beats typing frame numbers.
+        // Stored clip-relative, so the captured value keeps meaning the same
+        // thing after the clip is moved or trimmed.
         if (p_ParamName == StageParam(kParamSetStart, i))
         {
             {
                 mtx::EditBlock block(this, "Set Start to Playhead");
-                _stage[i].startFrame->setValue(p_Args.time);
+                _stage[i].startFrame->setValue(playheadInStageFrames(i, p_Args.time));
             }
             updateDuration(i);
             return;
@@ -575,7 +733,7 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
         {
             {
                 mtx::EditBlock block(this, "Set End to Playhead");
-                _stage[i].endFrame->setValue(p_Args.time);
+                _stage[i].endFrame->setValue(playheadInStageFrames(i, p_Args.time));
             }
             updateDuration(i);
             return;
@@ -642,18 +800,6 @@ bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
     // verdict to get stuck on.
     if (!IsNoOp(fetchAnimParams(p_Args.time))) return false;
 
-    // A pass-through frame shows the untransformed source, which on screen looks
-    // exactly like the image snapping back. Log when it happens so that reading
-    // as a glitch is diagnosable rather than mysterious.
-    ++_identityCount;
-    if (_identityCount <= 5 || (_identityCount % 30) == 0)
-    {
-        std::ostringstream o;
-        o << "isIdentity #" << _identityCount << " time=" << p_Args.time
-          << " -- host may pass the source through untouched";
-        mtx::ProbeLog(o.str());
-    }
-
     p_IdentityClip = _srcClip;
     p_IdentityTime = p_Args.time;
     return true;
@@ -675,25 +821,6 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
                    (p_Args.isEnabledCudaRender ? "yes" : "no") +
                    " opencl=" + (p_Args.isEnabledOpenCLRender ? "yes" : "no"));
 
-    // Count renders that actually did work, so the log distinguishes "the host
-    // skipped it" from "we rendered a frame that produced nothing new".
-    _renderCount++;
-
-    // Trace render times: the first few, then periodically.
-    //
-    // The periodic part matters. Logging only the opening renders captured
-    // nothing but the initial display pass -- which sits at a single time and
-    // says nothing about playback, the thing actually being diagnosed. Sampling
-    // during a long run is what shows whether time advances, stalls, or jumps
-    // backwards.
-    if (_renderCount <= 5 || (_renderCount % 30) == 0)
-    {
-        std::ostringstream o;
-        o << "render #" << _renderCount << " time=" << p_Args.time
-          << (p_Args.isEnabledCudaRender ? " [cuda]" : " [cpu]");
-        mtx::ProbeLog(o.str());
-    }
-
     int filterIdx = kFilterBilinear;
     int edgeIdx   = kEdgeBlack;
     _filter->getValueAtTime(p_Args.time, filterIdx);
@@ -710,9 +837,17 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     if (src)
     {
         const OfxRectI sb = src->getBounds();
+
+        // Evaluate in clip time, not timeline time. Stage start/end are frames
+        // measured from the clip's first frame, so the animation stays put when
+        // the clip is moved or trimmed rather than being anchored to absolute
+        // timeline positions that stop meaning anything the moment the edit
+        // changes.
+        const double clipTime = mtx::ToClipTime(this, p_Args.time);
+
         st = BuildSampleTransforms(fetchAnimParams(p_Args.time),
                                    fetchBlurParams(p_Args.time),
-                                   static_cast<float>(p_Args.time),
+                                   static_cast<float>(clipTime),
                                    static_cast<float>(sb.x2 - sb.x1),
                                    static_cast<float>(sb.y2 - sb.y1));
     }
@@ -872,6 +1007,24 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     page->addChild(*en);
     InvalidatesCache(en);
 
+    ChoiceParamDescriptor* anchor = desc.defineChoiceParam(StageParam(kParamAnchor2, i));
+    anchor->setLabels("Anchor", "Anchor", "Anchor");
+    anchor->setHint("What this stage's Start and End are measured from. Clip Start puts 0 on "
+                    "the clip's first frame -- use it for intros. Clip End puts 0 on the LAST "
+                    "frame and counts backwards, so an outro written as -20 to 0 always "
+                    "finishes exactly on the final frame however the clip is trimmed. Stretch "
+                    "treats Start and End as PERCENTAGES of the clip, so 0 to 100 always fills "
+                    "the whole clip and the move compresses or expands as the clip is trimmed. "
+                    "Timeline uses absolute frames and ignores the clip. Stages choose "
+                    "independently, so one effect can hold an intro and an outro at once.");
+    anchor->appendOption("Clip Start");
+    anchor->appendOption("Clip End");
+    anchor->appendOption("Timeline (absolute)");
+    anchor->appendOption("Stretch (% of clip)");
+    anchor->setDefault(kAnchorClipStart);
+    page->addChild(*anchor);
+    InvalidatesCache(anchor);
+
     PushButtonParamDescriptor* setStart = desc.definePushButtonParam(StageParam(kParamSetStart, i));
     setStart->setLabels("Set Start to Playhead", "Set Start", "Set Start to Playhead");
     setStart->setHint("Park the playhead where this stage should begin and click.");
@@ -883,15 +1036,16 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     page->addChild(*setEnd);
 
     DefineDouble(desc, page, nullptr, StageParam(kParamStartFrame, i), "Start Frame",
-                 "Timeline frame where this stage begins. Normally set with the button "
-                 "above rather than typed. Staggering is just giving stages different "
-                 "start frames: 100 here and 106 on the next stage is a six-frame stagger.",
-                 0.0, 0.0, 1e9, 0.0, 100000.0, 1.0);
+                 "Frames from the START OF THE CLIP, not from the timeline: 0 is the clip's "
+                 "first frame. Move or trim the clip and the animation goes with it. "
+                 "Staggering is just giving stages different start frames: 0 here and 6 on "
+                 "the next stage is a six-frame stagger.",
+                 0.0, -100000.0, 1e6, 0.0, 240.0, 1.0);
 
     DefineDouble(desc, page, nullptr, StageParam(kParamEndFrame, i), "End Frame",
-                 "Timeline frame where this stage finishes. Stages may differ in length as "
-                 "well as in start time.",
-                 24.0, 0.0, 1e9, 0.0, 100000.0, 1.0);
+                 "Frames from the start of the clip. Stages may differ in length as well as "
+                 "in start time.",
+                 24.0, -100000.0, 1e6, 0.0, 240.0, 1.0);
 
     // Duration is a derived read-out, so it must not claim to invalidate
     // anything: Start and End already do, and this would only purge the cache a

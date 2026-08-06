@@ -276,12 +276,22 @@ MTX_HD inline float ApplyEasing(float p, const Easing& e)
  *       clip's own start is unknowable). The UI sets these from the playhead
  *       rather than making anyone type frame numbers.
  */
+/** @brief What a stage's start and end frames are measured from. */
+enum TimingAnchor
+{
+    kAnchorClipStart = 0,   ///< 0 is the clip's first frame
+    kAnchorClipEnd   = 1,   ///< 0 is the clip's last frame; earlier frames are negative
+    kAnchorTimeline  = 2,   ///< absolute timeline frames, ignoring the clip
+    kAnchorStretch   = 3    ///< percentage of the clip: 0 is the first frame, 100 the last
+};
+
 struct Stage
 {
     bool  enabled;
 
-    float startFrame;   ///< timeline-absolute frame this stage begins
-    float endFrame;     ///< timeline-absolute frame this stage completes
+    int   anchor;       ///< TimingAnchor: what startFrame/endFrame are relative to
+    float startFrame;   ///< frames from the anchor
+    float endFrame;     ///< frames from the anchor
 
     float scaleFrom,    scaleTo;      ///< uniform scale multiplier
     float posXFrom,     posXTo;       ///< normalised: 1.0 == one image width
@@ -302,6 +312,7 @@ struct Stage
     {
         Stage s;
         s.enabled    = false;
+        s.anchor     = kAnchorClipStart;
         s.startFrame = 0.0f;
         s.endFrame   = 24.0f;
         s.scaleFrom   = 1.0f; s.scaleTo   = 1.0f;
@@ -326,15 +337,82 @@ struct AnimParams
     int   stageCount;
     Stage stages[kMaxStages];
 
+    /// The clip, so a stage can resolve its anchor. Times handed to the
+    /// evaluator are clip-relative, meaning 0 is the clip's first frame.
+    float clipStart;    ///< timeline frame the clip begins on
+    float clipLength;   ///< clip length in frames; 0 when the host will not say
+
     MTX_HD static AnimParams Default()
     {
         AnimParams a;
         a.stageCount = 1;
+        a.clipStart  = 0.0f;
+        a.clipLength = 0.0f;
         for (int i = 0; i < kMaxStages; ++i) a.stages[i] = Stage::Default();
         a.stages[0].enabled = true;
         return a;
     }
 };
+
+/** @brief How a clip-relative time maps onto a stage's own units.
+ *
+ * Anchoring is an affine change of variable, `local = (t - offset) * scale`:
+ *
+ *   Clip Start  offset 0        scale 1            already clip-relative
+ *   Clip End    offset L - 1    scale 1            zero on the clip's LAST frame
+ *   Timeline    offset -start   scale 1            undoes the clip-relative shift
+ *   Stretch     offset 0        scale 100/(L - 1)  frames become percent of clip
+ *
+ * Stretch is the reason this is a scale and not merely an offset. Its Start and
+ * End are percentages, so the animation occupies the same *proportion* of the
+ * clip however long the clip is -- trim it shorter and the move compresses to
+ * match instead of running off the end.
+ *
+ * The `L - 1` in two places is deliberate. A clip spanning `length` frames has
+ * its last visible frame at `length - 1`; using the length itself would put the
+ * reference one frame past the end, so an outro written `-20 -> 0` would finish
+ * fractionally short on the final visible frame rather than landing exactly.
+ */
+struct AnchorMapping { float offset; float scale; };
+
+MTX_HD inline AnchorMapping AnchorMap(const AnimParams& a, const Stage& s)
+{
+    AnchorMapping m{ 0.0f, 1.0f };
+
+    // A clip of one frame or less has no span to divide by or count back from,
+    // so every anchor degenerates safely to the clip start.
+    const bool haveSpan = a.clipLength > 1.0f;
+
+    if (s.anchor == kAnchorTimeline)
+    {
+        m.offset = -a.clipStart;
+    }
+    else if (s.anchor == kAnchorClipEnd)
+    {
+        m.offset = haveSpan ? a.clipLength - 1.0f : 0.0f;
+    }
+    else if (s.anchor == kAnchorStretch)
+    {
+        m.scale = haveSpan ? 100.0f / (a.clipLength - 1.0f) : 1.0f;
+    }
+    return m;
+}
+
+/** @brief A clip-relative time expressed in one stage's own units. */
+MTX_HD inline float StageLocalTime(const AnimParams& a, const Stage& s, float clipTime)
+{
+    const AnchorMapping m = AnchorMap(a, s);
+    return (clipTime - m.offset) * m.scale;
+}
+
+/** @brief The inverse: where one of a stage's frames sits in clip time.
+ *  Used by the overlay, whose ruler is clip time. */
+MTX_HD inline float ClipTimeFromStageFrame(const AnimParams& a, const Stage& s, float stageFrame)
+{
+    const AnchorMapping m = AnchorMap(a, s);
+    const float scale = (m.scale > 1e-9f || m.scale < -1e-9f) ? m.scale : 1.0f;
+    return stageFrame / scale + m.offset;
+}
 
 /** @brief Normalised, eased progress of one stage at time @p t.
  *  @param t timeline-absolute frame (may be fractional for motion blur).
@@ -425,7 +503,9 @@ MTX_HD inline Mat3 EvaluateTransform(const AnimParams& a, float t, float width, 
     for (int i = 0; i < count; ++i)
     {
         if (!a.stages[i].enabled) continue;
-        result = result * EvaluateStage(a.stages[i], t, width, height);
+        result = result * EvaluateStage(a.stages[i],
+                                        StageLocalTime(a, a.stages[i], t),
+                                        width, height);
     }
     return result;
 }
@@ -445,7 +525,8 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
     {
         const Stage& s = a.stages[i];
         if (!s.enabled) continue;
-        opacity *= Lerp(s.opacityFrom, s.opacityTo, StageProgress(s, t));
+        opacity *= Lerp(s.opacityFrom, s.opacityTo,
+                        StageProgress(s, StageLocalTime(a, s, t)));
     }
 
     // Overshoot easing can legitimately drive the interpolation past its

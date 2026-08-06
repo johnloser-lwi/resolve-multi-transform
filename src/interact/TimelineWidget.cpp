@@ -33,20 +33,46 @@ void TimelineWidget::layout(const OverlayContext& c)
     _rect.y1 = c.rod.y1 + c.sy(20.0);
     _rect.y2 = _rect.y1 + height;
 
-    // Visible frame range: every enabled stage, plus the playhead, plus a
-    // margin so the bars never sit flush against the panel edge.
+    // The clip is the frame of reference: the ruler runs 0..clip length, so a
+    // bar's position reads directly as "this far into the clip" rather than as
+    // an absolute timeline frame that stops meaning anything once the clip is
+    // moved.
     double t0 = 0.0, t1 = 0.0;
-    bool any = false;
+
+    if (c.clipLength > 0.0)
+    {
+        t0 = 0.0;
+        t1 = c.clipLength;
+    }
+    else
+    {
+        // No clip extent from the host: fall back to framing the stages.
+        bool any = false;
+        for (int i = 0; i < c.stageCount; ++i)
+        {
+            const Stage& s = c.anim.stages[i];
+            if (!s.enabled) continue;
+            const double lo = std::min<double>(s.startFrame, s.endFrame);
+            const double hi = std::max<double>(s.startFrame, s.endFrame);
+            if (!any) { t0 = lo; t1 = hi; any = true; }
+            else      { t0 = std::min(t0, lo); t1 = std::max(t1, hi); }
+        }
+        if (!any) { t0 = c.time - 12.0; t1 = c.time + 12.0; }
+    }
+
+    // A stage dragged outside the clip still has to stay visible and grabbable,
+    // otherwise it becomes impossible to drag back. Stage frames are relative to
+    // whatever that stage is anchored to, so they are shifted into clip time
+    // before being compared against the ruler.
     for (int i = 0; i < c.stageCount; ++i)
     {
         const Stage& s = c.anim.stages[i];
         if (!s.enabled) continue;
-        const double lo = std::min<double>(s.startFrame, s.endFrame);
-        const double hi = std::max<double>(s.startFrame, s.endFrame);
-        if (!any) { t0 = lo; t1 = hi; any = true; }
-        else      { t0 = std::min(t0, lo); t1 = std::max(t1, hi); }
+        const double a = ClipTimeFromStageFrame(c.anim, s, s.startFrame);
+        const double b = ClipTimeFromStageFrame(c.anim, s, s.endFrame);
+        t0 = std::min(t0, std::min(a, b));
+        t1 = std::max(t1, std::max(a, b));
     }
-    if (!any) { t0 = c.time - 12.0; t1 = c.time + 12.0; }
 
     t0 = std::min(t0, c.time);
     t1 = std::max(t1, c.time);
@@ -98,6 +124,28 @@ void TimelineWidget::draw(const OverlayContext& c)
     Text(c, "frame " + FrameLabel(c.time), _rect.x2 - c.sx(kPadPx), _rect.y2 - c.sy(6.0),
          kOfxDrawTextAlignmentRight | kOfxDrawTextAlignmentTop);
 
+    // The clip's own extent, so it is obvious where frame 0 and the last frame
+    // are and whether a stage has been pushed outside them.
+    if (c.clipLength > 0.0)
+    {
+        const double cx0 = frameToX(0.0);
+        const double cx1 = frameToX(c.clipLength);
+        const double top = _rect.y2 - c.sy(kHeaderPx);
+
+        SetColour(c, { 1.0f, 1.0f, 1.0f, 0.10f });
+        FillRect(c, cx0, _rect.y1 + c.sy(3.0), cx1, top);
+
+        SetColour(c, colours::kTextDim);
+        SetLineWidth(c, 1.0f);
+        Line(c, cx0, _rect.y1 + c.sy(3.0), cx0, top);
+        Line(c, cx1, _rect.y1 + c.sy(3.0), cx1, top);
+
+        Text(c, "0", cx0 + c.sx(3.0), _rect.y1 + c.sy(4.0),
+             kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBottom);
+        Text(c, FrameLabel(c.clipLength), cx1 - c.sx(3.0), _rect.y1 + c.sy(4.0),
+             kOfxDrawTextAlignmentRight | kOfxDrawTextAlignmentBottom);
+    }
+
     for (int i = 0; i < c.stageCount; ++i)
     {
         const OfxRectD lane = laneRect(c, i);
@@ -124,8 +172,12 @@ void TimelineWidget::draw(const OverlayContext& c)
             continue;
         }
 
-        double bx1 = frameToX(std::min<double>(s.startFrame, s.endFrame));
-        double bx2 = frameToX(std::max<double>(s.startFrame, s.endFrame));
+        // Shifted into clip time, since the ruler is clip time but the stage's
+        // own frames are measured from its anchor.
+        const double ca = ClipTimeFromStageFrame(c.anim, s, s.startFrame);
+        const double cb = ClipTimeFromStageFrame(c.anim, s, s.endFrame);
+        double bx1 = frameToX(std::min(ca, cb));
+        double bx2 = frameToX(std::max(ca, cb));
 
         // A zero-length stage would otherwise be invisible and impossible to grab.
         if (bx2 - bx1 < c.sx(3.0)) bx2 = bx1 + c.sx(3.0);
@@ -176,12 +228,14 @@ bool TimelineWidget::penDown(const OverlayContext& c, const OfxPointD& p)
         const Stage& s = c.anim.stages[i];
         if (!s.enabled) return true;   // swallow, but nothing to drag
 
-        const double bx1 = frameToX(s.startFrame);
-        const double bx2 = frameToX(s.endFrame);
+        const double bx1 = frameToX(ClipTimeFromStageFrame(c.anim, s, s.startFrame));
+        const double bx2 = frameToX(ClipTimeFromStageFrame(c.anim, s, s.endFrame));
         const double tol = c.sx(kEdgeGrabPx);
 
         _dragStage = i;
-        _grabFrame = xToFrame(p.x);
+        // Recorded in the stage's own units, so a drag delta is directly usable
+        // even when the anchor scales time rather than merely shifting it.
+        _grabFrame = StageLocalTime(c.anim, s, static_cast<float>(xToFrame(p.x)));
         _grabStart = s.startFrame;
         _grabEnd   = s.endFrame;
         _dragT0    = _t0;
@@ -207,7 +261,12 @@ bool TimelineWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
 {
     if (_drag == kNone) return false;
 
-    const double frame  = xToFrame(p.x);
+    const Stage& s = c.anim.stages[_dragStage];
+
+    // Converted into the stage's units before differencing, so a Stretch stage
+    // -- whose values are percentages -- moves by the right amount rather than
+    // by raw frame counts.
+    const double frame  = StageLocalTime(c.anim, s, static_cast<float>(xToFrame(p.x)));
     const double delta  = frame - _grabFrame;
     const std::string sName = StageParam(kParamStartFrame, _dragStage);
     const std::string eName = StageParam(kParamEndFrame,   _dragStage);
