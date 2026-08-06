@@ -26,6 +26,13 @@ constexpr const char* kParamShowCurve      = "showCurveEditor";
 constexpr const char* kParamFilter         = "filterMode";
 constexpr const char* kParamEdge           = "edgeMode";
 
+// --- Presets ---
+constexpr const char* kParamLabelPresets   = "lblPresets";
+constexpr const char* kParamSaveEffect     = "savePresetEffect";
+constexpr const char* kParamSaveStage      = "savePresetStage";
+constexpr const char* kParamLoadPreset     = "loadPreset";
+constexpr const char* kParamLoadPresetFit  = "loadPresetFit";
+
 // --- Motion blur ---
 constexpr const char* kParamBlurEnabled    = "motionBlur";
 constexpr const char* kParamShutterAngle   = "shutterAngle";

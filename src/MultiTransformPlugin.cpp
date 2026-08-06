@@ -18,6 +18,8 @@
 #include "ClipTime.h"
 #include "EditBlock.h"
 #include "HostProbe.h"
+#include "Preset.h"
+#include "PresetIO.h"
 #include "ParamNames.h"
 #include "Sampler.h"
 #include "TransformMath.h"
@@ -176,6 +178,14 @@ public:
 private:
     void syncStageVisibility();
     void migrateTimingIfNeeded();
+
+    // --- Presets ---
+    mtx::PresetStage captureStage(int stageIndex) const;
+    mtx::PresetData  capturePreset(bool wholeEffect) const;
+    void             applyStage(int stageIndex, const mtx::PresetStage& s);
+    void             applyPreset(const mtx::PresetData& d);
+    void             savePreset(bool wholeEffect);
+    void             loadPreset(bool fitToClip);
     /** The playhead expressed in the units a given stage's frames use. */
     double playheadInStageFrames(int stageIndex, double absoluteTime) const;
     void updateDuration(int stageIndex);
@@ -238,6 +248,16 @@ private:
     /// Guards the preset <-> amounts sync from re-entering itself: stamping a
     /// preset writes the amounts, and writing an amount selects Custom.
     bool _syncingEasing = false;
+
+    /// Suppresses changedParam while a preset is being written in bulk.
+    ///
+    /// Applying a preset sets around a hundred parameters, and several of them
+    /// have handlers that fight each other: writing easingPreset calls
+    /// applyEasingPreset(), which overwrites the preset's own easing amounts
+    /// with the named preset's canned values, while writing any amount calls
+    /// markEasingCustom(), which flips the dropdown back to Custom. Left
+    /// unguarded, every stage's easing comes out of a load corrupted.
+    bool _applyingPreset = false;
 
 };
 
@@ -441,6 +461,233 @@ void MultiTransformPlugin::getClipPreferences(OFX::ClipPreferencesSetter& p_Clip
     // live. Resolve happened to re-render regardless, which is why this went
     // unnoticed there.
     p_ClipPreferences.setOutputFrameVarying(true);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Presets
+
+mtx::PresetStage MultiTransformPlugin::captureStage(int i) const
+{
+    const StageParamHandles& h = _stage[i];
+    mtx::PresetStage s = mtx::PresetStage::Default();
+
+    s.enabled = h.enabled->getValue();
+    h.timingAnchor->getValue(s.anchor);
+    s.startFrame = static_cast<float>(h.startFrame->getValue());
+    s.endFrame   = static_cast<float>(h.endFrame->getValue());
+
+    // A timeline-anchored stage stores absolute frames, which mean nothing on
+    // any other clip. Converting it to its clip-relative equivalent keeps the
+    // timing shape and discards only the "pinned to this timeline position"
+    // intent, which could not have survived the move anyway.
+    if (s.anchor == kAnchorTimeline)
+    {
+        double clipStart = 0.0, clipLength = 0.0;
+        if (mtx::GetClipRange(const_cast<MultiTransformPlugin*>(this), clipStart, clipLength))
+        {
+            s.startFrame -= static_cast<float>(clipStart);
+            s.endFrame   -= static_cast<float>(clipStart);
+            s.anchor      = kAnchorClipStart;
+        }
+    }
+
+    s.scaleFrom = static_cast<float>(h.scaleFrom->getValue());
+    s.scaleTo   = static_cast<float>(h.scaleTo->getValue());
+    s.rotFrom   = static_cast<float>(h.rotFrom->getValue());
+    s.rotTo     = static_cast<float>(h.rotTo->getValue());
+    s.opacityFrom = static_cast<float>(h.opacityFrom->getValue());
+    s.opacityTo   = static_cast<float>(h.opacityTo->getValue());
+
+    double x = 0.0, y = 0.0;
+    h.posFrom->getValue(x, y); s.posXFrom = static_cast<float>(x); s.posYFrom = static_cast<float>(y);
+    h.posTo->getValue(x, y);   s.posXTo   = static_cast<float>(x); s.posYTo   = static_cast<float>(y);
+    h.anchor->getValue(x, y);  s.anchorX  = static_cast<float>(x); s.anchorY  = static_cast<float>(y);
+    h.pathC1->getValue(x, y);  s.pathC1X  = static_cast<float>(x); s.pathC1Y  = static_cast<float>(y);
+    h.pathC2->getValue(x, y);  s.pathC2X  = static_cast<float>(x); s.pathC2Y  = static_cast<float>(y);
+
+    h.easingPreset->getValue(s.easingPreset);
+    s.easeIn        = static_cast<float>(h.easeIn->getValue());
+    s.easeOut       = static_cast<float>(h.easeOut->getValue());
+    s.anticipation  = static_cast<float>(h.anticipation->getValue());
+    s.overshoot     = static_cast<float>(h.overshoot->getValue());
+    h.bounceType->getValue(s.bounceType);
+    s.bounceAmount  = static_cast<float>(h.bounceAmount->getValue());
+    s.bounceCount   = static_cast<float>(h.bounceCount->getValue());
+    s.bounceDamping = static_cast<float>(h.bounceDamping->getValue());
+    s.bounceStart   = static_cast<float>(h.bounceStart->getValue());
+    return s;
+}
+
+mtx::PresetData MultiTransformPlugin::capturePreset(bool wholeEffect) const
+{
+    mtx::PresetData d = mtx::PresetData::Default();
+    d.wholeEffect = wholeEffect;
+
+    double clipStart = 0.0, clipLength = 0.0;
+    if (mtx::GetClipRange(const_cast<MultiTransformPlugin*>(this), clipStart, clipLength))
+        d.sourceClipLength = static_cast<float>(clipLength);
+
+    if (wholeEffect)
+    {
+        int v = 0;
+        _stageCount->getValue(v); d.stageCount = v + 1;
+        _filter->getValue(d.filterMode);
+        _edge->getValue(d.edgeMode);
+
+        d.blurEnabled  = _blurEnabled->getValue();
+        d.shutterAngle = static_cast<float>(_shutterAngle->getValue());
+        d.shutterPhase = static_cast<float>(_shutterPhase->getValue());
+        d.blurSamples  = _blurSamples->getValue();
+        d.blurAdaptive = _blurAdaptive->getValue();
+
+        for (int i = 0; i < kMaxStages; ++i) d.stages[i] = captureStage(i);
+    }
+    else
+    {
+        int active = 0;
+        _activeStage->getValue(active);
+        if (active < 0) active = 0;
+        if (active >= kMaxStages) active = kMaxStages - 1;
+        d.stages[0] = captureStage(active);
+    }
+    return d;
+}
+
+void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
+{
+    StageParamHandles& h = _stage[i];
+
+    h.enabled->setValue(s.enabled);
+    h.timingAnchor->setValue(s.anchor);
+    h.startFrame->setValue(s.startFrame);
+    h.endFrame->setValue(s.endFrame);
+
+    h.scaleFrom->setValue(s.scaleFrom);
+    h.scaleTo->setValue(s.scaleTo);
+    h.rotFrom->setValue(s.rotFrom);
+    h.rotTo->setValue(s.rotTo);
+    h.opacityFrom->setValue(s.opacityFrom);
+    h.opacityTo->setValue(s.opacityTo);
+
+    h.posFrom->setValue(s.posXFrom, s.posYFrom);
+    h.posTo->setValue(s.posXTo, s.posYTo);
+    h.anchor->setValue(s.anchorX, s.anchorY);
+    h.pathC1->setValue(s.pathC1X, s.pathC1Y);
+    h.pathC2->setValue(s.pathC2X, s.pathC2Y);
+
+    // The amounts are the source of truth for the curve; the dropdown is only a
+    // label for them. Both are restored verbatim, which is safe only because
+    // changedParam is suppressed -- otherwise setting the dropdown would stamp
+    // its canned values straight over the amounts written next.
+    h.easingPreset->setValue(s.easingPreset);
+    h.easeIn->setValue(s.easeIn);
+    h.easeOut->setValue(s.easeOut);
+    h.anticipation->setValue(s.anticipation);
+    h.overshoot->setValue(s.overshoot);
+    h.bounceType->setValue(s.bounceType);
+    h.bounceAmount->setValue(s.bounceAmount);
+    h.bounceCount->setValue(s.bounceCount);
+    h.bounceDamping->setValue(s.bounceDamping);
+    h.bounceStart->setValue(s.bounceStart);
+}
+
+void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
+{
+    // One edit block for the whole batch: it is what tells the host an edit
+    // happened at all, and it collapses ~100 writes into a single undo step and
+    // a single cache invalidation.
+    mtx::EditBlock block(this, "Load Multi Transform Preset");
+
+    _applyingPreset = true;
+
+    if (d.wholeEffect)
+    {
+        _stageCount->setValue(d.stageCount - 1);
+        _filter->setValue(d.filterMode);
+        _edge->setValue(d.edgeMode);
+
+        _blurEnabled->setValue(d.blurEnabled);
+        _shutterAngle->setValue(d.shutterAngle);
+        _shutterPhase->setValue(d.shutterPhase);
+        _blurSamples->setValue(d.blurSamples);
+        _blurAdaptive->setValue(d.blurAdaptive);
+
+        for (int i = 0; i < kMaxStages; ++i) applyStage(i, d.stages[i]);
+    }
+    else
+    {
+        int active = 0;
+        _activeStage->getValue(active);
+        if (active < 0) active = 0;
+        if (active >= kMaxStages) active = kMaxStages - 1;
+        applyStage(active, d.stages[0]);
+    }
+
+    _applyingPreset = false;
+
+    // Derived state, refreshed once rather than on every one of the writes above.
+    for (int i = 0; i < kMaxStages; ++i) updateDuration(i);
+    syncStageVisibility();
+}
+
+void MultiTransformPlugin::savePreset(bool wholeEffect)
+{
+    std::string path;
+    if (!mtx::ChoosePresetToSave(wholeEffect ? "MultiTransform" : "Stage", path)) return;
+
+    mtx::PresetData d = capturePreset(wholeEffect);
+    d.name = mtx::StemOf(path);
+
+    std::string error;
+    if (!mtx::WriteTextFile(path, mtx::ToJson(d), error))
+    {
+        sendMessage(OFX::Message::eMessageError, "", "Could not save the preset:\n" + error);
+        return;
+    }
+    mtx::ProbeLog("preset saved: " + path);
+}
+
+void MultiTransformPlugin::loadPreset(bool fitToClip)
+{
+    std::string path;
+    if (!mtx::ChoosePresetToOpen(path)) return;
+
+    std::string text, error;
+    if (!mtx::ReadTextFile(path, text, error))
+    {
+        sendMessage(OFX::Message::eMessageError, "", "Could not read the preset:\n" + error);
+        return;
+    }
+
+    mtx::PresetData d;
+    if (!mtx::FromJson(text, d, error))
+    {
+        // Refusing outright beats applying half a preset: a partly-loaded setup
+        // is a state that never existed and is hard to spot or undo.
+        sendMessage(OFX::Message::eMessageError, "",
+                    "This is not a valid Multi Transform preset:\n" + error);
+        return;
+    }
+
+    if (fitToClip)
+    {
+        double clipStart = 0.0, clipLength = 0.0;
+        if (mtx::GetClipRange(this, clipStart, clipLength))
+        {
+            mtx::RescaleTiming(d, static_cast<float>(clipLength));
+        }
+        else
+        {
+            // Scaling by a guessed ratio would quietly mis-time everything, so
+            // say so rather than pretending it worked.
+            sendMessage(OFX::Message::eMessageWarning, "",
+                        "The clip length is unknown, so the preset was applied "
+                        "without rescaling its timing.");
+        }
+    }
+
+    applyPreset(d);
+    mtx::ProbeLog("preset loaded: " + path + (fitToClip ? " (fit to clip)" : ""));
 }
 
 void MultiTransformPlugin::changedClip(const OFX::InstanceChangedArgs& /*p_Args*/,
@@ -691,6 +938,15 @@ void MultiTransformPlugin::updateDuration(int stageIndex)
 void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
                                         const std::string& p_ParamName)
 {
+    // A bulk preset write must not trigger the per-parameter handlers below --
+    // several of them would rewrite the very values being restored.
+    if (_applyingPreset) return;
+
+    if (p_ParamName == kParamSaveEffect)    { savePreset(true);  return; }
+    if (p_ParamName == kParamSaveStage)     { savePreset(false); return; }
+    if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
+    if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
+
     // Retry point: if the constructor ran before the clip was connected, the
     // clip extent was unknown and the conversion was deferred. It is a no-op
     // once done.
@@ -1269,6 +1525,44 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
 
     // --- Stages ---
     for (int i = 0; i < kMaxStages; ++i) DefineStage(p_Desc, page, i);
+
+    // --- Presets ---
+    //
+    // Placed here, ahead of the Motion Blur and Sampling groups, because these
+    // buttons have no parent group. Sitting between two GroupParams they were an
+    // island of ungrouped parameters in the middle of grouped ones, and the
+    // Inspector scattered them -- two ended up at the top of the panel and two
+    // stayed at the bottom. Keeping every ungrouped parameter ahead of the first
+    // group leaves the ordering unambiguous.
+    DefineDivider(p_Desc, page, kParamLabelPresets,
+                  "\xE2\x80\x94  PRESETS  \xE2\x80\x94");
+
+    PushButtonParamDescriptor* saveEffect = p_Desc.definePushButtonParam(kParamSaveEffect);
+    saveEffect->setLabels("Save Preset to File...", "Save Preset", "Save Preset to File...");
+    saveEffect->setHint("Write every stage, plus motion blur and sampling, to a JSON file.");
+    page->addChild(*saveEffect);
+
+    PushButtonParamDescriptor* saveStage = p_Desc.definePushButtonParam(kParamSaveStage);
+    saveStage->setLabels("Save Active Stage to File...", "Save Stage",
+                         "Save Active Stage to File...");
+    saveStage->setHint("Write only the active stage, for building a library of reusable pieces "
+                       "such as a punch in or a fade out.");
+    page->addChild(*saveStage);
+
+    PushButtonParamDescriptor* loadPreset = p_Desc.definePushButtonParam(kParamLoadPreset);
+    loadPreset->setLabels("Load Preset from File...", "Load Preset", "Load Preset from File...");
+    loadPreset->setHint("Apply a preset exactly as it was saved. Loads everything: all stages, "
+                        "motion blur and sampling. A stage preset loads into the active stage.");
+    page->addChild(*loadPreset);
+
+    PushButtonParamDescriptor* loadFit = p_Desc.definePushButtonParam(kParamLoadPresetFit);
+    loadFit->setLabels("Load from File (Fit to Clip)...", "Load (Fit)",
+                       "Load from File (Fit to Clip)...");
+    loadFit->setHint("Loads exactly the same settings as Load Preset from File, with one "
+                     "difference: frame-based Start and End values are rescaled to this clip's "
+                     "length so the pacing is preserved. Stages anchored to Stretch are already "
+                     "proportional and are left untouched.");
+    page->addChild(*loadFit);
 
     // --- Motion blur ---
     GroupParamDescriptor* blur = p_Desc.defineGroupParam("motionBlurGroup");

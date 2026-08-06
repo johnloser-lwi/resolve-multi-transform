@@ -270,6 +270,53 @@ and Ease In / Ease Out are the x positions of the two control handles.
 > overlay** rather than the Inspector, because Resolve's OFX host supports neither parametric
 > (curve) parameters nor custom parameter-panel widgets — both measured, see `probe.log`.
 
+## Presets
+
+Resolve has no usable preset mechanism for third-party OFX plugins, so presets are plain JSON
+files. Four buttons under **— PRESETS —**:
+
+| Button | Does |
+|---|---|
+| **Save Preset to File…** | Every stage plus motion blur and sampling |
+| **Save Active Stage to File…** | Just the active stage, for a library of reusable pieces |
+| **Load Preset from File…** | Applies exactly as saved |
+| **Load from File (Fit to Clip)…** | Same, but rescales frame timings to this clip's length |
+
+They default to `%LOCALAPPDATA%\MultiTransform\Presets`, and a stage preset loads into whichever
+stage is active. The files are readable and diffable, and they work in both Resolve and Fusion.
+
+The names say "to/from File" because a host may have preset controls of its own elsewhere in the
+Inspector; these four are always the plugin's own, writing JSON you can move between machines.
+
+**Both Load buttons load everything** — all four stages, motion blur and sampling. They run
+identical code and differ only in whether frame-based Start/End values are rescaled on the way
+in. The only settings never stored are the viewer ones (Active Stage, Gizmo Edits, Show Curve
+Editor), which describe where you are looking rather than the look itself.
+
+### How timing survives moving to another clip
+
+Three of the four anchors are portable by construction, so nothing special is needed:
+
+| Anchor | Stored as | On another clip |
+|---|---|---|
+| Clip Start | `0 → 20`, frames from the head | correct as-is |
+| Clip End | `-18 → 0`, frames back from the tail | correct as-is |
+| Stretch | `0 → 100`, percentages | correct at any length |
+| Timeline | absolute frames | **meaningless elsewhere** |
+
+Only Timeline needs handling, and it gets it at *save* time: those stages are converted to their
+Clip Start equivalent. The timing shape is kept; only the "pinned to this timeline position"
+intent is lost, and that could not have survived the move anyway.
+
+**Fit to Clip** rescales frame-based timings by the ratio of clip lengths — an intro of `0 → 20`
+authored on a 155-frame clip becomes `0 → 5` on a 40-frame one, preserving its pacing. It
+deliberately leaves **Stretch** stages alone: those are already proportional, and rescaling them
+would apply the ratio twice and break the one anchor built for exactly this. If either clip
+length is unknown it says so and applies the preset unchanged, rather than scaling by a guess.
+
+Short stages clamp to a minimum of one frame, so a six-frame punch does not collapse into an
+instant cut on a much shorter clip.
+
 ## Motion blur
 
 Enable under **Motion Blur**. The blur is *analytic*: every shutter sample is a different
