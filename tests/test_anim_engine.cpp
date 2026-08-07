@@ -1164,6 +1164,53 @@ static void TestStageContextRebuildsTheWhole()
     }
 }
 
+static void TestSwappingEndsReversesThePathExactly()
+{
+    std::printf("Swapping a stage's ends reverses its route without reshaping it\n");
+
+    // Swap FROM and TO also trades the two path handles. The claim is that this
+    // is exact rather than approximate: the first handle is an offset from one
+    // third along the straight line and the second from two thirds, so
+    // reversing the line maps each precisely onto the other. If that were
+    // wrong, a bent path would turn inside out on every swap.
+    Stage a = Stage::Default();
+    a.posXFrom = -0.30f; a.posYFrom =  0.10f;
+    a.posXTo   =  0.40f; a.posYTo   = -0.20f;
+    a.pathC1X  =  0.15f; a.pathC1Y  =  0.35f;
+    a.pathC2X  = -0.20f; a.pathC2Y  =  0.10f;
+
+    Stage b = a;
+    b.posXFrom = a.posXTo;  b.posYFrom = a.posYTo;
+    b.posXTo   = a.posXFrom; b.posYTo  = a.posYFrom;
+    b.pathC1X  = a.pathC2X; b.pathC1Y  = a.pathC2Y;
+    b.pathC2X  = a.pathC1X; b.pathC2Y  = a.pathC1Y;
+
+    for (int i = 0; i <= 20; ++i)
+    {
+        const float p = static_cast<float>(i) / 20.0f;
+
+        float ax, ay, bx, by;
+        EvaluatePath(a, p,        ax, ay);
+        EvaluatePath(b, 1.0f - p, bx, by);
+
+        CheckNear(bx, ax, 1e-5f, "the swapped route retraces the original in X");
+        CheckNear(by, ay, 1e-5f, "the swapped route retraces the original in Y");
+    }
+
+    // Swapping twice must return the original exactly, or repeated presses would
+    // drift the shape.
+    Stage back = b;
+    back.posXFrom = b.posXTo;  back.posYFrom = b.posYTo;
+    back.posXTo   = b.posXFrom; back.posYTo  = b.posYFrom;
+    back.pathC1X  = b.pathC2X; back.pathC1Y  = b.pathC2Y;
+    back.pathC2X  = b.pathC1X; back.pathC2Y  = b.pathC1Y;
+
+    CheckNear(back.posXFrom, a.posXFrom, 1e-6f, "two swaps restore the start");
+    CheckNear(back.posXTo,   a.posXTo,   1e-6f, "two swaps restore the end");
+    CheckNear(back.pathC1X,  a.pathC1X,  1e-6f, "two swaps restore the first handle");
+    CheckNear(back.pathC2X,  a.pathC2X,  1e-6f, "two swaps restore the second handle");
+}
+
 static void TestEndpointsAreExact()
 {
     std::printf("A stage is exactly at its From and To on its own frames\n");
@@ -1925,6 +1972,7 @@ int main()
     TestIsNoOpCoversNewChannels();
     TestStageContextRebuildsTheWhole();
     TestEndpointsAreExact();
+    TestSwappingEndsReversesThePathExactly();
     TestPeakVelocity();
     TestStageMoves();
     TestClipRangeValidation();

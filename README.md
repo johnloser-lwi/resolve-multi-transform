@@ -112,6 +112,7 @@ groups:
     Scale, Scale Y, Position, Rotation, Tilt (X axis), Swivel (Y axis), Opacity
 —  TO (END)  —
     Scale, Scale Y, Position, Rotation, Tilt (X axis), Swivel (Y axis), Opacity
+    Copy FROM to TO, Copy TO to FROM, Swap FROM and TO
 —  EASING  —
     Easing, Ease In, Ease Out, Anticipation, Overshoot
 ```
@@ -121,6 +122,26 @@ interleaved `Scale From / Scale To / Position From / Position To` list.
 
 **Anchor deliberately sits in the timing section**, not in either pose block — a pivot that
 moved between the start and end of a move would make the motion very hard to reason about.
+
+### Moving poses between the two ends
+
+Three buttons below the TO block, because most moves are built by matching one end to the other
+and then changing only what should differ:
+
+- **Copy FROM to TO** — the stage holds still until you change something.
+- **Copy TO to FROM** — handy after posing the end state on screen: copy it back, then pull the
+  start away from it.
+- **Swap FROM and TO** — reverse the move. Turns a fade-in into a fade-out, an intro into an
+  outro.
+
+All seven animated channels move together: Scale, Scale Y, Position, Rotation, Tilt, Swivel and
+Opacity. Swap also trades the **motion path's two handles**, so a bent route keeps its exact
+shape and simply runs the other way — the first handle is an offset from one third along the
+straight line and the second from two thirds, so reversing the line maps each precisely onto the
+other. Swapping twice returns you exactly where you started.
+
+The anchor is not touched: it is shared by both ends by design. Easing is not touched either —
+reversing *what* moves is a separate decision from reversing *how* it accelerates.
 
 ### The base transform — a resting pose
 

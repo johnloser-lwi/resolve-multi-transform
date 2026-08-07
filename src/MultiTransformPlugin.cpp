@@ -184,6 +184,10 @@ private:
     mtx::PresetData  capturePreset(bool wholeEffect) const;
     void             applyStage(int stageIndex, const mtx::PresetStage& s);
     void             applyPreset(const mtx::PresetData& d);
+
+    /** @brief Move poses between a stage's two ends.
+     *  @param mode 0 copies From onto To, 1 copies To onto From, 2 swaps them. */
+    void             transferEnds(int stage, int mode);
     void             savePreset(bool wholeEffect);
     void             loadPreset(bool fitToClip);
     /** The playhead expressed in the units a given stage's frames use. */
@@ -234,6 +238,9 @@ private:
         OFX::PushButtonParam* setStart;
         OFX::PushButtonParam* setEnd;
         OFX::DoubleParam*   duration;
+        OFX::PushButtonParam* copyFromTo;
+        OFX::PushButtonParam* copyToFrom;
+        OFX::PushButtonParam* swapEnds;
         OFX::BooleanParam*  linkScale;
         OFX::DoubleParam*   scaleFrom;
         OFX::DoubleParam*   scaleTo;
@@ -325,6 +332,9 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.setStart      = fetchPushButtonParam(StageParam(kParamSetStart,    i));
         s.setEnd        = fetchPushButtonParam(StageParam(kParamSetEnd,      i));
         s.duration      = fetchDoubleParam  (StageParam(kParamDuration,      i));
+        s.copyFromTo    = fetchPushButtonParam(StageParam(kParamCopyFromTo,  i));
+        s.copyToFrom    = fetchPushButtonParam(StageParam(kParamCopyToFrom,  i));
+        s.swapEnds      = fetchPushButtonParam(StageParam(kParamSwapEnds,    i));
         s.linkScale     = fetchBooleanParam (StageParam(kParamLinkScale,     i));
         s.scaleYFrom    = fetchDoubleParam  (StageParam(kParamScaleYFrom,    i));
         s.scaleYTo      = fetchDoubleParam  (StageParam(kParamScaleYTo,      i));
@@ -677,6 +687,65 @@ void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
     h.bounceStart->setValue(s.bounceStart);
 }
 
+void MultiTransformPlugin::transferEnds(int stage, int mode)
+{
+    StageParamHandles& h = _stage[stage];
+
+    // Every channel that has two ends, listed once. Adding a new animated
+    // property means adding it here too, and forgetting shows up immediately as
+    // a swap that leaves one channel behind.
+    OFX::DoubleParam* pairs[][2] = {
+        { h.scaleFrom,   h.scaleTo   },
+        { h.scaleYFrom,  h.scaleYTo  },
+        { h.rotFrom,     h.rotTo     },
+        { h.tiltXFrom,   h.tiltXTo   },
+        { h.swivelYFrom, h.swivelYTo },
+        { h.opacityFrom, h.opacityTo },
+    };
+
+    const char* label = (mode == 0) ? "Copy FROM to TO"
+                      : (mode == 1) ? "Copy TO to FROM"
+                                    : "Swap FROM and TO";
+    mtx::EditBlock block(this, label);
+
+    for (auto& p : pairs)
+    {
+        const double from = p[0]->getValue();
+        const double to   = p[1]->getValue();
+
+        if      (mode == 0) p[1]->setValue(from);
+        else if (mode == 1) p[0]->setValue(to);
+        else                { p[0]->setValue(to); p[1]->setValue(from); }
+    }
+
+    // Position is a 2D parameter and so cannot join the list above.
+    {
+        double fx = 0.0, fy = 0.0, tx = 0.0, ty = 0.0;
+        h.posFrom->getValue(fx, fy);
+        h.posTo->getValue(tx, ty);
+
+        if      (mode == 0) h.posTo->setValue(fx, fy);
+        else if (mode == 1) h.posFrom->setValue(tx, ty);
+        else                { h.posFrom->setValue(tx, ty); h.posTo->setValue(fx, fy); }
+    }
+
+    // Swapping the ends reverses the route, so the two path handles have to
+    // trade places or a bent path would turn inside out. The first handle is an
+    // offset from one third along the straight line and the second from two
+    // thirds; reversing the line maps each onto the other exactly, so trading
+    // them preserves the drawn shape rather than approximating it.
+    //
+    // A copy is left alone deliberately: it is a change of pose, not of route.
+    if (mode == 2)
+    {
+        double c1x = 0.0, c1y = 0.0, c2x = 0.0, c2y = 0.0;
+        h.pathC1->getValue(c1x, c1y);
+        h.pathC2->getValue(c2x, c2y);
+        h.pathC1->setValue(c2x, c2y);
+        h.pathC2->setValue(c1x, c1y);
+    }
+}
+
 void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
 {
     // One edit block for the whole batch: it is what tells the host an edit
@@ -920,6 +989,9 @@ void MultiTransformPlugin::syncStageVisibility()
         s.duration->setIsSecret(hidden);
         s.anchor->setIsSecret(hidden);
 
+        s.copyFromTo->setIsSecret(hidden);
+        s.copyToFrom->setIsSecret(hidden);
+        s.swapEnds->setIsSecret(hidden);
         s.linkScale->setIsSecret(hidden);
         s.scaleFrom->setIsSecret(hidden);
         s.posFrom->setIsSecret(hidden);
@@ -1145,6 +1217,9 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
             updateDuration(i);
             return;
         }
+        if (p_ParamName == StageParam(kParamCopyFromTo, i)) { transferEnds(i, 0); return; }
+        if (p_ParamName == StageParam(kParamCopyToFrom, i)) { transferEnds(i, 1); return; }
+        if (p_ParamName == StageParam(kParamSwapEnds,   i)) { transferEnds(i, 2); return; }
         if (p_ParamName == StageParam(kParamLinkScale, i))
         {
             bool linked = true;
@@ -1546,6 +1621,27 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                      "timing and easing, so a fade can be staggered against the movement.",
                      100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
     }
+
+    // Moving poses between the two ends. Building a move usually starts by
+    // matching one end to the other and then changing only what should differ,
+    // which is otherwise seven fields retyped by hand.
+    PushButtonParamDescriptor* copyFwd = desc.definePushButtonParam(StageParam(kParamCopyFromTo, i));
+    copyFwd->setLabels("Copy FROM to TO", "From > To", "Copy FROM to TO");
+    copyFwd->setHint("Overwrite the TO pose with the FROM pose, leaving the stage holding still "
+                     "until you change one of them.");
+    page->addChild(*copyFwd);
+
+    PushButtonParamDescriptor* copyBack = desc.definePushButtonParam(StageParam(kParamCopyToFrom, i));
+    copyBack->setLabels("Copy TO to FROM", "To > From", "Copy TO to FROM");
+    copyBack->setHint("Overwrite the FROM pose with the TO pose. Useful after posing the end "
+                      "state on screen: copy it back, then pull the start away from it.");
+    page->addChild(*copyBack);
+
+    PushButtonParamDescriptor* swapEnds = desc.definePushButtonParam(StageParam(kParamSwapEnds, i));
+    swapEnds->setLabels("Swap FROM and TO", "Swap", "Swap FROM and TO");
+    swapEnds->setHint("Reverse the move. The motion path's two handles swap with it, so a bent "
+                      "route keeps its exact shape and simply runs the other way.");
+    page->addChild(*swapEnds);
 
     // --- Motion path ---
     // The path belongs to the stage as a whole rather than to either end, since
