@@ -530,6 +530,30 @@ frame sits on the curve.
 Everything written by the overlay lands in the ordinary parameters, so the Inspector and the
 overlay always agree, and every edit is undoable in the normal way.
 
+### Hold Shift to constrain a drag
+
+| Drag | With Shift |
+|---|---|
+| Move the gizmo | Locks to one axis |
+| Gizmo corner, scale **unlinked** | Changes only the axis you are pulling |
+| Rotate | Snaps to 15° |
+| Anchor point | Locks to one axis |
+| Motion path handle | Locks to one axis |
+| Curve editor handle | Locks to timing *or* to overshoot, not both |
+
+The axis is chosen from the drag as it goes, not fixed when Shift goes down, so you can press and
+release Shift mid-drag. The gizmo locks to the **stage's own** axes rather than the screen's — on
+a rotated stage that is the axis the number being written actually refers to.
+
+The curve editor's two axes are two separate questions: horizontal is the timing (Ease In / Ease
+Out), vertical is the amount of anticipation or overshoot. Locking one is the only practical way
+to adjust either without disturbing the other.
+
+**This one depends on Resolve.** OFX pen events carry no modifier state at all — `PenArgs` has a
+position and a pressure and nothing else — so Shift has to be tracked from separate key events.
+If Resolve does not deliver those to plugin overlays, Shift simply does nothing and dragging
+behaves exactly as it did before.
+
 ### Known limitation
 
 The panels are positioned relative to the **image**, not the viewport, so if you zoom deep into

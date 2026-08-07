@@ -187,6 +187,16 @@ void CurveWidget::writeHandle(const OverlayContext& c, int which, const OfxPoint
     }
 }
 
+OfxPointD CurveWidget::constrain(const OverlayContext& c, const OfxPointD& unit) const
+{
+    if (!c.shiftHeld) return unit;
+
+    double dx = unit.x - _grabUnit.x;
+    double dy = unit.y - _grabUnit.y;
+    LockToAxis(dx, dy);
+    return { _grabUnit.x + dx, _grabUnit.y + dy };
+}
+
 bool CurveWidget::penDown(const OverlayContext& c, const OfxPointD& p)
 {
     if (!Contains(_rect, p)) return false;
@@ -199,14 +209,21 @@ bool CurveWidget::penDown(const OverlayContext& c, const OfxPointD& p)
     else if (NearPoint(c, p, p2.x, p2.y, 10.0)) _drag = kDragP2;
     else                                        _drag = kNone;
 
-    if (_drag != kNone) writeHandle(c, _drag, panelToUnit(p));
+    if (_drag != kNone)
+    {
+        // Recorded before the handle is snapped to the cursor below, so the
+        // lock is measured from where the handle actually was.
+        _grabUnit = (_drag == kDragP1) ? OfxPointD{ e.x1, e.y1 }
+                                       : OfxPointD{ e.x2, e.y2 };
+        writeHandle(c, _drag, constrain(c, panelToUnit(p)));
+    }
     return true;
 }
 
 bool CurveWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
 {
     if (_drag == kNone) return false;
-    writeHandle(c, _drag, panelToUnit(p));
+    writeHandle(c, _drag, constrain(c, panelToUnit(p)));
     return true;
 }
 

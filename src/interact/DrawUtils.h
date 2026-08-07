@@ -9,6 +9,7 @@
 // that wrong is the classic overlay bug where handles become unusably tiny when
 // you zoom out.
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -72,6 +73,11 @@ struct OverlayContext
     /// it out of the way.
     bool showCurve   = true;
 
+    /// Shift held. OFX's pen actions carry no modifier state at all -- PenArgs
+    /// has position and pressure and nothing else -- so this is tracked from
+    /// keyDown/keyUp and folded in here rather than read off the drag.
+    bool shiftHeld   = false;
+
     /// The animation as the renderer will see it, read straight from the
     /// parameters, so the overlay can never show something different.
     AnimParams anim = AnimParams::Default();
@@ -83,6 +89,18 @@ struct OverlayContext
     double rodWidth()  const { return rod.x2 - rod.x1; }
     double rodHeight() const { return rod.y2 - rod.y1; }
 };
+
+/** @brief Drop the smaller component of a drag, locking it to one axis.
+ *
+ * Decided from the drag so far rather than latched when Shift went down: the
+ * gesture is "hold Shift *while* dragging", so pressing and releasing it
+ * mid-drag has to make the constraint come and go.
+ */
+inline void LockToAxis(double& dx, double& dy)
+{
+    if (std::fabs(dx) >= std::fabs(dy)) dy = 0.0;
+    else                                dx = 0.0;
+}
 
 // --- Primitive helpers -------------------------------------------------------
 

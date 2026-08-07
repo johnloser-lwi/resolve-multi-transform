@@ -152,6 +152,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.activeStage = GetChoice(_effect, kParamActiveStage);
     out.editTo      = GetChoice(_effect, kParamEditTarget) != 0;
     out.showCurve   = GetBool(_effect, kParamShowCurve, time);
+    out.shiftHeld   = _shiftHeld;
 
     if (out.activeStage >= out.stageCount) out.activeStage = out.stageCount - 1;
     if (out.activeStage < 0)               out.activeStage = 0;
@@ -365,6 +366,34 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
         return true;
     }
     return false;
+}
+
+// --- Modifier tracking -------------------------------------------------------
+
+bool MultiTransformInteract::isShift(int keySymbol)
+{
+    return keySymbol == kOfxKey_Shift_L || keySymbol == kOfxKey_Shift_R;
+}
+
+bool MultiTransformInteract::keyDown(const OFX::KeyArgs& args)
+{
+    if (isShift(args.keySymbol)) _shiftHeld = true;
+
+    // Never trapped. Returning true would block the key from every other
+    // interact and from the host, so a plugin that merely wants to *observe*
+    // Shift would swallow the host's own Shift shortcuts along with it.
+    return false;
+}
+
+bool MultiTransformInteract::keyUp(const OFX::KeyArgs& args)
+{
+    if (isShift(args.keySymbol)) _shiftHeld = false;
+    return false;
+}
+
+void MultiTransformInteract::loseFocus(const OFX::FocusArgs& /*args*/)
+{
+    _shiftHeld = false;
 }
 
 // --- Interact actions --------------------------------------------------------

@@ -104,6 +104,18 @@ private:
     OfxPointD panelToUnit(const OfxPointD& p) const;
     void      writeHandle(const OverlayContext& c, int which, const OfxPointD& unit);
 
+    /** @brief Apply the Shift axis lock, relative to where the handle started.
+     *
+     * On this panel the two axes are two different questions: horizontal is the
+     * timing (Ease In / Ease Out) and vertical is the amount of anticipation or
+     * overshoot. Locking one lets either be adjusted without disturbing the
+     * other, which is otherwise almost impossible to do by hand.
+     */
+    OfxPointD constrain(const OverlayContext& c, const OfxPointD& unit) const;
+
+    /// The dragged handle's position when the drag began, in unit coordinates.
+    OfxPointD _grabUnit{};
+
     OfxRectD _rect{};
     OfxRectD _plot{};
     double   _yMin = kYMinDefault;
@@ -127,6 +139,11 @@ public:
 
 private:
     enum DragMode { kNone = 0, kDragC1, kDragC2 };
+
+    /// Where the grabbed handle sat when the drag began, in normalised units.
+    /// Shift locks movement relative to this rather than to the cursor, so the
+    /// handle slides along one axis instead of jumping to the pointer.
+    double _grabNx = 0.0, _grabNy = 0.0;
 
     /** Clip time of the stage's start or end. Every mapping below is pinned to
      *  one of these two, never to the playhead: the route the image travels is

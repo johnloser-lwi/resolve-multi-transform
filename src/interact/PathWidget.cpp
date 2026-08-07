@@ -174,6 +174,10 @@ bool PathWidget::penDown(const OverlayContext& c, const OfxPointD& p)
     else if (NearPoint(c, p, h2.x, h2.y, kGrabPx)) _drag = kDragC2;
     else                                           return false;   // fall through to the gizmo
 
+    // The handle's own starting place, for Shift to constrain against.
+    _grabNx = (_drag == kDragC1) ? c1x : c2x;
+    _grabNy = (_drag == kDragC1) ? c1y : c2y;
+
     return true;
 }
 
@@ -187,6 +191,15 @@ bool PathWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
     // from the cursor the moment another stage is doing anything.
     double nx = 0.0, ny = 0.0;
     toNormalised(c, p, endpointTime(c, _drag == kDragC2), nx, ny);
+
+    if (c.shiftHeld)
+    {
+        double dx = nx - _grabNx;
+        double dy = ny - _grabNy;
+        LockToAxis(dx, dy);
+        nx = _grabNx + dx;
+        ny = _grabNy + dy;
+    }
 
     // Stored as an offset from the straight-line position, so the handle stays
     // put relative to the path when From or To is moved afterwards.

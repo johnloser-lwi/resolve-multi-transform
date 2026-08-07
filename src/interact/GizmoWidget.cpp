@@ -11,6 +11,14 @@ namespace {
 constexpr double kRotateArmPx = 34.0;
 
 double Clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/// Nearest multiple of @p step. Used to snap rotation to tidy angles.
+double SnapTo(double v, double step)
+{
+    return std::floor(v / step + 0.5) * step;
+}
+
+constexpr double kRotateSnapDegrees = 15.0;
 } // namespace
 
 void GizmoWidget::layout(const OverlayContext& /*c*/) { }
@@ -300,8 +308,16 @@ bool GizmoWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
     {
         case kDragMove:
         {
-            pose.posX = _grabPose.posX + (q.x - _grabPoint.x) / (W > 1e-9 ? W : 1.0);
-            pose.posY = _grabPose.posY + (q.y - _grabPoint.y) / (H > 1e-9 ? H : 1.0);
+            double dx = q.x - _grabPoint.x;
+            double dy = q.y - _grabPoint.y;
+
+            // Constrained in the stage's own axes, not the screen's, so a
+            // rotated stage locks along its own edges -- which is the axis the
+            // number being written actually means.
+            if (c.shiftHeld) LockToAxis(dx, dy);
+
+            pose.posX = _grabPose.posX + dx / (W > 1e-9 ? W : 1.0);
+            pose.posY = _grabPose.posY + dy / (H > 1e-9 ? H : 1.0);
             break;
         }
         case kDragScale:
@@ -333,11 +349,21 @@ bool GizmoWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
                 const double cx = dx * ca - dy * sa;
                 const double cy = dx * sa + dy * ca;
 
+                // With Shift, only the axis the drag favours changes, so one
+                // side can be stretched without nudging the other.
+                bool doX = true, doY = true;
+                if (c.shiftHeld)
+                {
+                    const double mx = std::fabs(cx - gx);
+                    const double my = std::fabs(cy - gy);
+                    if (mx >= my) doY = false; else doX = false;
+                }
+
                 // A near-zero grab offset gives no usable ratio -- leave that axis
                 // alone rather than dividing by it and flinging the scale away.
-                if (std::fabs(gx) > 1e-6)
+                if (doX && std::fabs(gx) > 1e-6)
                     pose.scale  = Clamp(_grabPose.scale  * (cx / gx), 0.001, 100.0);
-                if (std::fabs(gy) > 1e-6)
+                if (doY && std::fabs(gy) > 1e-6)
                     pose.scaleY = Clamp(_grabPose.scaleY * (cy / gy), 0.001, 100.0);
             }
             break;
@@ -348,6 +374,11 @@ bool GizmoWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
             const double dy = q.y - _anchorLocal.y;
             const double a  = std::atan2(dy, dx);
             pose.rot = _grabPose.rot + (a - _grabAngle) * 180.0 / kPi;
+
+            // Rotation has no axes to lock, so Shift snaps to tidy angles
+            // instead -- the same gesture, the same intent, and 45 or 90 degrees
+            // by hand is otherwise guesswork.
+            if (c.shiftHeld) pose.rot = SnapTo(pose.rot, kRotateSnapDegrees);
             break;
         }
         case kDragAnchor:
@@ -360,8 +391,23 @@ bool GizmoWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
             const Mat3 inv = Invert(poseMatrix(c, _grabPose));
             float sxp, syp;
             inv.Apply(static_cast<float>(q.x), static_cast<float>(q.y), sxp, syp);
-            pose.anchorX = Clamp(sxp / (W > 1e-9 ? W : 1.0), -2.0, 3.0);
-            pose.anchorY = Clamp(syp / (H > 1e-9 ? H : 1.0), -2.0, 3.0);
+
+            double ax = sxp / (W > 1e-9 ? W : 1.0);
+            double ay = syp / (H > 1e-9 ? H : 1.0);
+
+            if (c.shiftHeld)
+            {
+                // Locked relative to where the anchor started, so Shift slides
+                // it along one axis rather than snapping it to the grab point.
+                double dx = ax - _grabPose.anchorX;
+                double dy = ay - _grabPose.anchorY;
+                LockToAxis(dx, dy);
+                ax = _grabPose.anchorX + dx;
+                ay = _grabPose.anchorY + dy;
+            }
+
+            pose.anchorX = Clamp(ax, -2.0, 3.0);
+            pose.anchorY = Clamp(ay, -2.0, 3.0);
             break;
         }
         default: return false;

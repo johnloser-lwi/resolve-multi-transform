@@ -27,7 +27,14 @@ public:
     bool penMotion(const OFX::PenArgs& args) override;
     bool penUp(const OFX::PenArgs& args) override;
 
+    // Shift-to-constrain. OFX gives pen actions no modifier state, so the only
+    // way to know Shift is down is to watch the key events and remember.
+    bool keyDown(const OFX::KeyArgs& args) override;
+    bool keyUp(const OFX::KeyArgs& args) override;
+    void loseFocus(const OFX::FocusArgs& args) override;
+
 private:
+    static bool isShift(int keySymbol);
     /** Snapshot the parameters and viewport for this event.
      *  Never throws: an exception escaping into the host mid-draw is worse than
      *  a frame without an overlay. */
@@ -52,6 +59,11 @@ private:
 
     /// Widget that claimed the current drag, so motion/up go to the same place.
     Widget* _captured = nullptr;
+
+    /// Shift state, maintained across events. Cleared on focus loss: a host that
+    /// delivers the press but takes focus away before the release would
+    /// otherwise leave it stuck on for good.
+    bool _shiftHeld = false;
 
     /// Whether a parameter edit block is currently open for that drag. The
     /// block must be closed exactly once, including when a drag is abandoned
