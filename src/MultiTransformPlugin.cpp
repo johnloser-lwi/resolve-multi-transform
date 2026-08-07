@@ -230,11 +230,13 @@ private:
 
     struct StageParamHandles
     {
-        OFX::StringParam*   lblTiming;
-        OFX::StringParam*   lblFrom;
-        OFX::StringParam*   lblTo;
-        OFX::StringParam*   lblEasing;
-        OFX::StringParam*   lblPath;
+        // Section groups. Hidden alongside their contents, so an inactive stage
+        // leaves no empty headers behind.
+        OFX::GroupParam*    grpTiming;
+        OFX::GroupParam*    grpFrom;
+        OFX::GroupParam*    grpTo;
+        OFX::GroupParam*    grpEasing;
+        OFX::GroupParam*    grpPath;
         OFX::Double2DParam* pathC1;
         OFX::Double2DParam* pathC2;
         OFX::PushButtonParam* pathReset;
@@ -325,11 +327,11 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     for (int i = 0; i < kMaxStages; ++i)
     {
         StageParamHandles& s = _stage[i];
-        s.lblTiming     = fetchStringParam  (StageParam(kParamLabelTiming,   i));
-        s.lblFrom       = fetchStringParam  (StageParam(kParamLabelFrom,     i));
-        s.lblTo         = fetchStringParam  (StageParam(kParamLabelTo,       i));
-        s.lblEasing     = fetchStringParam  (StageParam(kParamLabelEasing,   i));
-        s.lblPath       = fetchStringParam  (StageParam(kParamLabelPath,     i));
+        s.grpTiming     = fetchGroupParam   (StageParam(kParamGroupTiming,   i));
+        s.grpFrom       = fetchGroupParam   (StageParam(kParamGroupFrom,     i));
+        s.grpTo         = fetchGroupParam   (StageParam(kParamGroupTo,       i));
+        s.grpEasing     = fetchGroupParam   (StageParam(kParamGroupEasing,   i));
+        s.grpPath       = fetchGroupParam   (StageParam(kParamGroupPath,     i));
         s.pathC1        = fetchDouble2DParam(StageParam(kParamPathC1,        i));
         s.pathC2        = fetchDouble2DParam(StageParam(kParamPathC2,        i));
         s.pathReset     = fetchPushButtonParam(StageParam(kParamPathReset,   i));
@@ -993,11 +995,14 @@ void MultiTransformPlugin::syncStageVisibility()
         const bool hidden = (i != active);
         StageParamHandles& s = _stage[i];
 
-        s.lblTiming->setIsSecret(hidden);
-        s.lblFrom->setIsSecret(hidden);
-        s.lblTo->setIsSecret(hidden);
-        s.lblEasing->setIsSecret(hidden);
-        s.lblPath->setIsSecret(hidden);
+        // The group headers as well as their contents. Hiding only the contents
+        // would leave four empty section headers per inactive stage, which is
+        // worse than the flat list this replaced.
+        s.grpTiming->setIsSecret(hidden);
+        s.grpFrom->setIsSecret(hidden);
+        s.grpTo->setIsSecret(hidden);
+        s.grpEasing->setIsSecret(hidden);
+        s.grpPath->setIsSecret(hidden);
         s.pathC1->setIsSecret(hidden);
         s.pathC2->setIsSecret(hidden);
         s.pathReset->setIsSecret(hidden);
@@ -1524,35 +1529,43 @@ Double2DParamDescriptor* DefineDouble2D(OFX::ImageEffectDescriptor& desc, PagePa
  * disclosure arrow, and four stages' worth of them turned the Inspector into a
  * wall of things to click open. A label just separates the controls beneath it.
  */
-StringParamDescriptor* DefineDivider(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page,
-                                     const std::string& name, const std::string& text)
+GroupParamDescriptor* DefineSection(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page,
+                                    const std::string& name, const std::string& label,
+                                    const std::string& hint = std::string())
 {
-    StringParamDescriptor* p = desc.defineStringParam(name);
-    p->setStringType(eStringTypeLabel);
-    p->setDefault(text);
-    p->setLabels("", "", "");
-    p->setEnabled(false);
-    p->setIsPersistant(false);   // derived decoration, nothing to save
-    page->addChild(*p);
-    return p;
+    GroupParamDescriptor* g = desc.defineGroupParam(name);
+    g->setLabels(label, label, label);
+    if (!hint.empty()) g->setHint(hint);
+
+    // Collapsed by default. One active stage puts about seventy rows in the
+    // Inspector, and the great majority of them are set once and then left --
+    // a base pose, an easing curve, a preset folder. Opening a section to reach
+    // those is cheaper than scrolling past them every time.
+    g->setOpen(false);
+
+    page->addChild(*g);
+    return g;
 }
 
 void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, int i)
 {
     const std::string idx = std::to_string(i + 1);
 
-    // Only one stage is ever visible at a time, so the controls sit directly on
-    // the page divided by headings rather than inside nested collapsible groups.
+    // Only one stage is ever visible at a time: the other three stages have
+    // every parameter AND every group hidden, so the Inspector shows one
+    // stage's five sections rather than twenty.
 
     // --- Timing ---
-    DefineDivider(desc, page, StageParam(kParamLabelTiming, i),
-                  "\xE2\x80\x94  STAGE " + idx + " : TIMING  \xE2\x80\x94");
+    GroupParamDescriptor* gTiming = DefineSection(desc, page, StageParam(kParamGroupTiming, i),
+        "Stage " + idx + " \xE2\x80\x94 Timing",
+        "When this stage runs, and what its frame numbers are measured from.");
 
     BooleanParamDescriptor* en = desc.defineBooleanParam(StageParam(kParamEnabled, i));
     en->setLabels("Enabled", "Enabled", "Enabled");
     en->setHint("Include this stage in the combined transform. Stages COMBINE rather than "
                 "replace: two stages each scaling 1.0 to 1.5 give 2.25x overall.");
     en->setDefault(i == 0);
+    en->setParent(*gTiming);
     page->addChild(*en);
     InvalidatesCache(en);
 
@@ -1571,27 +1584,30 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     anchor->appendOption("Timeline (absolute)");
     anchor->appendOption("Stretch (% of clip)");
     anchor->setDefault(kAnchorClipStart);
+    anchor->setParent(*gTiming);
     page->addChild(*anchor);
     InvalidatesCache(anchor);
 
     PushButtonParamDescriptor* setStart = desc.definePushButtonParam(StageParam(kParamSetStart, i));
     setStart->setLabels("Set Start to Playhead", "Set Start", "Set Start to Playhead");
     setStart->setHint("Park the playhead where this stage should begin and click.");
+    setStart->setParent(*gTiming);
     page->addChild(*setStart);
 
     PushButtonParamDescriptor* setEnd = desc.definePushButtonParam(StageParam(kParamSetEnd, i));
     setEnd->setLabels("Set End to Playhead", "Set End", "Set End to Playhead");
     setEnd->setHint("Park the playhead where this stage should finish and click.");
+    setEnd->setParent(*gTiming);
     page->addChild(*setEnd);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamStartFrame, i), "Start Frame",
+    DefineDouble(desc, page, gTiming, StageParam(kParamStartFrame, i), "Start Frame",
                  "Frames from the START OF THE CLIP, not from the timeline: 0 is the clip's "
                  "first frame. Move or trim the clip and the animation goes with it. "
                  "Staggering is just giving stages different start frames: 0 here and 6 on "
                  "the next stage is a six-frame stagger.",
                  0.0, -100000.0, 1e6, 0.0, 240.0, 1.0);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamEndFrame, i), "End Frame",
+    DefineDouble(desc, page, gTiming, StageParam(kParamEndFrame, i), "End Frame",
                  "Frames from the start of the clip. Stages may differ in length as well as "
                  "in start time.",
                  24.0, -100000.0, 1e6, 0.0, 240.0, 1.0);
@@ -1599,13 +1615,13 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // Duration is a derived read-out, so it must not claim to invalidate
     // anything: Start and End already do, and this would only purge the cache a
     // second time for a value that changes no pixels.
-    DefineDouble(desc, page, nullptr, StageParam(kParamDuration, i), "Duration (frames)",
+    DefineDouble(desc, page, gTiming, StageParam(kParamDuration, i), "Duration (frames)",
                  "End Frame minus Start Frame. Calculated automatically -- shown for "
                  "reference, not editable.",
                  24.0, -1e9, 1e9, 0.0, 240.0, 1.0)
         ->setCacheInvalidation(eCacheInvalidateValueChange);
 
-    DefineDouble2D(desc, page, nullptr, StageParam(kParamAnchor, i), "Anchor",
+    DefineDouble2D(desc, page, gTiming, StageParam(kParamAnchor, i), "Anchor",
                    "Point that scale and rotation pivot around. 0.5, 0.5 is the image centre. "
                    "Shared by both ends -- a pivot that moved mid-move would make the motion "
                    "impossible to reason about.",
@@ -1618,6 +1634,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     link->setHint("Scale both axes together. Turn this off to squash or stretch one axis -- "
                   "Scale Y then appears alongside Scale X at each end.");
     link->setDefault(true);
+    link->setParent(*gTiming);
     page->addChild(*link);
     InvalidatesCache(link);
 
@@ -1625,59 +1642,65 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // Split so a pose reads top to bottom in one block, instead of picking every
     // other row out of an interleaved "Scale From / Scale To / Position From..."
     // list.
-    struct EndSpec { const char* labelName; const char* heading; bool isTo; };
+    struct EndSpec { const char* groupName; const char* heading; bool isTo; };
     const EndSpec ends[2] = {
-        { kParamLabelFrom, "FROM (START)", false },
-        { kParamLabelTo,   "TO (END)",     true  }
+        { kParamGroupFrom, "From (start)", false },
+        { kParamGroupTo,   "To (end)",     true  }
     };
+
+    GroupParamDescriptor* gTo = nullptr;
 
     for (const EndSpec& end : ends)
     {
-        DefineDivider(desc, page, StageParam(end.labelName, i),
-                      std::string("\xE2\x80\x94  ") + end.heading + "  \xE2\x80\x94");
+        GroupParamDescriptor* g = DefineSection(desc, page, StageParam(end.groupName, i),
+            "Stage " + idx + " \xE2\x80\x94 " + end.heading,
+            end.isTo ? "The pose this stage animates to."
+                     : "The pose this stage animates from.");
 
-        DefineDouble(desc, page, nullptr,
+        DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamScaleTo : kParamScaleFrom, i), "Scale",
                      "Scale multiplier. Drives both axes while Link Scale X/Y is on; "
                      "the X axis alone once it is off.",
                      1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
 
-        DefineDouble(desc, page, nullptr,
+        DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamScaleYTo : kParamScaleYFrom, i), "Scale Y",
                      "Vertical scale multiplier. Only used when Link Scale X/Y is off.",
                      1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
 
-        DefineDouble2D(desc, page, nullptr,
+        DefineDouble2D(desc, page, g,
                        StageParam(end.isTo ? kParamPosTo : kParamPosFrom, i), "Position",
                        "Offset, normalised: 1.0 is one full image width/height.", 0.0, 0.0);
 
-        DefineDouble(desc, page, nullptr,
+        DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamRotTo : kParamRotFrom, i), "Rotation",
                      "Rotation in degrees.", 0.0, -100000.0, 100000.0, -360.0, 360.0, 1.0);
 
         // Orthographic, not perspective: an axis rotation reads as a squash,
         // because nothing foreshortens and parallel edges stay parallel. Past 90
         // degrees the image mirrors, which is what the back of a card looks like.
-        DefineDouble(desc, page, nullptr,
+        DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamTiltXTo : kParamTiltXFrom, i), "Tilt (X axis)",
                      "Pseudo-3D rotation about the horizontal axis, in degrees -- the image "
                      "tips towards or away from you. Orthographic, so it squashes vertically "
                      "rather than converging in perspective. 90 is edge-on and invisible.",
                      0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
 
-        DefineDouble(desc, page, nullptr,
+        DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamSwivelYTo : kParamSwivelYFrom, i), "Swivel (Y axis)",
                      "Pseudo-3D rotation about the vertical axis, in degrees -- a card flip. "
                      "Animate -90 to 0 for a swing-in. 90 is edge-on and invisible; beyond it "
                      "the image mirrors, as the back of a card would.",
                      0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
 
-        DefineDouble(desc, page, nullptr,
+        DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamOpacityTo : kParamOpacityFrom, i), "Opacity",
                      "Fade level as a percentage. Set From to 0 and To to 100 for a fade in, "
                      "or the reverse for a fade out. Opacity animates on this stage's own "
                      "timing and easing, so a fade can be staggered against the movement.",
                      100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
+
+        if (end.isTo) gTo = g;
     }
 
     // Moving poses between the two ends. Building a move usually starts by
@@ -1687,44 +1710,50 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     copyFwd->setLabels("Copy FROM to TO", "From > To", "Copy FROM to TO");
     copyFwd->setHint("Overwrite the TO pose with the FROM pose, leaving the stage holding still "
                      "until you change one of them.");
+    copyFwd->setParent(*gTo);
     page->addChild(*copyFwd);
 
     PushButtonParamDescriptor* copyBack = desc.definePushButtonParam(StageParam(kParamCopyToFrom, i));
     copyBack->setLabels("Copy TO to FROM", "To > From", "Copy TO to FROM");
     copyBack->setHint("Overwrite the FROM pose with the TO pose. Useful after posing the end "
                       "state on screen: copy it back, then pull the start away from it.");
+    copyBack->setParent(*gTo);
     page->addChild(*copyBack);
 
     PushButtonParamDescriptor* swapEnds = desc.definePushButtonParam(StageParam(kParamSwapEnds, i));
     swapEnds->setLabels("Swap FROM and TO", "Swap", "Swap FROM and TO");
     swapEnds->setHint("Reverse the move. The motion path's two handles swap with it, so a bent "
                       "route keeps its exact shape and simply runs the other way.");
+    swapEnds->setParent(*gTo);
     page->addChild(*swapEnds);
 
     // --- Motion path ---
     // The path belongs to the stage as a whole rather than to either end, since
     // it is the route between them.
-    DefineDivider(desc, page, StageParam(kParamLabelPath, i),
-                  "\xE2\x80\x94  MOTION PATH  \xE2\x80\x94");
+    GroupParamDescriptor* gPath = DefineSection(desc, page, StageParam(kParamGroupPath, i),
+        "Stage " + idx + " \xE2\x80\x94 Motion Path",
+        "The route between the two poses. Far easier to drag in the viewer than to type.");
 
-    DefineDouble2D(desc, page, nullptr, StageParam(kParamPathC1, i), "Path Handle 1",
+    DefineDouble2D(desc, page, gPath, StageParam(kParamPathC1, i), "Path Handle 1",
                    "Bends the first part of the trajectory away from a straight line. Easier "
                    "to drag on screen than to type: enable Open FX Overlay and pull the "
                    "handles on the dotted path. 0,0 is a straight line.",
                    0.0, 0.0);
 
-    DefineDouble2D(desc, page, nullptr, StageParam(kParamPathC2, i), "Path Handle 2",
+    DefineDouble2D(desc, page, gPath, StageParam(kParamPathC2, i), "Path Handle 2",
                    "Bends the second part of the trajectory. 0,0 is a straight line.",
                    0.0, 0.0);
 
     PushButtonParamDescriptor* pathReset = desc.definePushButtonParam(StageParam(kParamPathReset, i));
     pathReset->setLabels("Straighten Path", "Straighten", "Straighten Path");
     pathReset->setHint("Reset both handles, returning the motion to a straight line.");
+    pathReset->setParent(*gPath);
     page->addChild(*pathReset);
 
     // --- Easing ---
-    DefineDivider(desc, page, StageParam(kParamLabelEasing, i),
-                  "\xE2\x80\x94  EASING  \xE2\x80\x94");
+    GroupParamDescriptor* gEase = DefineSection(desc, page, StageParam(kParamGroupEasing, i),
+        "Stage " + idx + " \xE2\x80\x94 Easing",
+        "How the move accelerates. The curve editor in the viewer overlay edits the same values.");
 
     ChoiceParamDescriptor* ease = desc.defineChoiceParam(StageParam(kParamEasingPreset, i));
     ease->setLabels("Easing", "Easing", "Easing");
@@ -1739,19 +1768,20 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     ease->appendOption("Bounce");
     ease->appendOption("Custom");
     ease->setDefault(kEasingSmooth);
+    ease->setParent(*gEase);
     page->addChild(*ease);
     InvalidatesCache(ease);
 
     // These four are the actual curve, and are always editable -- a preset is a
     // starting point, never a locked choice. Raw bezier handles (X1/Y1/X2/Y2)
     // were unusable as a UI: nobody thinks in terms of "X1 = 0.42".
-    DefineDouble(desc, page, nullptr, StageParam(kParamEaseIn, i), "Ease In",
+    DefineDouble(desc, page, gEase, StageParam(kParamEaseIn, i), "Ease In",
                  "Damping at the start. 0 leaves at full speed; 100 creeps away very "
                  "gradually. Raise this to soften the beginning of the move. Setting both "
                  "Ease In and Ease Out to 100 gives the steepest S-curve available.",
                  42.0, 0.0, 100.0, 0.0, 100.0, 1.0);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamEaseOut, i), "Ease Out",
+    DefineDouble(desc, page, gEase, StageParam(kParamEaseOut, i), "Ease Out",
                  "Damping at the end. 0 stops dead; 100 glides to a halt. This is the one "
                  "to reach for when a move feels like it arrives too abruptly. Still applies "
                  "when a Bounce is active: it shapes the approach into the landing.",
@@ -1761,13 +1791,13 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // curve handle past the opposite rail, which is how the steep, snappy
     // curves are made. Clamping these to positive-only left half the curve
     // space unreachable.
-    DefineDouble(desc, page, nullptr, StageParam(kParamAnticipation, i), "Anticipation",
+    DefineDouble(desc, page, gEase, StageParam(kParamAnticipation, i), "Anticipation",
                  "Pulls back before moving, the way a character crouches before jumping. "
                  "0 is off. Negative values do the opposite: the move leaves hard and fast, "
                  "which steepens the start.",
                  0.0, -200.0, 200.0, -100.0, 100.0, 1.0);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamOvershoot, i), "Overshoot",
+    DefineDouble(desc, page, gEase, StageParam(kParamOvershoot, i), "Overshoot",
                  "Travels past the target and settles back; around 80 gives the classic "
                  "springy 'back' ease. 0 is off. Negative values undershoot instead, "
                  "creeping up to the target from below. This is a single smooth overshoot -- "
@@ -1787,9 +1817,10 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     bounce->appendOption("Ball (rebounds off target)");
     bounce->setDefault(kBounceNone);
     InvalidatesCache(bounce);
+    bounce->setParent(*gEase);
     page->addChild(*bounce);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamBounceAmount, i), "Bounce Amount",
+    DefineDouble(desc, page, gEase, StageParam(kParamBounceAmount, i), "Bounce Amount",
                  "How far the first rebound travels, as a fraction of the whole move. 0 is no "
                  "bounce at all. Negative values flip which way it bounces: a spring "
                  "undershoots before it overshoots, and a ball rebounds off the near side of "
@@ -1798,17 +1829,17 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                  "exactly on its target value.",
                  35.0, -100.0, 100.0, -100.0, 100.0, 1.0);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamBounceCount, i), "Bounces",
+    DefineDouble(desc, page, gEase, StageParam(kParamBounceCount, i), "Bounces",
                  "How many rebounds happen before the move settles. Fractional values are "
                  "allowed and are useful for landing mid-rebound.",
                  3.0, 0.0, 12.0, 1.0, 8.0, 0.5);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamBounceDamping, i), "Bounce Damping",
+    DefineDouble(desc, page, gEase, StageParam(kParamBounceDamping, i), "Bounce Damping",
                  "How quickly the rebounds shrink. 0 keeps them all the same size, which "
                  "reads as mechanical; higher values decay them away for a natural settle.",
                  45.0, 0.0, 100.0, 0.0, 100.0, 1.0);
 
-    DefineDouble(desc, page, nullptr, StageParam(kParamBounceStart, i), "Bounce Start",
+    DefineDouble(desc, page, gEase, StageParam(kParamBounceStart, i), "Bounce Start",
                  "Where in the stage the move lands and the bouncing begins, as a percentage "
                  "of its duration. The easing curve is compressed into the part before this, "
                  "and everything after it is the bounce -- so lower values give a quicker "
@@ -1853,6 +1884,11 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     active->setDefault(0);
     page->addChild(*active);
 
+    GroupParamDescriptor* gOverlay = DefineSection(p_Desc, page, kParamGroupOverlay,
+        "Viewer Overlay",
+        "State shared with the on-screen controls. Both of these have a button in the overlay "
+        "itself, so they are here only for when the overlay is switched off.");
+
     ChoiceParamDescriptor* target = p_Desc.defineChoiceParam(kParamEditTarget);
     target->setLabels("Gizmo Edits", "Gizmo Edits", "Gizmo Edits");
     target->setHint("Whether the on-screen gizmo poses the start or the end of the active "
@@ -1860,6 +1896,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     target->appendOption("From (start)");
     target->appendOption("To (end)");
     target->setDefault(1);
+    target->setParent(*gOverlay);
     page->addChild(*target);
 
     BooleanParamDescriptor* showCurve = p_Desc.defineBooleanParam(kParamShowCurve);
@@ -1869,6 +1906,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                        "of the image and takes clicks before the motion path does. Also "
                        "toggled by the CURVE button in the overlay.");
     showCurve->setDefault(true);
+    showCurve->setParent(*gOverlay);
     page->addChild(*showCurve);
 
     // --- Base transform ---
@@ -1877,54 +1915,57 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     // somewhere at some size without spending a whole stage on a From == To pair.
     // It composes innermost, which keeps each stage's translation measured in
     // frame widths rather than in base-scaled widths.
-    DefineDivider(p_Desc, page, kParamLabelBase,
-                  "\xE2\x80\x94  BASE TRANSFORM  \xE2\x80\x94");
+    GroupParamDescriptor* gBase = DefineSection(p_Desc, page, kParamGroupBase, "Base Transform",
+        "A resting pose applied underneath the animation, so a layer can simply sit somewhere "
+        "at some size without spending a stage on it.");
 
     BooleanParamDescriptor* baseLink = p_Desc.defineBooleanParam(kParamBaseLinkScale);
     baseLink->setLabels("Link Scale X/Y", "Link Scale", "Link Scale X/Y");
     baseLink->setHint("Scale both axes together. Turn this off to squash or stretch the "
                       "resting pose on one axis.");
     baseLink->setDefault(true);
+    baseLink->setParent(*gBase);
     page->addChild(*baseLink);
     InvalidatesCache(baseLink);
 
-    DefineDouble(p_Desc, page, nullptr, kParamBaseScale, "Scale",
+    DefineDouble(p_Desc, page, gBase, kParamBaseScale, "Scale",
                  "Resting scale. Drives both axes while Link Scale X/Y is on; the X axis "
                  "alone once it is off. The animation multiplies on top of this.",
                  1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
 
-    DefineDouble(p_Desc, page, nullptr, kParamBaseScaleY, "Scale Y",
+    DefineDouble(p_Desc, page, gBase, kParamBaseScaleY, "Scale Y",
                  "Resting vertical scale. Only used when Link Scale X/Y is off.",
                  1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
 
-    DefineDouble2D(p_Desc, page, nullptr, kParamBasePos, "Position",
+    DefineDouble2D(p_Desc, page, gBase, kParamBasePos, "Position",
                    "Resting offset, normalised: 1.0 is one full image width/height. Stage "
                    "movement is added on top, in the same units.", 0.0, 0.0);
 
-    DefineDouble(p_Desc, page, nullptr, kParamBaseRot, "Rotation",
+    DefineDouble(p_Desc, page, gBase, kParamBaseRot, "Rotation",
                  "Resting rotation in degrees.", 0.0, -100000.0, 100000.0, -360.0, 360.0, 1.0);
 
-    DefineDouble(p_Desc, page, nullptr, kParamBaseTiltX, "Tilt (X axis)",
+    DefineDouble(p_Desc, page, gBase, kParamBaseTiltX, "Tilt (X axis)",
                  "Resting pseudo-3D rotation about the horizontal axis. Orthographic, so it "
                  "squashes vertically rather than converging in perspective.",
                  0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
 
-    DefineDouble(p_Desc, page, nullptr, kParamBaseSwivelY, "Swivel (Y axis)",
+    DefineDouble(p_Desc, page, gBase, kParamBaseSwivelY, "Swivel (Y axis)",
                  "Resting pseudo-3D rotation about the vertical axis -- a held card flip.",
                  0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
 
-    DefineDouble(p_Desc, page, nullptr, kParamBaseOpacity, "Opacity",
+    DefineDouble(p_Desc, page, gBase, kParamBaseOpacity, "Opacity",
                  "Resting opacity as a percentage. Multiplies with each stage's fade, so a "
                  "base of 50 and a stage fading 0 to 100 ends at 50.",
                  100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
 
-    DefineDouble2D(p_Desc, page, nullptr, kParamBaseAnchor, "Anchor",
+    DefineDouble2D(p_Desc, page, gBase, kParamBaseAnchor, "Anchor",
                    "Point the resting scale and rotation pivot around. 0.5, 0.5 is the image "
                    "centre.", 0.5, 0.5);
 
     PushButtonParamDescriptor* baseReset = p_Desc.definePushButtonParam(kParamBaseReset);
     baseReset->setLabels("Reset Base Transform", "Reset Base", "Reset Base Transform");
     baseReset->setHint("Return the resting pose to neutral, leaving the animation alone.");
+    baseReset->setParent(*gBase);
     page->addChild(*baseReset);
 
     // --- Stages ---
@@ -1938,12 +1979,13 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     // Inspector scattered them -- two ended up at the top of the panel and two
     // stayed at the bottom. Keeping every ungrouped parameter ahead of the first
     // group leaves the ordering unambiguous.
-    DefineDivider(p_Desc, page, kParamLabelPresets,
-                  "\xE2\x80\x94  PRESETS  \xE2\x80\x94");
+    GroupParamDescriptor* gPresets = DefineSection(p_Desc, page, kParamGroupPresets, "Presets",
+        "Saving and loading setups as JSON files, and where those files live.");
 
     PushButtonParamDescriptor* saveEffect = p_Desc.definePushButtonParam(kParamSaveEffect);
     saveEffect->setLabels("Save Preset to File...", "Save Preset", "Save Preset to File...");
     saveEffect->setHint("Write every stage, plus motion blur and sampling, to a JSON file.");
+    saveEffect->setParent(*gPresets);
     page->addChild(*saveEffect);
 
     PushButtonParamDescriptor* saveStage = p_Desc.definePushButtonParam(kParamSaveStage);
@@ -1951,12 +1993,14 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                          "Save Active Stage to File...");
     saveStage->setHint("Write only the active stage, for building a library of reusable pieces "
                        "such as a punch in or a fade out.");
+    saveStage->setParent(*gPresets);
     page->addChild(*saveStage);
 
     PushButtonParamDescriptor* loadPreset = p_Desc.definePushButtonParam(kParamLoadPreset);
     loadPreset->setLabels("Load Preset from File...", "Load Preset", "Load Preset from File...");
     loadPreset->setHint("Apply a preset exactly as it was saved. Loads everything: all stages, "
                         "motion blur and sampling. A stage preset loads into the active stage.");
+    loadPreset->setParent(*gPresets);
     page->addChild(*loadPreset);
 
     PushButtonParamDescriptor* loadFit = p_Desc.definePushButtonParam(kParamLoadPresetFit);
@@ -1966,6 +2010,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                      "difference: frame-based Start and End values are rescaled to this clip's "
                      "length so the pacing is preserved. Stages anchored to Stretch are already "
                      "proportional and are left untouched.");
+    loadFit->setParent(*gPresets);
     page->addChild(*loadFit);
 
     // The folder those four dialogs open in. A preference, not a parameter:
@@ -1974,23 +2019,32 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     // travel with a timeline sent to someone else.
     StringParamDescriptor* folder = p_Desc.defineStringParam(kParamPresetFolder);
     folder->setLabels("Preset Folder", "Folder", "Preset Folder");
-    folder->setStringType(eStringTypeLabel);
+
+    // A single-line field, greyed out -- deliberately not eStringTypeLabel.
+    // That is the same type the old section dividers used, and it is why they
+    // were invisible in Resolve: the text lives in the parameter's value, and
+    // Resolve appears to draw only the label. A real text field shows its
+    // contents, which for a path read-out is the entire point.
+    folder->setStringType(eStringTypeSingleLine);
     folder->setHint("Where the four buttons above open. Shared by every instance of this "
                     "effect, and remembered between sessions.");
     folder->setEnabled(false);
     folder->setIsPersistant(false);   // read back from preferences, never from the project
+    folder->setParent(*gPresets);
     page->addChild(*folder);
 
     PushButtonParamDescriptor* setFolder = p_Desc.definePushButtonParam(kParamSetFolder);
     setFolder->setLabels("Set Preset Folder...", "Set Folder", "Set Preset Folder...");
     setFolder->setHint("Choose where presets are kept. Applies to every instance of this effect "
                        "and is remembered between sessions.");
+    setFolder->setParent(*gPresets);
     page->addChild(*setFolder);
 
     PushButtonParamDescriptor* resetFolder = p_Desc.definePushButtonParam(kParamResetFolder);
     resetFolder->setLabels("Use Default Folder", "Default Folder", "Use Default Folder");
     resetFolder->setHint("Go back to Documents\\MultiTransform\\Presets. Nothing is moved or "
                          "deleted -- only where the dialogs open changes.");
+    resetFolder->setParent(*gPresets);
     page->addChild(*resetFolder);
 
     // --- Motion blur ---

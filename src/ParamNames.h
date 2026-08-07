@@ -27,7 +27,7 @@ constexpr const char* kParamFilter         = "filterMode";
 constexpr const char* kParamEdge           = "edgeMode";
 
 // --- Base transform: a static resting pose, applied under the animation ---
-constexpr const char* kParamLabelBase      = "lblBase";
+constexpr const char* kParamGroupBase      = "grpBase";
 constexpr const char* kParamBaseScale      = "baseScale";
 constexpr const char* kParamBaseScaleY     = "baseScaleY";
 constexpr const char* kParamBaseLinkScale  = "baseLinkScale";
@@ -40,7 +40,7 @@ constexpr const char* kParamBaseAnchor     = "baseAnchor";
 constexpr const char* kParamBaseReset      = "baseReset";
 
 // --- Presets ---
-constexpr const char* kParamLabelPresets   = "lblPresets";
+constexpr const char* kParamGroupPresets   = "grpPresets";
 constexpr const char* kParamSaveEffect     = "savePresetEffect";
 constexpr const char* kParamSaveStage      = "savePresetStage";
 constexpr const char* kParamLoadPreset     = "loadPreset";
@@ -56,15 +56,25 @@ constexpr const char* kParamShutterPhase   = "shutterPhase";
 constexpr const char* kParamBlurSamples    = "blurSamples";
 constexpr const char* kParamBlurAdaptive   = "blurAdaptive";
 
+// --- Overlay state, grouped so it stays out of the way ---
+constexpr const char* kParamGroupOverlay   = "grpOverlay";
+
 // --- Per stage (suffixed with 1-based index) ---
-// Section headings are label-type string parameters, not groups: they divide
-// the controls visually without adding another collapsible section to click
-// through. Only the active stage's parameters are visible at a time.
-constexpr const char* kParamLabelTiming    = "lblTiming";
-constexpr const char* kParamLabelFrom      = "lblFrom";
-constexpr const char* kParamLabelTo        = "lblTo";
-constexpr const char* kParamLabelEasing    = "lblEasing";
-constexpr const char* kParamLabelPath      = "lblPath";
+// Every section is a collapsible group.
+//
+// An earlier version used label-type string parameters as plain dividers
+// instead, to avoid a wall of disclosure arrows. Two things killed that: the
+// panel roughly tripled in size as base transforms, presets, motion paths and
+// bounce controls arrived, and the label dividers turned out to render in
+// Fusion but not in Resolve -- the text sits in the parameter's *value* while
+// Resolve draws the (empty) label, so the separators were invisible in the very
+// host this is written for. A group header is drawn by the host itself, so it
+// cannot go missing that way.
+constexpr const char* kParamGroupTiming    = "grpTiming";
+constexpr const char* kParamGroupFrom      = "grpFrom";
+constexpr const char* kParamGroupTo        = "grpTo";
+constexpr const char* kParamGroupEasing    = "grpEasing";
+constexpr const char* kParamGroupPath      = "grpPath";
 constexpr const char* kParamEnabled        = "enabled";
 constexpr const char* kParamAnchor2        = "timingAnchor";   ///< TimingAnchor
 constexpr const char* kParamStartFrame     = "startFrame";

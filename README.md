@@ -102,23 +102,38 @@ dropdown at the top, or click a stage tab or timeline lane in the viewer overlay
 drive the same setting. Showing four stages' worth of controls at once was unreadable, and
 Stage Count still governs how many stages exist.
 
-Within the visible stage, controls are separated by plain text headings rather than collapsible
-groups:
+Every section is a **collapsible group, collapsed by default**, so the panel opens as a short
+list of headers:
 
 ```
-—  STAGE 2 : TIMING  —
-    Enabled, Set Start / Set End, Start Frame, End Frame, Duration, Anchor, Link Scale X/Y
-—  FROM (START)  —
-    Scale, Scale Y, Position, Rotation, Tilt (X axis), Swivel (Y axis), Opacity
-—  TO (END)  —
-    Scale, Scale Y, Position, Rotation, Tilt (X axis), Swivel (Y axis), Opacity
-    Copy FROM to TO, Copy TO to FROM, Swap FROM and TO
-—  EASING  —
-    Easing, Ease In, Ease Out, Anticipation, Overshoot
+Stage Count, Active Stage        ← always visible
+▸ Viewer Overlay
+▸ Base Transform
+▸ Stage 2 — Timing               ← only the active stage's five sections appear
+▸ Stage 2 — From (start)
+▸ Stage 2 — To (end)
+▸ Stage 2 — Motion Path
+▸ Stage 2 — Easing
+▸ Presets
+▸ Motion Blur
+▸ Sampling
 ```
 
-Reading a pose is one block top to bottom, rather than picking every other row out of an
+Reading a pose is still one block top to bottom, rather than picking every other row out of an
 interleaved `Scale From / Scale To / Position From / Position To` list.
+
+An earlier version used plain text headings instead of groups, to avoid a wall of disclosure
+arrows. Two things ended that. The panel roughly tripled as base transforms, presets, motion
+paths and bounce controls arrived — one active stage reached about **70 rows**. And the text
+headings turned out to render in Fusion but *not* in Resolve: the heading text sat in the
+parameter's **value** while Resolve draws only the **label**, so the separators were invisible in
+the very host this is written for. A group header is drawn by the host itself and cannot go
+missing that way.
+
+**There is no tab support to be had.** The only tab mechanism in OFX is multiple `PageParam`s,
+and Resolve reports `maxPages = 0` (see `probe.log`) — it advertises none. Selecting a stage
+therefore uses the Active Stage dropdown or the overlay's stage tabs, and the other three stages
+are hidden entirely, groups and all.
 
 **Anchor deliberately sits in the timing section**, not in either pose block — a pivot that
 moved between the start and end of a move would make the motion very hard to reason about.
