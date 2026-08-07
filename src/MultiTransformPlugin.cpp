@@ -185,6 +185,9 @@ private:
     void             applyStage(int stageIndex, const mtx::PresetStage& s);
     void             applyPreset(const mtx::PresetData& d);
 
+    /// Refresh the preset-folder read-out from preferences.
+    void             syncPresetFolderLabel();
+
     /** @brief Move poses between a stage's two ends.
      *  @param mode 0 copies From onto To, 1 copies To onto From, 2 swaps them. */
     void             transferEnds(int stage, int mode);
@@ -214,6 +217,10 @@ private:
     OFX::DoubleParam*   _baseSwivelY   = nullptr;
     OFX::DoubleParam*   _baseOpacity   = nullptr;
     OFX::Double2DParam* _baseAnchor    = nullptr;
+
+    /// Read-out of the preference, refreshed from settings.json rather than
+    /// stored in the project.
+    OFX::StringParam* _presetFolder = nullptr;
 
     OFX::BooleanParam* _blurEnabled  = nullptr;
     OFX::DoubleParam*  _shutterAngle = nullptr;
@@ -296,6 +303,8 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _activeStage = fetchChoiceParam(kParamActiveStage);
     _filter     = fetchChoiceParam(kParamFilter);
     _edge       = fetchChoiceParam(kParamEdge);
+
+    _presetFolder = fetchStringParam(kParamPresetFolder);
 
     _baseScale     = fetchDoubleParam  (kParamBaseScale);
     _baseScaleY    = fetchDoubleParam  (kParamBaseScaleY);
@@ -380,6 +389,10 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         _stage[i].duration->setEnabled(false);
         updateDuration(i);
     }
+
+    // The folder read-out is not persisted with the project, so it starts blank
+    // on every open and has to be filled in from preferences here.
+    syncPresetFolderLabel();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -685,6 +698,16 @@ void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
     h.bounceCount->setValue(s.bounceCount);
     h.bounceDamping->setValue(s.bounceDamping);
     h.bounceStart->setValue(s.bounceStart);
+}
+
+void MultiTransformPlugin::syncPresetFolderLabel()
+{
+    if (!_presetFolder) return;
+
+    // Shown resolved rather than as "(default)": the point of the read-out is to
+    // answer "where will the dialog open", and a label that says "default" only
+    // moves the question along.
+    _presetFolder->setValue(mtx::PresetFolder());
 }
 
 void MultiTransformPlugin::transferEnds(int stage, int mode)
@@ -1127,6 +1150,41 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     // A bulk preset write must not trigger the per-parameter handlers below --
     // several of them would rewrite the very values being restored.
     if (_applyingPreset) return;
+
+    if (p_ParamName == kParamSetFolder)
+    {
+        std::string picked;
+        if (!mtx::ChooseFolder(mtx::PresetFolder(), picked)) return;   // cancelled
+
+        mtx::Settings s = mtx::LoadSettings();
+        s.presetFolder  = picked;
+
+        std::string error;
+        if (!mtx::SaveSettings(s, error))
+        {
+            sendMessage(OFX::Message::eMessageError, "",
+                        "Could not save the preset folder preference:\n" + error);
+            return;
+        }
+        syncPresetFolderLabel();
+        return;
+    }
+
+    if (p_ParamName == kParamResetFolder)
+    {
+        mtx::Settings s = mtx::LoadSettings();
+        s.presetFolder.clear();   // empty means "the built-in default", not a stored path
+
+        std::string error;
+        if (!mtx::SaveSettings(s, error))
+        {
+            sendMessage(OFX::Message::eMessageError, "",
+                        "Could not save the preset folder preference:\n" + error);
+            return;
+        }
+        syncPresetFolderLabel();
+        return;
+    }
 
     if (p_ParamName == kParamSaveEffect)    { savePreset(true);  return; }
     if (p_ParamName == kParamSaveStage)     { savePreset(false); return; }
@@ -1909,6 +1967,31 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                      "length so the pacing is preserved. Stages anchored to Stretch are already "
                      "proportional and are left untouched.");
     page->addChild(*loadFit);
+
+    // The folder those four dialogs open in. A preference, not a parameter:
+    // it is stored per user in settings.json rather than in the project, so it
+    // applies to every instance of the effect on this machine and does not
+    // travel with a timeline sent to someone else.
+    StringParamDescriptor* folder = p_Desc.defineStringParam(kParamPresetFolder);
+    folder->setLabels("Preset Folder", "Folder", "Preset Folder");
+    folder->setStringType(eStringTypeLabel);
+    folder->setHint("Where the four buttons above open. Shared by every instance of this "
+                    "effect, and remembered between sessions.");
+    folder->setEnabled(false);
+    folder->setIsPersistant(false);   // read back from preferences, never from the project
+    page->addChild(*folder);
+
+    PushButtonParamDescriptor* setFolder = p_Desc.definePushButtonParam(kParamSetFolder);
+    setFolder->setLabels("Set Preset Folder...", "Set Folder", "Set Preset Folder...");
+    setFolder->setHint("Choose where presets are kept. Applies to every instance of this effect "
+                       "and is remembered between sessions.");
+    page->addChild(*setFolder);
+
+    PushButtonParamDescriptor* resetFolder = p_Desc.definePushButtonParam(kParamResetFolder);
+    resetFolder->setLabels("Use Default Folder", "Default Folder", "Use Default Folder");
+    resetFolder->setHint("Go back to Documents\\MultiTransform\\Presets. Nothing is moved or "
+                         "deleted -- only where the dialogs open changes.");
+    page->addChild(*resetFolder);
 
     // --- Motion blur ---
     GroupParamDescriptor* blur = p_Desc.defineGroupParam("motionBlurGroup");

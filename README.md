@@ -340,8 +340,36 @@ files. Four buttons under **— PRESETS —**:
 | **Load Preset from File…** | Applies exactly as saved |
 | **Load from File (Fit to Clip)…** | Same, but rescales frame timings to this clip's length |
 
-They default to `%LOCALAPPDATA%\MultiTransform\Presets`, and a stage preset loads into whichever
-stage is active. The files are readable and diffable, and they work in both Resolve and Fusion.
+A stage preset loads into whichever stage is active. The files are readable and diffable, and
+they work in both Resolve and Fusion.
+
+### Where presets live
+
+`Documents\MultiTransform\Presets` by default — somewhere you can browse to, copy from and back
+up, which `%LOCALAPPDATA%` is not. **Set Preset Folder…** changes it and **Use Default Folder**
+puts it back; neither moves or deletes anything, they only change where the dialogs open. The
+current folder is shown above the buttons.
+
+That choice is a **preference, not a parameter**. OFX parameters are stored inside the project
+file, so anything kept as a parameter travels with the timeline and belongs to a single instance
+of the effect. "Where my presets live" belongs to you and this machine, and has to apply to
+every instance you ever create — including ones in projects that do not exist yet. So it goes in
+`%LOCALAPPDATA%\MultiTransform\settings.json` instead, read fresh whenever a dialog opens. Send a
+project to someone else and they keep their folder, not yours.
+
+A corrupt preferences file falls back to defaults rather than failing, and a configured folder
+that has since been deleted or unplugged falls back too rather than opening nowhere.
+
+#### A bug worth recording
+
+The dialogs used to open in unpredictable places, which is what prompted all of this. The cause
+was not the folder setting but how it was passed: `lpstrInitialDir` has only been **advisory**
+since Vista. Windows prefers the calling *executable's* last-visited-folder MRU — and that
+executable is Resolve, whose MRU is shared with every other file dialog Resolve opens. So after
+using any unrelated dialog in the host, ours would open there instead. Seeding the path into
+`lpstrFile` takes priority over that MRU, which is the one place the folder can be stated and
+actually respected. The folder picker uses `IFileDialog::SetFolder` for the same reason —
+`SetDefaultFolder` is a suggestion the last-visited folder overrides.
 
 The names say "to/from File" because a host may have preset controls of its own elsewhere in the
 Inspector; these four are always the plugin's own, writing JSON you can move between machines.

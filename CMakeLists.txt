@@ -53,6 +53,7 @@ add_library(MultiTransform MODULE
     src/HostProbe.cpp
     src/Preset.cpp
     src/PresetIO.cpp
+    src/Settings.cpp
     src/interact/OverlayInteract.cpp
     src/interact/TimelineWidget.cpp
     src/interact/CurveWidget.cpp
@@ -60,7 +61,8 @@ add_library(MultiTransform MODULE
     src/interact/PathWidget.cpp
 )
 target_include_directories(MultiTransform PRIVATE src)
-target_link_libraries(MultiTransform PRIVATE ofxsupport mtxcuda comdlg32)
+# ole32/shell32: the preset-folder picker is IFileDialog, which is COM.
+target_link_libraries(MultiTransform PRIVATE ofxsupport mtxcuda comdlg32 ole32 shell32)
 
 # OFX plugins are DLLs with a .ofx extension and a single exported entry point.
 set_target_properties(MultiTransform PROPERTIES
@@ -87,7 +89,7 @@ add_test(NAME render_parity COMMAND test_render_parity)
 # Preset serialisation is OFX-free for exactly this reason: a preset that half
 # loads or mis-scales is worse than one that refuses, so the rules get tested
 # directly rather than only through the host.
-add_executable(test_preset tests/test_preset.cpp src/Preset.cpp)
+add_executable(test_preset tests/test_preset.cpp src/Preset.cpp src/Settings.cpp)
 target_include_directories(test_preset PRIVATE src)
 add_test(NAME preset COMMAND test_preset)
 

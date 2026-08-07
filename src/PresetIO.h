@@ -2,11 +2,40 @@
 
 #include <string>
 
+#include "Settings.h"
+
 namespace mtx {
 
-/** @brief Default preset folder, created on demand.
- *  `%LOCALAPPDATA%\MultiTransform\Presets`, alongside the probe log. */
+/** @brief Where the preset dialogs open.
+ *
+ *  The folder set in preferences if there is one and it still exists, otherwise
+ *  DefaultPresetFolder(). A configured folder that has since been deleted or
+ *  unplugged falls back rather than sending the dialog somewhere that is not
+ *  there. */
 std::string PresetFolder();
+
+/** @brief Built-in default, created on demand.
+ *
+ *  `Documents\MultiTransform\Presets` -- somewhere the user can actually browse
+ *  to, copy from and back up. Falls back to LocalAppData only if Documents
+ *  cannot be resolved at all. */
+std::string DefaultPresetFolder();
+
+/** @brief Ask the user to pick a folder. False if cancelled.
+ *  @param current folder the picker starts in; may be empty. */
+bool ChooseFolder(const std::string& current, std::string& outPath);
+
+/** @brief Preferences file, `%LOCALAPPDATA%\MultiTransform\settings.json`.
+ *
+ *  Stays in LocalAppData even though presets moved to Documents: this one
+ *  really is internal bookkeeping, and it is per-machine by definition. */
+std::string SettingsFilePath();
+
+/** @brief Read preferences, or defaults if the file is absent or unreadable. */
+Settings LoadSettings();
+
+/** @brief Write preferences. False with a message if it cannot be written. */
+bool SaveSettings(const Settings& s, std::string& error);
 
 /** @brief Ask the user for a preset file to read.
  *  @return false if the dialog was cancelled. */

@@ -5,6 +5,7 @@
 // undo than an outright failure.
 
 #include "Preset.h"
+#include "Settings.h"
 
 #include <cmath>
 #include <cstdio>
@@ -409,6 +410,50 @@ static void TestNameEscaping()
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static void TestSettings()
+{
+    std::printf("Preferences round-trip and survive a bad file\n");
+
+    Settings s;
+    s.presetFolder = "D:\\Projects\\My Presets";
+
+    Settings out;
+    std::string err;
+    Check(SettingsFromJson(SettingsToJson(s), out, err), "preferences parse back: " + err);
+    Check(out.presetFolder == s.presetFolder, "the folder survives a round trip");
+
+    // Backslashes are the whole point here: a Windows path is nothing but
+    // escape characters as far as JSON is concerned, and getting this wrong
+    // would corrupt the path a little further on every save.
+    Check(SettingsToJson(s).find("\\\\") != std::string::npos,
+          "backslashes are escaped on the way out");
+    Check(SettingsToJson(out) == SettingsToJson(s), "re-serialising is byte-identical");
+
+    // An empty folder means "use the default" and must not become a stored path.
+    Settings empty;
+    Check(SettingsFromJson(SettingsToJson(Settings::Default()), empty, err),
+          "default preferences parse: " + err);
+    Check(empty.presetFolder.empty(), "an unset folder stays unset");
+
+    // A corrupt or truncated file falls back to defaults rather than taking the
+    // plugin down. The caller's copy must be left alone, exactly as for presets.
+    const char* bad[] = { "", "   ", "not json", "{", "{ \"presetFolder\": ", "[]" };
+    for (const char* b : bad)
+    {
+        Settings target;
+        target.presetFolder = "SENTINEL";
+        std::string e;
+        Check(!SettingsFromJson(b, target, e), std::string("rejects: ") + (b[0] ? b : "(empty)"));
+        Check(target.presetFolder == "SENTINEL", "a failed parse leaves the target alone");
+    }
+
+    // A file from a newer build with keys this one does not know must still load.
+    Settings future;
+    Check(SettingsFromJson("{ \"presetFolder\": \"C:\\\\X\", \"somethingNew\": 3 }", future, err),
+          "unknown preference keys are ignored: " + err);
+    Check(future.presetFolder == "C:\\X", "known keys still read correctly");
+}
+
 int main()
 {
     std::printf("=== MultiTransform preset tests ===\n");
@@ -422,6 +467,7 @@ int main()
     TestRescaleTiming();
     TestRescaleEdgeCases();
     TestNameEscaping();
+    TestSettings();
 
     std::printf("\n%d checks, %d failure(s)\n", g_checks, g_failures);
     if (g_failures == 0) std::printf("ALL TESTS PASSED\n");

@@ -45,6 +45,9 @@ constexpr const char* kParamSaveEffect     = "savePresetEffect";
 constexpr const char* kParamSaveStage      = "savePresetStage";
 constexpr const char* kParamLoadPreset     = "loadPreset";
 constexpr const char* kParamLoadPresetFit  = "loadPresetFit";
+constexpr const char* kParamPresetFolder   = "presetFolderPath";   ///< read-out only
+constexpr const char* kParamSetFolder      = "setPresetFolder";
+constexpr const char* kParamResetFolder    = "resetPresetFolder";
 
 // --- Motion blur ---
 constexpr const char* kParamBlurEnabled    = "motionBlur";
