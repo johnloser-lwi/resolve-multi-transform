@@ -57,6 +57,15 @@ private:
     double   _t0 = 0.0, _t1 = 1.0;   ///< visible frame range
 
     int    _dragStage = 0;
+    /** @brief Shade a stage's bar by how fast it is moving, and mark the peak.
+     *
+     * @p xa and @p xb are the start and end of the stage in screen X *in that
+     * order*, which is not the same as left and right: a stage whose end frame
+     * precedes its start plays backwards, and the shading has to run with it.
+     */
+    void drawVelocity(const OverlayContext& c, const Stage& s, const OfxRectD& lane,
+                      double xa, double xb, bool active) const;
+
     double _grabFrame = 0.0;         ///< frame under the cursor at pen-down
     double _grabStart = 0.0;
     double _grabEnd   = 0.0;
@@ -119,10 +128,15 @@ public:
 private:
     enum DragMode { kNone = 0, kDragC1, kDragC2 };
 
-    /// Normalised position -> canonical image coordinates.
-    OfxPointD toScreen(const OverlayContext& c, float nx, float ny) const;
-    /// Canonical image coordinates -> normalised position.
-    void      toNormalised(const OverlayContext& c, const OfxPointD& p,
+    /** Clip time of the stage's start or end. Every mapping below is pinned to
+     *  one of these two, never to the playhead: the route the image travels is
+     *  a fixed feature of the animation and must not slide about as you scrub. */
+    double endpointTime(const OverlayContext& c, bool end) const;
+
+    /// Normalised position -> canonical image coordinates, as of clip time @p t.
+    OfxPointD toScreen(const OverlayContext& c, float nx, float ny, double t) const;
+    /// The exact inverse, so a handle dragged at @p t lands under the cursor.
+    void      toNormalised(const OverlayContext& c, const OfxPointD& p, double t,
                            double& nx, double& ny) const;
 };
 
@@ -143,15 +157,54 @@ public:
 private:
     enum DragMode { kNone = 0, kDragMove, kDragScale, kDragRotate, kDragAnchor };
 
-    struct Pose { double scale, rot, posX, posY, anchorX, anchorY; };
+    struct Pose
+    {
+        double scale, scaleY, rot, posX, posY, anchorX, anchorY;
+        bool   linkScale;   ///< when set, scaleY is ignored and never written
+
+        /// Read-only here: the gizmo draws the box foreshortened so the outline
+        /// matches what renders, but there is no handle that edits them.
+        double tiltX, swivelY;
+    };
 
     Pose readPose(const OverlayContext& c) const;
     void writePose(const OverlayContext& c, const Pose& p) const;
+
+    /// The stage's own matrix, in the space the stage's numbers are written in.
     Mat3 poseMatrix(const OverlayContext& c, const Pose& p) const;
 
+    /** @brief Clip time the surrounding stages are sampled at.
+     *
+     * The stage's *own* start or end frame, never the playhead. Sampling the
+     * neighbours at the playhead instead makes the whole frame of reference
+     * drift as you scrub, so the gizmo and the motion path swim across the
+     * picture rather than marking fixed places in the move.
+     */
+    double refTime(const OverlayContext& c) const;
+
+    /// The same pose composed with the surrounding stages, which is where the
+    /// image actually is. Everything drawn and hit-tested uses this.
+    Mat3 displayMatrix(const OverlayContext& c, const Pose& p) const;
+
+    /** @brief A screen point mapped back into the stage's own space.
+     *
+     * Drags are measured here rather than on screen. The stages to the left of
+     * this one may scale or rotate everything it does, so a raw screen delta
+     * would write the wrong numbers into the stage -- and increasingly wrong the
+     * more the other stages are doing.
+     */
+    OfxPointD toStageSpace(const OverlayContext& c, const OfxPointD& p) const;
+
+    /// Screen position of the pose's anchor. The anchor lives in the stage's own
+    /// input space, so it goes through `outer * Sᵢ` and not through `inner`.
+    OfxPointD anchorScreen(const OverlayContext& c, const Pose& p) const;
+
     Pose      _grabPose{};
+    OfxPointD _anchorScreen{};   ///< screen space, for hit-testing the anchor handle
+    // Drag state, all in the stage's own space rather than on screen -- see
+    // toStageSpace(). Mixing the two was the bug this exists to prevent.
     OfxPointD _grabPoint{};
-    OfxPointD _anchorScreen{};
+    OfxPointD _anchorLocal{};
     double    _grabAngle  = 0.0;
     double    _grabRadius = 1.0;
 };

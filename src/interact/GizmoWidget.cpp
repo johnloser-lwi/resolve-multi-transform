@@ -21,12 +21,16 @@ GizmoWidget::Pose GizmoWidget::readPose(const OverlayContext& c) const
     const Stage& s = c.anim.stages[i];
 
     Pose p;
-    p.scale   = c.editTo ? s.scaleTo : s.scaleFrom;
-    p.rot     = c.editTo ? s.rotTo   : s.rotFrom;
-    p.posX    = c.editTo ? s.posXTo  : s.posXFrom;
-    p.posY    = c.editTo ? s.posYTo  : s.posYFrom;
+    p.scale   = c.editTo ? s.scaleTo  : s.scaleFrom;
+    p.scaleY  = c.editTo ? s.scaleYTo : s.scaleYFrom;
+    p.rot     = c.editTo ? s.rotTo    : s.rotFrom;
+    p.posX    = c.editTo ? s.posXTo   : s.posXFrom;
+    p.posY    = c.editTo ? s.posYTo   : s.posYFrom;
     p.anchorX = s.anchorX;
     p.anchorY = s.anchorY;
+    p.linkScale = s.linkScale;
+    p.tiltX     = c.editTo ? s.tiltXTo   : s.tiltXFrom;
+    p.swivelY   = c.editTo ? s.swivelYTo : s.swivelYFrom;
     return p;
 }
 
@@ -36,6 +40,12 @@ void GizmoWidget::writePose(const OverlayContext& c, const Pose& p) const
 
     SetDouble(c.effect, StageParam(c.editTo ? kParamScaleTo : kParamScaleFrom, i), p.scale);
     SetDouble(c.effect, StageParam(c.editTo ? kParamRotTo   : kParamRotFrom,   i), p.rot);
+
+    // Only written while unlinked. Writing it under a link would leave a stale
+    // value behind that jumped into effect the moment the link was released.
+    if (!p.linkScale)
+        SetDouble(c.effect, StageParam(c.editTo ? kParamScaleYTo : kParamScaleYFrom, i), p.scaleY);
+
     SetDouble2D(c.effect, StageParam(c.editTo ? kParamPosTo : kParamPosFrom,   i),
                 p.posX, p.posY);
     // The anchor is shared by both ends: a pivot that moved between From and To
@@ -47,18 +57,78 @@ Mat3 GizmoWidget::poseMatrix(const OverlayContext& c, const Pose& p) const
 {
     const double W = c.rodWidth();
     const double H = c.rodHeight();
+
+    // Foreshortening from the orthographic tilt and swivel is folded in, so the
+    // outline sits on the rendered image rather than beside it. It is a constant
+    // factor during a drag, so every ratio below is unaffected by it.
+    float orthoX = 1.0f, orthoY = 1.0f;
+    OrthographicScale(static_cast<float>(p.tiltX), static_cast<float>(p.swivelY),
+                      orthoX, orthoY);
+
+    const double sx = p.scale;
+    const double sy = p.linkScale ? p.scale : p.scaleY;
+
     return MakeTransform(static_cast<float>(p.anchorX * W),
                          static_cast<float>(p.anchorY * H),
-                         static_cast<float>(p.scale), static_cast<float>(p.scale),
+                         static_cast<float>(sx) * orthoX,
+                         static_cast<float>(sy) * orthoY,
                          static_cast<float>(p.rot),
                          static_cast<float>(p.posX * W),
                          static_cast<float>(p.posY * H));
 }
 
+double GizmoWidget::refTime(const OverlayContext& c) const
+{
+    // The end this gizmo poses, in clip time. Fixed, so the gizmo marks a place
+    // in the move rather than sliding about as the playhead travels -- and it
+    // sits on the rendered image at exactly the frame it describes.
+    const Stage& s = c.anim.stages[c.activeStage];
+    return ClipTimeFromStageFrame(c.anim, s, c.editTo ? s.endFrame : s.startFrame);
+}
+
+Mat3 GizmoWidget::displayMatrix(const OverlayContext& c, const Pose& p) const
+{
+    const StageContext ctx = EvaluateStageContext(c.anim, c.activeStage,
+                                                  static_cast<float>(refTime(c)),
+                                                  static_cast<float>(c.rodWidth()),
+                                                  static_cast<float>(c.rodHeight()));
+    return ctx.outer * poseMatrix(c, p) * ctx.inner;
+}
+
+OfxPointD GizmoWidget::toStageSpace(const OverlayContext& c, const OfxPointD& p) const
+{
+    const StageContext ctx = EvaluateStageContext(c.anim, c.activeStage,
+                                                  static_cast<float>(refTime(c)),
+                                                  static_cast<float>(c.rodWidth()),
+                                                  static_cast<float>(c.rodHeight()));
+    float lx, ly;
+    Invert(ctx.outer).Apply(static_cast<float>(p.x - c.rod.x1),
+                            static_cast<float>(p.y - c.rod.y1), lx, ly);
+    return { static_cast<double>(lx), static_cast<double>(ly) };
+}
+
+OfxPointD GizmoWidget::anchorScreen(const OverlayContext& c, const Pose& p) const
+{
+    const StageContext ctx = EvaluateStageContext(c.anim, c.activeStage,
+                                                  static_cast<float>(refTime(c)),
+                                                  static_cast<float>(c.rodWidth()),
+                                                  static_cast<float>(c.rodHeight()));
+
+    // The anchor is expressed in the space the stage's matrix consumes, so it
+    // must not be pushed through `inner` -- only through the stage itself and
+    // whatever comes after it.
+    const Mat3 m = ctx.outer * poseMatrix(c, p);
+
+    float ax, ay;
+    m.Apply(static_cast<float>(p.anchorX * c.rodWidth()),
+            static_cast<float>(p.anchorY * c.rodHeight()), ax, ay);
+    return { c.rod.x1 + ax, c.rod.y1 + ay };
+}
+
 void GizmoWidget::draw(const OverlayContext& c)
 {
     const Pose pose = readPose(c);
-    const Mat3 m    = poseMatrix(c, pose);
+    const Mat3 m    = displayMatrix(c, pose);
 
     const double W = c.rodWidth();
     const double H = c.rodHeight();
@@ -85,10 +155,9 @@ void GizmoWidget::draw(const OverlayContext& c)
     LineLoop(c, corner, 4);
 
     // Anchor, which is where scale and rotation pivot.
-    float ax, ay;
-    m.Apply(static_cast<float>(pose.anchorX * W), static_cast<float>(pose.anchorY * H), ax, ay);
-    const double anchorX = c.rod.x1 + ax;
-    const double anchorY = c.rod.y1 + ay;
+    const OfxPointD anchorPt = anchorScreen(c, pose);
+    const double anchorX = anchorPt.x;
+    const double anchorY = anchorPt.y;
 
     SetColour(c, tint);
     SetLineWidth(c, 1.5f);
@@ -130,20 +199,29 @@ void GizmoWidget::draw(const OverlayContext& c)
 bool GizmoWidget::penDown(const OverlayContext& c, const OfxPointD& p)
 {
     const Pose pose = readPose(c);
-    const Mat3 m    = poseMatrix(c, pose);
+    const Mat3 m    = displayMatrix(c, pose);
     const double W  = c.rodWidth();
     const double H  = c.rodHeight();
 
-    float ax, ay;
-    m.Apply(static_cast<float>(pose.anchorX * W), static_cast<float>(pose.anchorY * H), ax, ay);
-    _anchorScreen.x = c.rod.x1 + ax;
-    _anchorScreen.y = c.rod.y1 + ay;
+    _anchorScreen = anchorScreen(c, pose);
 
     _grabPose  = pose;
-    _grabPoint = p;
 
-    const double dx = p.x - _anchorScreen.x;
-    const double dy = p.y - _anchorScreen.y;
+    // Drag state is recorded in the stage's own space. Measuring it on screen
+    // would fold the other stages' scale and rotation into every delta, so a
+    // drag on stage 2 would write numbers that mean something different by the
+    // time stage 1 has finished with them.
+    const Mat3 poseM = poseMatrix(c, pose);
+    float lax, lay;
+    poseM.Apply(static_cast<float>(pose.anchorX * W),
+                static_cast<float>(pose.anchorY * H), lax, lay);
+    _anchorLocal.x = lax;
+    _anchorLocal.y = lay;
+
+    _grabPoint = toStageSpace(c, p);
+
+    const double dx = _grabPoint.x - _anchorLocal.x;
+    const double dy = _grabPoint.y - _anchorLocal.y;
     _grabAngle  = std::atan2(dy, dx);
     _grabRadius = std::sqrt(dx * dx + dy * dy);
     if (_grabRadius < 1e-6) _grabRadius = 1e-6;
@@ -214,27 +292,60 @@ bool GizmoWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
     const double H = c.rodHeight();
     Pose pose = _grabPose;
 
+    // Everything below works in the stage's own space, so the numbers written
+    // are the stage's own regardless of what the surrounding stages are doing.
+    const OfxPointD q = toStageSpace(c, p);
+
     switch (_drag)
     {
         case kDragMove:
         {
-            pose.posX = _grabPose.posX + (p.x - _grabPoint.x) / (W > 1e-9 ? W : 1.0);
-            pose.posY = _grabPose.posY + (p.y - _grabPoint.y) / (H > 1e-9 ? H : 1.0);
+            pose.posX = _grabPose.posX + (q.x - _grabPoint.x) / (W > 1e-9 ? W : 1.0);
+            pose.posY = _grabPose.posY + (q.y - _grabPoint.y) / (H > 1e-9 ? H : 1.0);
             break;
         }
         case kDragScale:
         {
-            // Scale by how much the cursor's distance from the anchor changed.
-            const double dx = p.x - _anchorScreen.x;
-            const double dy = p.y - _anchorScreen.y;
-            const double r  = std::sqrt(dx * dx + dy * dy);
-            pose.scale = Clamp(_grabPose.scale * (r / _grabRadius), 0.001, 100.0);
+            const double dx = q.x - _anchorLocal.x;
+            const double dy = q.y - _anchorLocal.y;
+
+            if (_grabPose.linkScale)
+            {
+                // Scale by how much the cursor's distance from the anchor changed.
+                const double r = std::sqrt(dx * dx + dy * dy);
+                pose.scale = Clamp(_grabPose.scale * (r / _grabRadius), 0.001, 100.0);
+            }
+            else
+            {
+                // Unlinked, each axis follows its own component of the drag, so a
+                // corner can stretch the box rather than only resize it. Both the
+                // grab and the current offset are rotated back into the pose's own
+                // axes first: on a rotated stage the screen's X is not the image's
+                // X, and using it raw would swap the axes as the box turned.
+                const double a  = -_grabPose.rot * kPi / 180.0;
+                const double ca = std::cos(a);
+                const double sa = std::sin(a);
+
+                const double g0x = _grabPoint.x - _anchorLocal.x;
+                const double g0y = _grabPoint.y - _anchorLocal.y;
+                const double gx = g0x * ca - g0y * sa;
+                const double gy = g0x * sa + g0y * ca;
+                const double cx = dx * ca - dy * sa;
+                const double cy = dx * sa + dy * ca;
+
+                // A near-zero grab offset gives no usable ratio -- leave that axis
+                // alone rather than dividing by it and flinging the scale away.
+                if (std::fabs(gx) > 1e-6)
+                    pose.scale  = Clamp(_grabPose.scale  * (cx / gx), 0.001, 100.0);
+                if (std::fabs(gy) > 1e-6)
+                    pose.scaleY = Clamp(_grabPose.scaleY * (cy / gy), 0.001, 100.0);
+            }
             break;
         }
         case kDragRotate:
         {
-            const double dx = p.x - _anchorScreen.x;
-            const double dy = p.y - _anchorScreen.y;
+            const double dx = q.x - _anchorLocal.x;
+            const double dy = q.y - _anchorLocal.y;
             const double a  = std::atan2(dy, dx);
             pose.rot = _grabPose.rot + (a - _grabAngle) * 180.0 / kPi;
             break;
@@ -244,10 +355,11 @@ bool GizmoWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
             // Put the anchor under the cursor, in source space. Moving the anchor
             // deliberately does not compensate the position, so the image shifts
             // -- matching how anchor points behave everywhere else.
+            // The cursor is already in the stage's space, so only the stage's own
+            // matrix has to be undone to reach the space the anchor is written in.
             const Mat3 inv = Invert(poseMatrix(c, _grabPose));
             float sxp, syp;
-            inv.Apply(static_cast<float>(p.x - c.rod.x1),
-                      static_cast<float>(p.y - c.rod.y1), sxp, syp);
+            inv.Apply(static_cast<float>(q.x), static_cast<float>(q.y), sxp, syp);
             pose.anchorX = Clamp(sxp / (W > 1e-9 ? W : 1.0), -2.0, 3.0);
             pose.anchorY = Clamp(syp / (H > 1e-9 ? H : 1.0), -2.0, 3.0);
             break;

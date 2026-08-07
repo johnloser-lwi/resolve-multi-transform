@@ -165,8 +165,50 @@ inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurPar
     for (int k = 0; k < st.count; ++k)
     {
         const float tk = BlurSampleTime(t, b, k, st.count);
-        st.inv[k]     = Invert(EvaluateTransform(a, tk, width, height));
-        st.opacity[k] = EvaluateOpacity(a, tk);
+
+        const Mat3 fwd = EvaluateTransform(a, tk, width, height);
+        st.inv[k]      = Invert(fwd);
+        st.opacity[k]  = EvaluateOpacity(a, tk);
+
+        // A collapsed transform must render as nothing, not as an untransformed
+        // frame.
+        //
+        // Invert() deliberately falls back to the identity for a degenerate
+        // matrix rather than producing infinities. That is the right default,
+        // but it is wrong here: an orthographic swivel passing through 90
+        // degrees scales to zero, and the identity fallback would snap the
+        // image to full size for that one frame -- a visible pop in the middle
+        // of every card flip. Zeroing the sample's opacity makes it contribute
+        // nothing, which is what edge-on actually looks like, and it reuses the
+        // multiply RenderPixel already performs.
+        //
+        // The threshold is the area of a single pixel, not a fixed epsilon.
+        // The determinant is an area ratio, so |det| * width * height is the
+        // transformed area: below one pixel there is nothing left to draw. A
+        // fixed epsilon cannot work here, because cosf(90 degrees) is 4.4e-8
+        // rather than 0 and would slip under any constant small enough to leave
+        // genuine small scales alone -- a deliberate 1% scale has a determinant
+        // of 1e-4, some two hundred times this cutoff, and stays visible.
+        const float area   = width * height;
+        const float minDet = area > 1.0f ? 1.0f / area : 1e-6f;
+
+        const float det = fwd.Determinant();
+        if (det > -minDet && det < minDet)
+        {
+            st.opacity[k] = 0.0f;
+
+            // The inverse is neutralised as well, and this part is not cosmetic.
+            // Invert() only falls back to the identity below 1e-12, and an
+            // edge-on swivel lands well above that: cosf(90 degrees) is -4.4e-8,
+            // so the matrix does get inverted and 1/det throws the sampling
+            // coordinates out to ~1e7 image widths. Multiplying the result by a
+            // zero opacity hides the colour but does not stop the fetch, and on
+            // the CUDA path that fetch faults and takes the whole context with
+            // it -- so every frame after the flip renders black, not just the
+            // one frame that was edge-on. An identity inverse keeps the sample
+            // in range and contributing nothing, which is what edge-on means.
+            st.inv[k] = Mat3::Identity();
+        }
     }
     return st;
 }

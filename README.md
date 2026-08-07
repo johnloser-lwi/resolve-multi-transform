@@ -107,11 +107,11 @@ groups:
 
 ```
 —  STAGE 2 : TIMING  —
-    Enabled, Set Start / Set End, Start Frame, End Frame, Duration, Anchor
+    Enabled, Set Start / Set End, Start Frame, End Frame, Duration, Anchor, Link Scale X/Y
 —  FROM (START)  —
-    Scale, Position, Rotation, Opacity
+    Scale, Scale Y, Position, Rotation, Tilt (X axis), Swivel (Y axis), Opacity
 —  TO (END)  —
-    Scale, Position, Rotation, Opacity
+    Scale, Scale Y, Position, Rotation, Tilt (X axis), Swivel (Y axis), Opacity
 —  EASING  —
     Easing, Ease In, Ease Out, Anticipation, Overshoot
 ```
@@ -121,6 +121,43 @@ interleaved `Scale From / Scale To / Position From / Position To` list.
 
 **Anchor deliberately sits in the timing section**, not in either pose block — a pivot that
 moved between the start and end of a move would make the motion very hard to reason about.
+
+### The base transform — a resting pose
+
+Above the stages sits a **— BASE TRANSFORM —** section: a static pose with the same channels a
+stage has, but no timing. It answers "this layer just *sits* here, at this size" without
+spending a whole stage on a From that equals its To.
+
+It composes **innermost**, underneath everything the stages do. That ordering matters: set a
+base scale of 50% and a stage that moves by `0.2` still moves by 0.2 of the *frame*, not 0.1.
+The other order would silently scale down every animation you had already built.
+
+Base opacity multiplies with the stages', so a base of 50 under a stage fading 0 → 100 ends at
+50. **Reset Base Transform** returns the pose to neutral and leaves the animation alone.
+
+### Split scale, and pseudo-3D rotation
+
+**Link Scale X/Y** is on by default and scale behaves as it always did. Turn it off and a
+**Scale Y** field appears at each end, so one axis can squash or stretch independently. On
+unlinking, the current X value is copied into Y at both ends, so nothing moves until you change
+something. With the axes unlinked, dragging a corner of the on-screen gizmo stretches the box
+rather than only resizing it.
+
+**Tilt (X axis)** and **Swivel (Y axis)** are pseudo-3D rotations, named the way Premiere's
+Basic 3D names them. Animate `Swivel −90 → 0` for a card swinging in to face the camera.
+
+They are **orthographic, not perspective**: an axis rotation is exactly a cosine scale, so the
+image squashes rather than foreshortening, and parallel edges stay parallel. It reads as a
+convincing flip in motion and is essentially free — no change to the transform type, no change
+to the CUDA kernel.
+
+Two consequences worth knowing:
+
+- **Past 90°** the cosine goes negative and the image mirrors. That is correct — you are looking
+  at the back of the card — and it is left in rather than clamped.
+- **At exactly 90°** the transform collapses to zero width and the frame is simply invisible,
+  which is what edge-on looks like. Scrubbing slowly through the flip should show no one-frame
+  pop.
 
 ### Fades
 
@@ -424,15 +461,44 @@ with the project.
 move, drag a corner to scale, drag the arm above the top edge to rotate, drag the circled
 crosshair to move the anchor point. The gizmo is cyan for FROM and orange for TO.
 
+The gizmo is drawn **where the image actually is**, not where the stage alone would put it.
+Stages compose, so stage 2's own numbers describe an offset from wherever stage 1 and the base
+have already moved the picture to — a gizmo drawn from stage 2 in isolation would float somewhere
+off the image entirely. The overlay composes the surrounding stages back in for display, and maps
+your drag back out of them before writing, so the box lands on the picture while the numbers
+written stay the stage's own.
+
+The surrounding stages are sampled at **this stage's own start or end frame** — whichever end
+the gizmo is posing — and never at the playhead. That is what keeps the gizmo still while you
+scrub: it marks a fixed place in the move. It also means the TO gizmo sits exactly on the
+rendered image at that stage's end frame, without having to park the playhead there.
+
 **Motion path** (on the image) — the route the stage travels, in the stage's lane colour, with
 a cyan dot at the start and an orange one at the end. Drag either handle to bend it; the white
 dots along it mark equal time intervals, so they show where the move is fast or slow.
+
+The path is **swept over the stage's own span of frames**, so it is fixed in place and does not
+move as you scrub. Each end and its tangent handle are pinned to that end's frame, which is what
+makes consecutive stages meet: where stage 1 leaves the image is where stage 2's route begins.
+Because it follows time rather than the bezier's parameter, it also shows the route bending with
+any other stage that is moving during the same window, and it shows an overshoot genuinely
+carrying the image past its end point and back.
 
 **Stage timing lanes** (bottom) — one lane per stage, drawn against a shared frame ruler with
 the playhead marked. Drag a bar's left or right edge to change its start or end frame; drag its
 middle to slide the whole stage without changing its length. Clicking a lane also selects that
 stage. This is where staggering becomes obvious: the offsets between stages are visible as
 offsets between bars.
+
+Each bar is **shaded by how fast the move is going** at that point, brightest where the motion
+is quickest, and a red tick marks the **peak** — the single fastest moment. That is usually
+where a cut, a sound hit or an impact should land, and for anything but linear easing it is
+*not* the middle of the bar: an Ease Out peaks almost immediately, an Ease In peaks at the very
+end. The shading is measured with the same evaluator that renders the frames, including the
+bounce oscillation, so it does not drift from what actually happens.
+
+Stages that hold a pose rather than change it are left unshaded — the easing curve still has a
+steepest point, but nothing happens there, and marking it would be misleading.
 
 **Curve editor** (top right, toggled by **CURVE**) — the actual easing curve for the active stage, plotted with the
 same evaluator the renderer uses, so what you see is what it does. Drag the two control handles
@@ -449,6 +515,12 @@ The panels are positioned relative to the **image**, not the viewport, so if you
 the picture they can drift off screen. OFX 1.4 removed `kOfxInteractPropViewportSize` and
 provides no other way for a plugin to learn the viewport bounds, so anchoring to the image is
 the only option available. Zoom to fit to bring them back.
+
+**The plugin cannot move the playhead.** Resolve silently ignores the timeline suite's
+`gotoTime`, and OFX offers no alternative, so there is no way to add a "jump to this stage's
+start" button — it was tried and removed. Timing therefore goes the other way round: park the
+playhead and click **Set Start / Set End to Playhead**. Reading the playhead works fine; only
+writing it is unavailable.
 
 ## Performance
 

@@ -20,6 +20,19 @@ namespace mtx {
  *   timeLineGetTime               0             not populated
  *   timeLineGetBounds             [107961, 108116]   <- the clip, 155 frames
  *
+ * The write direction is a dead end as well, measured the same way:
+ *
+ *   timeLineGotoTime              silently ignored
+ *
+ * The suite is present -- timeLineGetBounds above comes from it and works -- but
+ * Resolve does not act on gotoTime. An overlay pair of "jump the playhead to
+ * this stage's start / end" buttons was built on it and removed again when they
+ * turned out to do nothing. OFX 1.4 offers no other route to the host playhead,
+ * so a plugin can read where the playhead is (from the time passed to render and
+ * changedParam) but cannot move it. That is why timing is captured with "Set
+ * Start / End to Playhead" -- park the playhead and click -- rather than the
+ * more obvious other way round.
+ *
  * @return false if the host reports nothing usable, in which case the caller
  *         should fall back to treating render times as already absolute.
  */

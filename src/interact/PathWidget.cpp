@@ -14,26 +14,62 @@ constexpr double kGrabPx       = 10.0;
 
 void PathWidget::layout(const OverlayContext& /*c*/) { }
 
-OfxPointD PathWidget::toScreen(const OverlayContext& c, float nx, float ny) const
+namespace {
+
+/** The stages composed to the left of the active one, at clip time @p t. This
+ *  is what carries a point in the stage's own space out to where it appears. */
+Mat3 OuterAt(const OverlayContext& c, double t)
+{
+    return EvaluateStageContext(c.anim, c.activeStage, static_cast<float>(t),
+                                static_cast<float>(c.rodWidth()),
+                                static_cast<float>(c.rodHeight())).outer;
+}
+
+} // namespace
+
+double PathWidget::endpointTime(const OverlayContext& c, bool end) const
+{
+    const Stage& s = c.anim.stages[c.activeStage];
+    return ClipTimeFromStageFrame(c.anim, s, end ? s.endFrame : s.startFrame);
+}
+
+OfxPointD PathWidget::toScreen(const OverlayContext& c, float nx, float ny, double t) const
 {
     // Position is a normalised offset applied to the anchor, so the point that
-    // actually travels the path is the anchor displaced by that offset.
+    // actually travels the path is the anchor displaced by that offset. (Scale
+    // and rotation pivot about the anchor and so leave it where it is; only the
+    // translation moves it.)
     const Stage& s = c.anim.stages[c.activeStage];
+
+    // Carried out through the preceding stages, or the route would be drawn
+    // where this stage alone would put it rather than where the image goes.
+    float sx, sy;
+    OuterAt(c, t).Apply(
+        static_cast<float>((static_cast<double>(s.anchorX) + nx) * c.rodWidth()),
+        static_cast<float>((static_cast<double>(s.anchorY) + ny) * c.rodHeight()),
+        sx, sy);
+
     OfxPointD p;
-    p.x = c.rod.x1 + (static_cast<double>(s.anchorX) + nx) * c.rodWidth();
-    p.y = c.rod.y1 + (static_cast<double>(s.anchorY) + ny) * c.rodHeight();
+    p.x = c.rod.x1 + sx;
+    p.y = c.rod.y1 + sy;
     return p;
 }
 
-void PathWidget::toNormalised(const OverlayContext& c, const OfxPointD& p,
+void PathWidget::toNormalised(const OverlayContext& c, const OfxPointD& p, double t,
                               double& nx, double& ny) const
 {
     const Stage& s = c.anim.stages[c.activeStage];
     const double w = c.rodWidth()  > 1e-9 ? c.rodWidth()  : 1.0;
     const double h = c.rodHeight() > 1e-9 ? c.rodHeight() : 1.0;
 
-    nx = (p.x - c.rod.x1) / w - static_cast<double>(s.anchorX);
-    ny = (p.y - c.rod.y1) / h - static_cast<double>(s.anchorY);
+    // The exact inverse of toScreen at the same @p t, so a dragged handle lands
+    // under the cursor.
+    float lx, ly;
+    Invert(OuterAt(c, t)).Apply(static_cast<float>(p.x - c.rod.x1),
+                                static_cast<float>(p.y - c.rod.y1), lx, ly);
+
+    nx = static_cast<double>(lx) / w - static_cast<double>(s.anchorX);
+    ny = static_cast<double>(ly) / h - static_cast<double>(s.anchorY);
 }
 
 void PathWidget::draw(const OverlayContext& c)
@@ -44,10 +80,17 @@ void PathWidget::draw(const OverlayContext& c)
     float c1x, c1y, c2x, c2y;
     PathControlPoints(s, c1x, c1y, c2x, c2y);
 
-    const OfxPointD p0 = toScreen(c, s.posXFrom, s.posYFrom);
-    const OfxPointD p3 = toScreen(c, s.posXTo,   s.posYTo);
-    const OfxPointD h1 = toScreen(c, c1x, c1y);
-    const OfxPointD h2 = toScreen(c, c2x, c2y);
+    // Each end of the path, and the tangent handle belonging to it, is pinned to
+    // that end's own frame. So the start of the route is drawn where the image
+    // genuinely begins the move and the end where it genuinely finishes, and
+    // both stay put while the playhead travels.
+    const double tA = endpointTime(c, false);
+    const double tB = endpointTime(c, true);
+
+    const OfxPointD p0 = toScreen(c, s.posXFrom, s.posYFrom, tA);
+    const OfxPointD p3 = toScreen(c, s.posXTo,   s.posYTo,   tB);
+    const OfxPointD h1 = toScreen(c, c1x, c1y, tA);
+    const OfxPointD h2 = toScreen(c, c2x, c2y, tB);
 
     // A path with no extent and no bend has nothing to show, and drawing a
     // cluster of overlapping handles on a stationary stage is just clutter.
@@ -58,13 +101,24 @@ void PathWidget::draw(const OverlayContext& c)
         s.pathC2X == 0.0f && s.pathC2Y == 0.0f;
     if (straightAndStill) return;
 
-    // The trajectory, sampled through the same evaluator the renderer uses.
+    // The trajectory, swept over the stage's own span of time rather than over
+    // the bezier's parameter. Those differ once other stages are also moving
+    // during this window: the image's real route then bends with them, and the
+    // route is what this is meant to show. Sweeping time also picks up easing
+    // that leaves 0..1 -- an overshoot really does carry the image past its end
+    // point and back, and now that shows.
     OfxPointD pts[kPathSegments + 1];
     for (int i = 0; i <= kPathSegments; ++i)
     {
+        const double f = static_cast<double>(i) / kPathSegments;
+        const double t = tA + (tB - tA) * f;
+
+        // StageProgress already applies the easing, so this is the eased value
+        // the renderer would use at that frame.
         float px, py;
-        EvaluatePath(s, static_cast<float>(i) / kPathSegments, px, py);
-        pts[i] = toScreen(c, px, py);
+        EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(t))),
+                     px, py);
+        pts[i] = toScreen(c, px, py, t);
     }
 
     SetColour(c, { 0.0f, 0.0f, 0.0f, 0.55f });
@@ -87,11 +141,12 @@ void PathWidget::draw(const OverlayContext& c)
     SetColour(c, { 1.0f, 1.0f, 1.0f, 0.45f });
     for (int i = 1; i < 10; ++i)
     {
-        const float e = ApplyEasing(static_cast<float>(i) / 10.0f, s.easing);
+        const double tt = tA + (tB - tA) * (static_cast<double>(i) / 10.0);
         float px, py;
-        EvaluatePath(s, e, px, py);
-        const OfxPointD t = toScreen(c, px, py);
-        Ellipse(c, t.x, t.y, c.sx(2.0), c.sy(2.0));
+        EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(tt))),
+                     px, py);
+        const OfxPointD d = toScreen(c, px, py, tt);
+        Ellipse(c, d.x, d.y, c.sx(2.0), c.sy(2.0));
     }
 
     // Endpoints, then handles on top.
@@ -112,8 +167,8 @@ bool PathWidget::penDown(const OverlayContext& c, const OfxPointD& p)
     float c1x, c1y, c2x, c2y;
     PathControlPoints(s, c1x, c1y, c2x, c2y);
 
-    const OfxPointD h1 = toScreen(c, c1x, c1y);
-    const OfxPointD h2 = toScreen(c, c2x, c2y);
+    const OfxPointD h1 = toScreen(c, c1x, c1y, endpointTime(c, false));
+    const OfxPointD h2 = toScreen(c, c2x, c2y, endpointTime(c, true));
 
     if      (NearPoint(c, p, h1.x, h1.y, kGrabPx)) _drag = kDragC1;
     else if (NearPoint(c, p, h2.x, h2.y, kGrabPx)) _drag = kDragC2;
@@ -128,8 +183,10 @@ bool PathWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
 
     const Stage& s = c.anim.stages[c.activeStage];
 
+    // Inverted at the same frame the handle was drawn at, or it would jump away
+    // from the cursor the moment another stage is doing anything.
     double nx = 0.0, ny = 0.0;
-    toNormalised(c, p, nx, ny);
+    toNormalised(c, p, endpointTime(c, _drag == kDragC2), nx, ny);
 
     // Stored as an offset from the straight-line position, so the handle stays
     // put relative to the path when From or To is moved afterwards.

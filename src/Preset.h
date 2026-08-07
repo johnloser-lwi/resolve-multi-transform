@@ -25,8 +25,12 @@ struct PresetStage
     float startFrame, endFrame;
 
     float scaleFrom, scaleTo;
+    float scaleYFrom, scaleYTo;
+    bool  linkScale;
     float posXFrom, posYFrom, posXTo, posYTo;
     float rotFrom, rotTo;
+    float tiltXFrom, tiltXTo;
+    float swivelYFrom, swivelYTo;
     float opacityFrom, opacityTo;
     float anchorX, anchorY;
     float pathC1X, pathC1Y, pathC2X, pathC2Y;
@@ -60,6 +64,10 @@ struct PresetData
     float shutterAngle, shutterPhase;
     int   blurSamples;
     bool  blurAdaptive;
+
+    /// The resting pose. Also a global, so a single-stage preset leaves it alone
+    /// -- a reusable "punch in" should not drag someone else's framing with it.
+    BasePose base;
 
     /// For a single-stage preset only stages[0] is populated.
     PresetStage stages[kMaxStages];

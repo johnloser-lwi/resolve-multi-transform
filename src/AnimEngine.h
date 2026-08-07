@@ -293,10 +293,14 @@ struct Stage
     float startFrame;   ///< frames from the anchor
     float endFrame;     ///< frames from the anchor
 
-    float scaleFrom,    scaleTo;      ///< uniform scale multiplier
+    float scaleFrom,    scaleTo;      ///< X scale, and both axes when linked
+    float scaleYFrom,   scaleYTo;     ///< Y scale, used only when linkScale is false
+    bool  linkScale;                  ///< Y follows X
     float posXFrom,     posXTo;       ///< normalised: 1.0 == one image width
     float posYFrom,     posYTo;
-    float rotFrom,      rotTo;        ///< degrees
+    float rotFrom,      rotTo;        ///< degrees, in the image plane
+    float tiltXFrom,    tiltXTo;      ///< degrees about the horizontal axis
+    float swivelYFrom,  swivelYTo;    ///< degrees about the vertical axis
     float opacityFrom,  opacityTo;    ///< 0..1
     float anchorX,      anchorY;      ///< normalised, 0.5,0.5 == image centre
 
@@ -316,9 +320,13 @@ struct Stage
         s.startFrame = 0.0f;
         s.endFrame   = 24.0f;
         s.scaleFrom   = 1.0f; s.scaleTo   = 1.0f;
+        s.scaleYFrom  = 1.0f; s.scaleYTo  = 1.0f;
+        s.linkScale   = true;
         s.posXFrom    = 0.0f; s.posXTo    = 0.0f;
         s.posYFrom    = 0.0f; s.posYTo    = 0.0f;
         s.rotFrom     = 0.0f; s.rotTo     = 0.0f;
+        s.tiltXFrom   = 0.0f; s.tiltXTo   = 0.0f;
+        s.swivelYFrom = 0.0f; s.swivelYTo = 0.0f;
         s.opacityFrom = 1.0f; s.opacityTo = 1.0f;
         s.anchorX     = 0.5f; s.anchorY   = 0.5f;
         s.pathC1X     = 0.0f; s.pathC1Y   = 0.0f;
@@ -331,11 +339,73 @@ struct Stage
     MTX_HD float Duration() const { return endFrame - startFrame; }
 };
 
+/** @brief A static resting pose, applied underneath the animation.
+ *
+ * Exists so an element can be positioned and sized *before* anything animates,
+ * without spending a stage on a From==To pair.
+ */
+struct BasePose
+{
+    float scaleX, scaleY;
+    bool  linkScale;
+    float posX, posY;
+    float rot;            ///< in-plane rotation, degrees
+    float tiltX;          ///< about the horizontal axis, degrees
+    float swivelY;        ///< about the vertical axis, degrees
+    float opacity;        ///< 0..1
+    float anchorX, anchorY;
+
+    MTX_HD static BasePose Default()
+    {
+        BasePose b;
+        b.scaleX = 1.0f; b.scaleY = 1.0f; b.linkScale = true;
+        b.posX   = 0.0f; b.posY   = 0.0f;
+        b.rot    = 0.0f; b.tiltX  = 0.0f; b.swivelY = 0.0f;
+        b.opacity = 1.0f;
+        b.anchorX = 0.5f; b.anchorY = 0.5f;
+        return b;
+    }
+
+    /** @brief Whether this pose does nothing, so it can be skipped entirely. */
+    MTX_HD bool IsNeutral() const
+    {
+        const float e = 1e-5f;
+        return fabsf(scaleX - 1.0f) <= e && fabsf(scaleY - 1.0f) <= e
+            && fabsf(posX) <= e && fabsf(posY) <= e
+            && fabsf(rot) <= e && fabsf(tiltX) <= e && fabsf(swivelY) <= e
+            && fabsf(opacity - 1.0f) <= e;
+    }
+};
+
+/** @brief Scale factors for an orthographic axis rotation.
+ *
+ * An orthographic rotation about a screen-aligned axis is exactly a scale: turn
+ * a plane 60 degrees about the vertical axis and it covers cos(60) = half the
+ * width, with its height untouched. No foreshortening, because parallel edges
+ * stay parallel under an affine transform.
+ *
+ * Past 90 degrees the cosine goes negative and the image mirrors, which is the
+ * correct reading -- a card turned past edge-on shows its back.
+ *
+ * At exactly 90 degrees the factor is zero and the transform collapses. That is
+ * handled where the shutter samples are built, not here: a degenerate matrix has
+ * no inverse, and the renderer must draw nothing rather than fall back to an
+ * untransformed frame.
+ */
+MTX_HD inline void OrthographicScale(float tiltXDeg, float swivelYDeg,
+                                     float& outX, float& outY)
+{
+    const float k = static_cast<float>(kPi) / 180.0f;
+    outX = cosf(swivelYDeg * k);
+    outY = cosf(tiltXDeg  * k);
+}
+
 /** @brief The complete animation description. */
 struct AnimParams
 {
-    int   stageCount;
-    Stage stages[kMaxStages];
+    int      stageCount;
+    BasePose base;
+    Stage    stages[kMaxStages];
 
     /// The clip, so a stage can resolve its anchor. Times handed to the
     /// evaluator are clip-relative, meaning 0 is the clip's first frame.
@@ -346,6 +416,7 @@ struct AnimParams
     {
         AnimParams a;
         a.stageCount = 1;
+        a.base       = BasePose::Default();
         a.clipStart  = 0.0f;
         a.clipLength = 0.0f;
         for (int i = 0; i < kMaxStages; ++i) a.stages[i] = Stage::Default();
@@ -478,8 +549,17 @@ MTX_HD inline Mat3 EvaluateStage(const Stage& s, float t, float width, float hei
 {
     const float e = StageProgress(s, t);
 
-    const float scale = Lerp(s.scaleFrom, s.scaleTo, e);
-    const float rot   = Lerp(s.rotFrom,   s.rotTo,   e);
+    const float rot = Lerp(s.rotFrom, s.rotTo, e);
+
+    // Y follows X while linked, so the unused Y values can sit at whatever they
+    // were without leaking into the result.
+    const float scaleX = Lerp(s.scaleFrom, s.scaleTo, e);
+    const float scaleY = s.linkScale ? scaleX : Lerp(s.scaleYFrom, s.scaleYTo, e);
+
+    // Orthographic tilt and swivel are scale factors, so they simply multiply.
+    float orthoX, orthoY;
+    OrthographicScale(Lerp(s.tiltXFrom,   s.tiltXTo,   e),
+                      Lerp(s.swivelYFrom, s.swivelYTo, e), orthoX, orthoY);
 
     float px, py;
     EvaluatePath(s, e, px, py);
@@ -487,7 +567,21 @@ MTX_HD inline Mat3 EvaluateStage(const Stage& s, float t, float width, float hei
     const float posY = py * height;
 
     return MakeTransform(s.anchorX * width, s.anchorY * height,
-                         scale, scale, rot, posX, posY);
+                         scaleX * orthoX, scaleY * orthoY, rot, posX, posY);
+}
+
+/** @brief The static base pose as a matrix, in pixel space. */
+MTX_HD inline Mat3 EvaluateBase(const BasePose& b, float width, float height)
+{
+    const float scaleX = b.scaleX;
+    const float scaleY = b.linkScale ? b.scaleX : b.scaleY;
+
+    float orthoX, orthoY;
+    OrthographicScale(b.tiltX, b.swivelY, orthoX, orthoY);
+
+    return MakeTransform(b.anchorX * width, b.anchorY * height,
+                         scaleX * orthoX, scaleY * orthoY, b.rot,
+                         b.posX * width, b.posY * height);
 }
 
 /** @brief The composed forward transform (source -> destination) at time @p t.
@@ -507,7 +601,70 @@ MTX_HD inline Mat3 EvaluateTransform(const AnimParams& a, float t, float width, 
                                         StageLocalTime(a, a.stages[i], t),
                                         width, height);
     }
+
+    // The base goes rightmost, which means applied first: it is the resting pose
+    // the animation acts upon. The other order would put every stage's
+    // translation into the base's scaled space, so a base at 50% would silently
+    // halve the distance every existing animation travels.
+    if (!a.base.IsNeutral())
+        result = result * EvaluateBase(a.base, width, height);
+
     return result;
+}
+
+/** @brief Everything one stage's transform is sandwiched between.
+ *
+ * `EvaluateTransform` composes `S0 * S1 * ... * Sn * Base`, so a single stage's
+ * own matrix says nothing about where the image actually ends up -- the stages
+ * around it move it somewhere else. Editing stage 2 with a gizmo drawn from
+ * stage 2 alone therefore means dragging a box that is nowhere near the picture.
+ *
+ * Splitting the composition at stage @p stageIndex gives the two halves needed
+ * to put a control back on the image:
+ *
+ *     full = outer * Sᵢ * inner
+ *
+ * @c outer is applied *after* the stage (the stages to its left), @c inner
+ * before it (the stages to its right, plus the base pose). A control drawn
+ * through the whole product lands on the picture; a drag mapped back through
+ * `Invert(outer)` still writes the stage's own numbers.
+ */
+struct StageContext
+{
+    Mat3 outer;   ///< stages composed to the left of this one
+    Mat3 inner;   ///< stages to the right, and the base pose
+};
+
+/** @brief The context surrounding @p stageIndex at time @p t.
+ *
+ * Every other stage is evaluated at the current time, not at the edited stage's
+ * endpoints: the question a gizmo answers is "where would this end sit, given
+ * everything else as it is right now", which is what makes the box coincide
+ * with the rendered image when the playhead is parked on that end.
+ */
+inline StageContext EvaluateStageContext(const AnimParams& a, int stageIndex,
+                                         float t, float width, float height)
+{
+    StageContext ctx;
+    ctx.outer = Mat3::Identity();
+    ctx.inner = Mat3::Identity();
+
+    const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
+    for (int i = 0; i < count; ++i)
+    {
+        if (i == stageIndex) continue;
+        if (!a.stages[i].enabled) continue;
+
+        const Mat3 m = EvaluateStage(a.stages[i],
+                                     StageLocalTime(a, a.stages[i], t), width, height);
+        if (i < stageIndex) ctx.outer = ctx.outer * m;
+        else                ctx.inner = ctx.inner * m;
+    }
+
+    if (!a.base.IsNeutral())
+        ctx.inner = ctx.inner * EvaluateBase(a.base, width, height);
+
+    return ctx;
 }
 
 /** @brief Combined opacity of every contributing stage at time @p t.
@@ -528,6 +685,8 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
         opacity *= Lerp(s.opacityFrom, s.opacityTo,
                         StageProgress(s, StageLocalTime(a, s, t)));
     }
+
+    opacity *= a.base.opacity;
 
     // Overshoot easing can legitimately drive the interpolation past its
     // endpoints; a negative or >1 opacity is meaningless, so clamp here rather
@@ -554,16 +713,96 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
  * cost is giving up the skip on frames that merely happen to be neutral, which
  * measures at about 0.3 ms per frame -- not worth a stale picture.
  */
+/** Steps used to sample an easing curve's speed. Shared so the shading and the
+ *  peak marker on the timeline are measured the same way and cannot disagree. */
+constexpr int kVelocitySteps = 48;
+
+/** @brief How much the eased value moves across step @p k of kVelocitySteps.
+ *
+ * Sampled as a difference rather than differentiated analytically: the curve is
+ * not merely a bezier once a bounce multiplies an oscillation into it, and a
+ * difference is both simpler and correct for every easing the plugin offers.
+ */
+inline float EasingSpeed(const Easing& e, int k)
+{
+    const float p0 = static_cast<float>(k)     / static_cast<float>(kVelocitySteps);
+    const float p1 = static_cast<float>(k + 1) / static_cast<float>(kVelocitySteps);
+    return fabsf(ApplyEasing(p1, e) - ApplyEasing(p0, e));
+}
+
+/** @brief Progress in 0..1 at which the move is at its fastest.
+ *
+ * This is the frame an edit usually wants to land on -- the middle of the
+ * action rather than the middle of the stage, which are the same thing only for
+ * linear easing.
+ *
+ * Ties go to the earliest step. A linear curve is one long tie, and reporting
+ * its start is more honest than picking an arbitrary point in the middle and
+ * implying the motion peaks there.
+ */
+inline float PeakVelocityProgress(const Easing& e)
+{
+    float best = -1.0f;
+    int   peak = 0;
+    for (int k = 0; k < kVelocitySteps; ++k)
+    {
+        const float v = EasingSpeed(e, k);
+        if (v > best) { best = v; peak = k; }
+    }
+    return (static_cast<float>(peak) + 0.5f) / static_cast<float>(kVelocitySteps);
+}
+
+/** @brief Whether a stage actually changes anything between its two ends.
+ *
+ * Distinct from IsNoOp, which asks whether a stage is *neutral*. A stage held at
+ * a constant 1.5x scale is far from neutral but does not move, so plotting a
+ * velocity for it would be meaningless -- the easing curve still has a steepest
+ * point, but nothing happens there.
+ */
+inline bool StageMoves(const Stage& s)
+{
+    const float kEps = 1e-5f;
+    const auto differs = [kEps](float a, float b) { return fabsf(a - b) > kEps; };
+
+    if (differs(s.scaleFrom, s.scaleTo))     return true;
+    if (!s.linkScale && differs(s.scaleYFrom, s.scaleYTo)) return true;
+    if (differs(s.posXFrom, s.posXTo))       return true;
+    if (differs(s.posYFrom, s.posYTo))       return true;
+    if (differs(s.rotFrom, s.rotTo))         return true;
+    if (differs(s.tiltXFrom, s.tiltXTo))     return true;
+    if (differs(s.swivelYFrom, s.swivelYTo)) return true;
+    if (differs(s.opacityFrom, s.opacityTo)) return true;
+
+    // A bent path moves even when the two endpoints coincide.
+    if (fabsf(s.pathC1X) > kEps || fabsf(s.pathC1Y) > kEps) return true;
+    if (fabsf(s.pathC2X) > kEps || fabsf(s.pathC2Y) > kEps) return true;
+
+    return false;
+}
+
 inline bool IsNoOp(const AnimParams& a)
 {
     const float kEps = 1e-5f;
     const auto near = [kEps](float v, float target) { return fabsf(v - target) <= kEps; };
+
+    // A base pose that does anything is enough on its own.
+    if (!a.base.IsNeutral()) return false;
 
     const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
     for (int i = 0; i < count; ++i)
     {
         const Stage& s = a.stages[i];
         if (!s.enabled) continue;
+
+        // Every channel that can move a pixel has to be able to defeat this, or
+        // a stage that only tilts would report itself as doing nothing and be
+        // skipped outright.
+        if (!near(s.tiltXFrom, 0.0f)   || !near(s.tiltXTo, 0.0f))   return false;
+        if (!near(s.swivelYFrom, 0.0f) || !near(s.swivelYTo, 0.0f)) return false;
+        if (!s.linkScale)
+        {
+            if (!near(s.scaleYFrom, 1.0f) || !near(s.scaleYTo, 1.0f)) return false;
+        }
 
         if (!near(s.scaleFrom, 1.0f)   || !near(s.scaleTo, 1.0f))   return false;
         if (!near(s.posXFrom, 0.0f)    || !near(s.posXTo, 0.0f))    return false;

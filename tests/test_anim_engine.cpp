@@ -879,6 +879,459 @@ static void TestAnchorsCoexistInOneEffect()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Base pose, split scale, orthographic 3D
+
+static void TestNeutralBaseChangesNothing()
+{
+    std::printf("A neutral base pose is exactly the identity\n");
+
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled    = true;
+    a.stages[0].easing     = Easing::Linear();
+    a.stages[0].startFrame = 0.0f;
+    a.stages[0].endFrame   = 20.0f;
+    a.stages[0].scaleTo    = 1.5f;
+
+    // Same setup, base explicitly defaulted: existing projects must be
+    // bit-for-bit unaffected by the base transform existing at all.
+    AnimParams withBase = a;
+    withBase.base = BasePose::Default();
+
+    bool identical = true;
+    for (int i = 0; i <= 20; ++i)
+    {
+        const Mat3 m1 = EvaluateTransform(a,        static_cast<float>(i), 1920.0f, 1080.0f);
+        const Mat3 m2 = EvaluateTransform(withBase, static_cast<float>(i), 1920.0f, 1080.0f);
+        for (int k = 0; k < 6; ++k) if (m1.m[k] != m2.m[k]) identical = false;
+    }
+    Check(identical, "a default base leaves every frame untouched");
+    Check(BasePose::Default().IsNeutral(), "the default base reports itself neutral");
+}
+
+static void TestBaseComposesInnermost()
+{
+    std::printf("Base pose composes underneath the animation\n");
+
+    const float W = 1000.0f, H = 1000.0f;
+
+    // A base at 50% with a stage that translates by 0.2 of the frame. The stage
+    // must still move a full 0.2 of the FRAME, not 0.2 of the shrunken element:
+    // composing the other way round would silently halve the distance every
+    // existing animation travels the moment a base scale was set.
+    AnimParams a = AnimParams::Default();
+    a.base.scaleX = 0.5f; a.base.scaleY = 0.5f;
+    a.base.anchorX = 0.0f; a.base.anchorY = 0.0f;
+
+    a.stages[0].enabled    = true;
+    a.stages[0].easing     = Easing::Linear();
+    a.stages[0].startFrame = 0.0f;
+    a.stages[0].endFrame   = 10.0f;
+    a.stages[0].posXFrom   = 0.0f;
+    a.stages[0].posXTo     = 0.2f;
+    a.stages[0].anchorX    = 0.0f; a.stages[0].anchorY = 0.0f;
+
+    const Mat3 start = EvaluateTransform(a, 0.0f,  W, H);
+    const Mat3 end   = EvaluateTransform(a, 10.0f, W, H);
+
+    float x0, y0, x1, y1;
+    start.Apply(0.0f, 0.0f, x0, y0);
+    end.Apply(0.0f, 0.0f, x1, y1);
+
+    CheckNear(x1 - x0, 200.0f, 1e-2f, "the stage moves a full 0.2 of the frame, not of the base");
+
+    // And the base scale is still in effect.
+    float cx, cy;
+    start.Apply(W, H, cx, cy);
+    CheckNear(cx, 500.0f, 1e-2f, "base scale applies to the source geometry");
+}
+
+static void TestSplitScale()
+{
+    std::printf("Split scale X and Y\n");
+
+    const float W = 1000.0f, H = 1000.0f;
+
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled    = true;
+    a.stages[0].easing     = Easing::Linear();
+    a.stages[0].startFrame = 0.0f;
+    a.stages[0].endFrame   = 10.0f;
+    a.stages[0].anchorX    = 0.0f; a.stages[0].anchorY = 0.0f;
+    a.stages[0].scaleFrom  = 2.0f; a.stages[0].scaleTo  = 2.0f;
+    a.stages[0].scaleYFrom = 3.0f; a.stages[0].scaleYTo = 3.0f;
+
+    // Linked: Y follows X, and the Y values are ignored entirely rather than
+    // leaking through.
+    a.stages[0].linkScale = true;
+    float x, y;
+    EvaluateTransform(a, 5.0f, W, H).Apply(100.0f, 100.0f, x, y);
+    CheckNear(x, 200.0f, 1e-3f, "linked: x uses the X scale");
+    CheckNear(y, 200.0f, 1e-3f, "linked: y also uses the X scale");
+
+    a.stages[0].linkScale = false;
+    EvaluateTransform(a, 5.0f, W, H).Apply(100.0f, 100.0f, x, y);
+    CheckNear(x, 200.0f, 1e-3f, "unlinked: x uses the X scale");
+    CheckNear(y, 300.0f, 1e-3f, "unlinked: y uses its own scale");
+
+    // The same rule on the base pose.
+    AnimParams b = AnimParams::Default();
+    b.base.anchorX = 0.0f; b.base.anchorY = 0.0f;
+    b.base.scaleX = 2.0f;  b.base.scaleY = 4.0f;
+
+    b.base.linkScale = true;
+    EvaluateTransform(b, 0.0f, W, H).Apply(100.0f, 100.0f, x, y);
+    CheckNear(y, 200.0f, 1e-3f, "linked base: y follows x");
+
+    b.base.linkScale = false;
+    EvaluateTransform(b, 0.0f, W, H).Apply(100.0f, 100.0f, x, y);
+    CheckNear(y, 400.0f, 1e-3f, "unlinked base: y is independent");
+}
+
+static void TestOrthographicRotation()
+{
+    std::printf("Orthographic tilt and swivel\n");
+
+    float sx = 0.0f, sy = 0.0f;
+
+    OrthographicScale(0.0f, 0.0f, sx, sy);
+    CheckNear(sx, 1.0f, 1e-5f, "no rotation leaves x alone");
+    CheckNear(sy, 1.0f, 1e-5f, "no rotation leaves y alone");
+
+    // A swivel squashes horizontally only; a tilt vertically only.
+    OrthographicScale(0.0f, 60.0f, sx, sy);
+    CheckNear(sx, 0.5f, 1e-4f, "60 degrees of swivel halves the width");
+    CheckNear(sy, 1.0f, 1e-5f, "swivel leaves the height alone");
+
+    OrthographicScale(60.0f, 0.0f, sx, sy);
+    CheckNear(sx, 1.0f, 1e-5f, "tilt leaves the width alone");
+    CheckNear(sy, 0.5f, 1e-4f, "60 degrees of tilt halves the height");
+
+    // Edge-on collapses to nothing.
+    OrthographicScale(0.0f, 90.0f, sx, sy);
+    CheckNear(sx, 0.0f, 1e-6f, "90 degrees is edge-on");
+
+    // Past edge-on the sign flips, which mirrors the image -- the correct
+    // reading of a card turned past 90.
+    OrthographicScale(0.0f, 180.0f, sx, sy);
+    CheckNear(sx, -1.0f, 1e-5f, "180 degrees mirrors rather than clamping");
+
+    // And it reaches the transform.
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled     = true;
+    a.stages[0].easing      = Easing::Linear();
+    a.stages[0].startFrame  = 0.0f;
+    a.stages[0].endFrame    = 10.0f;
+    a.stages[0].anchorX     = 0.0f; a.stages[0].anchorY = 0.0f;
+    a.stages[0].swivelYFrom = 60.0f; a.stages[0].swivelYTo = 60.0f;
+
+    float x, y;
+    EvaluateTransform(a, 5.0f, 1000.0f, 1000.0f).Apply(100.0f, 100.0f, x, y);
+    CheckNear(x, 50.0f,  1e-2f, "swivel narrows the transform");
+    CheckNear(y, 100.0f, 1e-2f, "swivel leaves the height untouched");
+}
+
+static void TestEdgeOnRendersNothing()
+{
+    std::printf("A collapsed transform renders nothing, not a full-size frame\n");
+
+    // Invert() falls back to the identity for a degenerate matrix, so without
+    // special handling a swivel passing through exactly 90 degrees would snap
+    // the image to full size for a frame -- a pop in the middle of every flip.
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled     = true;
+    a.stages[0].easing      = Easing::Linear();
+    a.stages[0].startFrame  = 0.0f;
+    a.stages[0].endFrame    = 10.0f;
+    a.stages[0].swivelYFrom = 90.0f;
+    a.stages[0].swivelYTo   = 90.0f;
+
+    BlurParams off = BlurParams::Default();
+    off.enabled = false;
+
+    const SampleTransforms st = BuildSampleTransforms(a, off, 5.0f, 1920.0f, 1080.0f);
+    CheckNear(st.opacity[0], 0.0f, 1e-6f, "edge-on is fully transparent");
+
+    // The inverse must be neutralised too, not just the opacity. Invert() only
+    // falls back to the identity below 1e-12, and cosf(90 degrees) is -4.4e-8 --
+    // far above it -- so the matrix really is inverted and 1/det throws the
+    // sampling coordinates out by seven orders of magnitude. A zero opacity
+    // hides the colour but does not stop the fetch, and on the CUDA path that
+    // fetch faults and kills the context, blacking out every frame that follows.
+    const Mat3 ident = Mat3::Identity();
+    for (int e = 0; e < 6; ++e)
+        CheckNear(st.inv[0].m[e], ident.m[e], 1e-6f,
+                  "a collapsed sample keeps an identity inverse, so nothing is fetched out of range");
+
+    // Either side of edge-on it must be visible again, so the collapse is a
+    // single instant rather than a hole in the animation.
+    a.stages[0].swivelYFrom = 80.0f; a.stages[0].swivelYTo = 80.0f;
+    const SampleTransforms before = BuildSampleTransforms(a, off, 5.0f, 1920.0f, 1080.0f);
+    Check(before.opacity[0] > 0.9f, "just short of edge-on is still visible");
+
+    a.stages[0].swivelYFrom = 100.0f; a.stages[0].swivelYTo = 100.0f;
+    const SampleTransforms past = BuildSampleTransforms(a, off, 5.0f, 1920.0f, 1080.0f);
+    Check(past.opacity[0] > 0.9f, "past edge-on is visible again, mirrored");
+
+    // The other side of the threshold: a deliberately tiny scale is not a
+    // collapse and must still render. A 1% scale has a determinant of 1e-4,
+    // hundreds of times the one-pixel cutoff.
+    AnimParams smallScale = AnimParams::Default();
+    smallScale.stages[0].enabled   = true;
+    smallScale.stages[0].startFrame = 0.0f;
+    smallScale.stages[0].endFrame   = 10.0f;
+    smallScale.stages[0].scaleFrom  = 0.01f;
+    smallScale.stages[0].scaleTo    = 0.01f;
+    Check(BuildSampleTransforms(smallScale, off, 5.0f, 1920.0f, 1080.0f).opacity[0] > 0.9f,
+          "a 1% scale is small, not collapsed, and stays visible");
+
+    // A tilt collapses the same way.
+    AnimParams t = AnimParams::Default();
+    t.stages[0].enabled    = true;
+    t.stages[0].startFrame = 0.0f;
+    t.stages[0].endFrame   = 10.0f;
+    t.stages[0].tiltXFrom  = 90.0f;
+    t.stages[0].tiltXTo    = 90.0f;
+    CheckNear(BuildSampleTransforms(t, off, 5.0f, 1920.0f, 1080.0f).opacity[0], 0.0f, 1e-6f,
+              "an edge-on tilt is also transparent");
+}
+
+static void TestStageContextRebuildsTheWhole()
+{
+    std::printf("A stage's context reconstitutes the full transform\n");
+
+    // The overlay draws its controls through outer * stage * inner. If that
+    // product is not exactly what the renderer computes, the gizmo sits beside
+    // the picture instead of on it -- which is the bug this exists to prevent.
+    AnimParams a = AnimParams::Default();
+    a.stageCount = 4;
+    for (int i = 0; i < 4; ++i)
+    {
+        Stage& s = a.stages[i];
+        s.enabled    = true;
+        s.startFrame = static_cast<float>(i) * 3.0f;
+        s.endFrame   = s.startFrame + 20.0f;
+        s.scaleTo    = 1.0f + 0.2f * static_cast<float>(i + 1);
+        s.rotTo      = 10.0f * static_cast<float>(i + 1);
+        s.posXTo     = 0.05f * static_cast<float>(i + 1);
+        s.posYTo     = -0.03f * static_cast<float>(i + 1);
+        s.anchorX    = 0.4f;
+        s.anchorY    = 0.6f;
+    }
+    a.base.scaleX  = 0.7f;
+    a.base.posX    = 0.2f;
+    a.base.rot     = -15.0f;
+    a.base.swivelY = 25.0f;
+
+    const float W = 1920.0f, H = 1080.0f;
+    const float t = 11.0f;
+
+    const Mat3 full = EvaluateTransform(a, t, W, H);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const StageContext ctx = EvaluateStageContext(a, i, t, W, H);
+        const Mat3 own   = EvaluateStage(a.stages[i], StageLocalTime(a, a.stages[i], t), W, H);
+        const Mat3 rebuilt = ctx.outer * own * ctx.inner;
+
+        for (int e = 0; e < 6; ++e)
+            CheckNear(rebuilt.m[e], full.m[e], 2e-2f,
+                      "stage " + std::to_string(i + 1) + " context rebuilds the full transform");
+    }
+
+    // A disabled stage contributes nothing, so removing it from the middle must
+    // not shift where the others believe they are.
+    a.stages[1].enabled = false;
+    const Mat3 fullNo1 = EvaluateTransform(a, t, W, H);
+    const StageContext ctx2 = EvaluateStageContext(a, 2, t, W, H);
+    const Mat3 own2 = EvaluateStage(a.stages[2], StageLocalTime(a, a.stages[2], t), W, H);
+    const Mat3 rebuilt2 = ctx2.outer * own2 * ctx2.inner;
+    for (int e = 0; e < 6; ++e)
+        CheckNear(rebuilt2.m[e], fullNo1.m[e], 2e-2f,
+                  "a disabled neighbour drops out of the context too");
+
+    // With one stage and a neutral base there is nothing around it, so the
+    // context must be the identity -- the overlay's behaviour in the simple
+    // case has to be exactly what it always was.
+    AnimParams solo = AnimParams::Default();
+    solo.stageCount = 1;
+    solo.stages[0].enabled = true;
+    const StageContext plain = EvaluateStageContext(solo, 0, 5.0f, W, H);
+    const Mat3 ident = Mat3::Identity();
+    for (int e = 0; e < 6; ++e)
+    {
+        CheckNear(plain.outer.m[e], ident.m[e], 1e-6f, "a lone stage has an identity outer");
+        CheckNear(plain.inner.m[e], ident.m[e], 1e-6f, "a lone stage has an identity inner");
+    }
+}
+
+static void TestEndpointsAreExact()
+{
+    std::printf("A stage is exactly at its From and To on its own frames\n");
+
+    // The overlay pins its controls to the stage's start and end frames rather
+    // than to the playhead, so they mark fixed places instead of drifting as you
+    // scrub. That only puts them ON the image if a stage is exactly at its From
+    // on its start frame and exactly at its To on its end frame -- so no easing,
+    // however far it wanders in between, may leave the endpoints off target.
+    const Easing curves[6] = {
+        Easing::Linear(), Easing::Smooth(), Easing::EaseIn(), Easing::EaseOut(),
+        MakeEasing(0.0f, 30.0f, 0.0f, 0.0f, kBounceSpring, 60.0f, 3.0f, 45.0f, 60.0f),
+        MakeEasing(20.0f, 0.0f, 0.0f, 80.0f, kBounceBall, 80.0f, 4.0f, 35.0f, 45.0f)
+    };
+
+    for (int e = 0; e < 6; ++e)
+    {
+        CheckNear(ApplyEasing(0.0f, curves[e]), 0.0f, 1e-5f, "easing starts exactly at 0");
+        CheckNear(ApplyEasing(1.0f, curves[e]), 1.0f, 1e-5f, "easing lands exactly on 1");
+    }
+
+    // And the same through the anchor mapping, for every anchor mode: the
+    // endpoint frame has to round-trip to progress 0 and 1 whether the stage is
+    // measured from the clip start, the clip end, the timeline, or stretched.
+    const int anchors[4] = { kAnchorClipStart, kAnchorClipEnd, kAnchorTimeline, kAnchorStretch };
+    for (int k = 0; k < 4; ++k)
+    {
+        AnimParams a = AnimParams::Default();
+        a.stageCount = 1;
+        a.clipStart  = 107961.0f;
+        a.clipLength = 155.0f;
+
+        Stage& s = a.stages[0];
+        s.enabled = true;
+        s.easing  = Easing::Smooth();
+        s.anchor  = anchors[k];
+
+        if (anchors[k] == kAnchorStretch)      { s.startFrame = 10.0f;  s.endFrame = 80.0f; }
+        else if (anchors[k] == kAnchorClipEnd) { s.startFrame = -24.0f; s.endFrame =  0.0f; }
+        else                                   { s.startFrame = 6.0f;   s.endFrame = 30.0f; }
+
+        const float tA = ClipTimeFromStageFrame(a, s, s.startFrame);
+        const float tB = ClipTimeFromStageFrame(a, s, s.endFrame);
+
+        CheckNear(StageProgress(s, StageLocalTime(a, s, tA)), 0.0f, 1e-4f,
+                  "the start frame is progress 0 under anchor " + std::to_string(k));
+        CheckNear(StageProgress(s, StageLocalTime(a, s, tB)), 1.0f, 1e-4f,
+                  "the end frame is progress 1 under anchor " + std::to_string(k));
+    }
+}
+
+static void TestPeakVelocity()
+{
+    std::printf("Peak velocity of an easing curve\n");
+
+    // The whole point of marking this on the timeline is that the fastest moment
+    // is NOT the middle of the stage for anything but linear easing, so each
+    // preset has to land where its shape says it should.
+    const float easeOut = PeakVelocityProgress(Easing::EaseOut());
+    Check(easeOut < 0.3f, "Ease Out is fastest early, where it leaves at full speed");
+
+    const float easeIn = PeakVelocityProgress(Easing::EaseIn());
+    Check(easeIn > 0.7f, "Ease In is fastest late, having accelerated the whole way");
+
+    const float smooth = PeakVelocityProgress(Easing::Smooth());
+    Check(smooth > 0.35f && smooth < 0.65f, "an ease in-out peaks in the middle");
+
+    // Linear has no peak: every step covers the same ground. Reported as the
+    // start, and the important part is that the curve really is flat rather than
+    // that any particular step wins the tie.
+    const Easing lin = Easing::Linear();
+    const float  v0  = EasingSpeed(lin, 0);
+    for (int k = 1; k < kVelocitySteps; ++k)
+        CheckNear(EasingSpeed(lin, k), v0, 1e-5f, "linear easing moves at a constant speed");
+
+    // Speed sums to the total distance travelled: a sanity check that these are
+    // really differences of the curve and not some unrelated quantity. Overshoot
+    // is excluded here because it doubles back, so its path is longer than 1.
+    float total = 0.0f;
+    for (int k = 0; k < kVelocitySteps; ++k) total += EasingSpeed(Easing::Smooth(), k);
+    CheckNear(total, 1.0f, 1e-4f, "a monotonic curve's speeds sum to the full move");
+}
+
+static void TestStageMoves()
+{
+    std::printf("Stages that hold a pose are distinguished from stages that move\n");
+
+    // Distinct from IsNoOp, which asks whether a stage is neutral. A stage held
+    // at a constant 1.5x is not neutral but does not move, and plotting a
+    // velocity for it would point at a moment when nothing happens.
+    Stage held = Stage::Default();
+    held.scaleFrom = 1.5f; held.scaleTo = 1.5f;
+    Check(!StageMoves(held), "a stage held at a constant scale does not move");
+
+    Stage moves = Stage::Default();
+    moves.scaleFrom = 1.0f; moves.scaleTo = 1.5f;
+    Check(StageMoves(moves), "a changing scale moves");
+
+    Stage tilt = Stage::Default();
+    tilt.tiltXFrom = 0.0f; tilt.tiltXTo = 40.0f;
+    Check(StageMoves(tilt), "a tilt moves");
+
+    Stage swivel = Stage::Default();
+    swivel.swivelYFrom = -90.0f; swivel.swivelYTo = 0.0f;
+    Check(StageMoves(swivel), "a swivel moves");
+
+    Stage fade = Stage::Default();
+    fade.opacityFrom = 0.0f; fade.opacityTo = 1.0f;
+    Check(StageMoves(fade), "a fade moves");
+
+    // Scale Y only counts while the axes are unlinked, or a stale Y value left
+    // behind under a link would light up a lane that is not going anywhere.
+    Stage linkedY = Stage::Default();
+    linkedY.linkScale = true;
+    linkedY.scaleYFrom = 1.0f; linkedY.scaleYTo = 3.0f;
+    Check(!StageMoves(linkedY), "Scale Y is ignored while the axes are linked");
+
+    linkedY.linkScale = false;
+    Check(StageMoves(linkedY), "the same Scale Y counts once unlinked");
+
+    // Endpoints that coincide still move if the path between them bulges.
+    Stage bent = Stage::Default();
+    bent.pathC1X = 0.4f;
+    Check(StageMoves(bent), "a bent path moves even between identical endpoints");
+}
+
+static void TestIsNoOpCoversNewChannels()
+{
+    std::printf("No-op detection covers the new channels\n");
+
+    // Same class of bug as the earlier per-frame identity test: a stage that
+    // only tilts would otherwise be declared a pass-through and skipped.
+    struct Case { const char* name; void (*apply)(Stage&); };
+    const Case cases[] = {
+        { "tilt",     [](Stage& s) { s.tiltXTo   = 30.0f; } },
+        { "swivel",   [](Stage& s) { s.swivelYTo = 30.0f; } },
+    };
+
+    for (const Case& c : cases)
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled = true;
+        c.apply(a.stages[0]);
+        Check(!IsNoOp(a), std::string("animating ") + c.name + " is not a no-op");
+    }
+
+    // An unlinked Y scale counts, but only while it is actually unlinked.
+    AnimParams unlinked = AnimParams::Default();
+    unlinked.stages[0].enabled    = true;
+    unlinked.stages[0].linkScale  = false;
+    unlinked.stages[0].scaleYTo   = 2.0f;
+    Check(!IsNoOp(unlinked), "an unlinked Y scale is not a no-op");
+
+    AnimParams linked = unlinked;
+    linked.stages[0].linkScale = true;
+    Check(IsNoOp(linked), "a stale Y scale behind a link is still a no-op");
+
+    // A base pose that does anything is enough on its own.
+    AnimParams based = AnimParams::Default();
+    based.base.posX = 0.1f;
+    Check(!IsNoOp(based), "a non-neutral base is not a no-op");
+
+    AnimParams basedOpacity = AnimParams::Default();
+    basedOpacity.base.opacity = 0.5f;
+    Check(!IsNoOp(basedOpacity), "a base opacity is not a no-op");
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Clip time
 
 static void TestClipRangeValidation()
@@ -1464,6 +1917,16 @@ int main()
     TestClipTimeRoundTrip();
     TestOutroLandsOnTheLastFrame();
     TestAnchorsCoexistInOneEffect();
+    TestNeutralBaseChangesNothing();
+    TestBaseComposesInnermost();
+    TestSplitScale();
+    TestOrthographicRotation();
+    TestEdgeOnRendersNothing();
+    TestIsNoOpCoversNewChannels();
+    TestStageContextRebuildsTheWhole();
+    TestEndpointsAreExact();
+    TestPeakVelocity();
+    TestStageMoves();
     TestClipRangeValidation();
     TestLegacyTimingDetection();
     TestNormaliseStageFrameIsIdempotent();

@@ -275,6 +275,53 @@ int main()
                           kFilterBilinear, kEdgeBlack });
     }
 
+    // --- Split scale, orthographic rotation, and the base pose ---
+    {
+        AnimParams split = MakeAnim(1.0f, 0.0f, 0.0f, 0.0f);
+        split.stages[0].linkScale  = false;
+        split.stages[0].scaleFrom  = 1.0f;  split.stages[0].scaleTo  = 1.8f;
+        split.stages[0].scaleYFrom = 1.0f;  split.stages[0].scaleYTo = 0.55f;
+        cases.push_back({ "split scale, mid-stretch", split, 10.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        // Mid-flip, where the cosine is doing real work rather than sitting at
+        // one of its exact endpoints.
+        AnimParams flip = MakeAnim(1.0f, 0.0f, 0.0f, 0.0f);
+        flip.stages[0].swivelYFrom = -90.0f;
+        flip.stages[0].swivelYTo   =   0.0f;
+        flip.stages[0].tiltXFrom   =  25.0f;
+        flip.stages[0].tiltXTo     = -10.0f;
+        cases.push_back({ "orthographic flip, mid-swivel", flip, 11.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        // Exactly edge-on: the transform collapses and the frame must come back
+        // transparent on both paths, not full-size on one of them.
+        //
+        // Deliberately NOT the last case. A collapsed transform used to fault on
+        // the device and poison the CUDA context, which showed up as every
+        // *subsequent* case rendering black -- invisible if this ran last, since
+        // its own expected output is black either way.
+        AnimParams edgeOn = MakeAnim(1.0f, 0.0f, 0.0f, 0.0f);
+        edgeOn.stages[0].swivelYFrom = 90.0f;
+        edgeOn.stages[0].swivelYTo   = 90.0f;
+        cases.push_back({ "edge-on, exactly 90 degrees", edgeOn, 10.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        // The base pose is composed innermost, so this exercises a code path the
+        // stages alone never reach. It also stands guard behind the edge-on case
+        // above: if that one poisons the context again, this goes black.
+        AnimParams based = MakeAnim(1.3f, 0.0f, 0.2f, 0.0f);
+        based.base.scaleX    = 0.6f;
+        based.base.scaleY    = 0.85f;
+        based.base.linkScale = false;
+        based.base.posX      = -0.15f;
+        based.base.rot       = 12.0f;
+        based.base.swivelY   = 30.0f;
+        based.base.opacity   = 0.8f;
+        cases.push_back({ "base pose under a moving stage", based, 12.0f,
+                          kFilterBilinear, kEdgeBlack });
+    }
+
     for (const Case& c : cases) RunCase(c, W, H);
 
     std::printf("\n%d failure(s)\n", g_failures);

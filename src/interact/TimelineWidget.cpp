@@ -111,6 +111,59 @@ OfxRectD TimelineWidget::laneRect(const OverlayContext& c, int stage) const
     return r;
 }
 
+void TimelineWidget::drawVelocity(const OverlayContext& c, const Stage& s,
+                                  const OfxRectD& lane, double xa, double xb,
+                                  bool active) const
+{
+    // A stage that holds a pose rather than changing it has no velocity worth
+    // plotting, and a bar only a few pixels wide has nowhere to plot it.
+    if (!StageMoves(s)) return;
+    if (std::fabs(xb - xa) < c.sx(14.0)) return;
+
+    constexpr int kSteps = kVelocitySteps;
+    double v[kSteps];
+    double vMax = 0.0;
+
+    for (int k = 0; k < kSteps; ++k)
+    {
+        v[k] = EasingSpeed(s.easing, k);
+        if (v[k] > vMax) vMax = v[k];
+    }
+    if (vMax <= 1e-9) return;      // a flat curve: nothing to show
+
+    // Overlaid on the bar as a brightness ramp. Deliberately additive-looking
+    // white rather than a second hue: the bar's colour already identifies the
+    // stage, and a competing hue made the lane hard to read at a glance.
+    for (int k = 0; k < kSteps; ++k)
+    {
+        const double f0 = static_cast<double>(k)     / static_cast<double>(kSteps);
+        const double f1 = static_cast<double>(k + 1) / static_cast<double>(kSteps);
+        const double sx0 = xa + (xb - xa) * f0;
+        const double sx1 = xa + (xb - xa) * f1;
+
+        const float a = static_cast<float>(0.42 * (v[k] / vMax));
+        SetColour(c, { 1.0f, 1.0f, 1.0f, a });
+        FillRect(c, std::min(sx0, sx1), lane.y1, std::max(sx0, sx1), lane.y2);
+    }
+
+    // The peak itself: where the move is at its fastest, and so where a cut or a
+    // hit should usually land.
+    const double px = xa + (xb - xa) * static_cast<double>(PeakVelocityProgress(s.easing));
+
+    SetColour(c, colours::kPlayhead);
+    SetLineWidth(c, active ? 2.0f : 1.0f);
+    Line(c, px, lane.y1, px, lane.y2);
+
+    // A tick above the lane, so the peak is still findable when the bar is
+    // crowded or the lane is short.
+    if (active)
+    {
+        SetColour(c, colours::kPlayhead);
+        Line(c, px - c.sx(3.0), lane.y2 + c.sy(3.0), px, lane.y2);
+        Line(c, px + c.sx(3.0), lane.y2 + c.sy(3.0), px, lane.y2);
+    }
+}
+
 void TimelineWidget::draw(const OverlayContext& c)
 {
     Panel(c, _rect);
@@ -185,6 +238,10 @@ void TimelineWidget::draw(const OverlayContext& c)
         const Colour lc = colours::kStage[i % 4];
         SetColour(c, lc);
         FillRect(c, bx1, lane.y1, bx2, lane.y2);
+
+        // Where the move is actually happening. Drawn between the bar and its
+        // outline so the shading never covers the grab affordances.
+        drawVelocity(c, s, lane, frameToX(ca), frameToX(cb), active);
 
         if (active)
         {

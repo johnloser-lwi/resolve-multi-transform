@@ -50,6 +50,18 @@ static PresetData BusyPreset()
     d.blurSamples      = 23;
     d.blurAdaptive     = false;
 
+    d.base.scaleX    = 0.6f;
+    d.base.scaleY    = 1.4f;
+    d.base.linkScale = false;
+    d.base.posX      = -0.3f;
+    d.base.posY      = 0.15f;
+    d.base.rot       = 8.25f;
+    d.base.tiltX     = -18.0f;
+    d.base.swivelY   = 42.5f;
+    d.base.opacity   = 0.75f;
+    d.base.anchorX   = 0.2f;
+    d.base.anchorY   = 0.9f;
+
     const int anchors[4] = { kAnchorClipStart, kAnchorClipEnd, kAnchorStretch, kAnchorTimeline };
     for (int i = 0; i < kMaxStages; ++i)
     {
@@ -66,6 +78,13 @@ static PresetData BusyPreset()
         s.posYTo       = -0.2f - i * 0.01f;
         s.rotFrom      = -12.5f;
         s.rotTo        = 37.25f + i;
+        s.linkScale    = (i % 2) == 0;
+        s.scaleYFrom   = 0.8f + i * 0.05f;
+        s.scaleYTo     = 2.25f - i * 0.1f;
+        s.tiltXFrom    = -35.0f + i;
+        s.tiltXTo      = 12.5f;
+        s.swivelYFrom  = -90.0f;
+        s.swivelYTo    = 15.75f + i;
         s.opacityFrom  = 0.0f;
         s.opacityTo    = 1.0f;
         s.anchorX      = 0.25f;
@@ -100,6 +119,13 @@ static void CheckStagesEqual(const PresetStage& a, const PresetStage& b, const s
     CheckNear(a.posYTo,        b.posYTo,        1e-4, what + ": posYTo");
     CheckNear(a.rotFrom,       b.rotFrom,       1e-3, what + ": rotFrom");
     CheckNear(a.rotTo,         b.rotTo,         1e-3, what + ": rotTo");
+    Check(a.linkScale == b.linkScale, what + ": linkScale");
+    CheckNear(a.scaleYFrom,    b.scaleYFrom,    1e-4, what + ": scaleYFrom");
+    CheckNear(a.scaleYTo,      b.scaleYTo,      1e-4, what + ": scaleYTo");
+    CheckNear(a.tiltXFrom,     b.tiltXFrom,     1e-3, what + ": tiltXFrom");
+    CheckNear(a.tiltXTo,       b.tiltXTo,       1e-3, what + ": tiltXTo");
+    CheckNear(a.swivelYFrom,   b.swivelYFrom,   1e-3, what + ": swivelYFrom");
+    CheckNear(a.swivelYTo,     b.swivelYTo,     1e-3, what + ": swivelYTo");
     CheckNear(a.opacityFrom,   b.opacityFrom,   1e-4, what + ": opacityFrom");
     CheckNear(a.opacityTo,     b.opacityTo,     1e-4, what + ": opacityTo");
     CheckNear(a.anchorX,       b.anchorX,       1e-4, what + ": anchorX");
@@ -141,6 +167,18 @@ static void TestRoundTrip()
     CheckNear(out.shutterPhase, in.shutterPhase, 1e-3, "shutter phase survives");
     Check(out.blurSamples  == in.blurSamples,  "blur samples survives");
     Check(out.blurAdaptive == in.blurAdaptive, "blur adaptive survives");
+
+    CheckNear(out.base.scaleX,  in.base.scaleX,  1e-4, "base scale X survives");
+    CheckNear(out.base.scaleY,  in.base.scaleY,  1e-4, "base scale Y survives");
+    Check(out.base.linkScale == in.base.linkScale, "base link survives");
+    CheckNear(out.base.posX,    in.base.posX,    1e-4, "base position X survives");
+    CheckNear(out.base.posY,    in.base.posY,    1e-4, "base position Y survives");
+    CheckNear(out.base.rot,     in.base.rot,     1e-3, "base rotation survives");
+    CheckNear(out.base.tiltX,   in.base.tiltX,   1e-3, "base tilt survives");
+    CheckNear(out.base.swivelY, in.base.swivelY, 1e-3, "base swivel survives");
+    CheckNear(out.base.opacity, in.base.opacity, 1e-4, "base opacity survives");
+    CheckNear(out.base.anchorX, in.base.anchorX, 1e-4, "base anchor X survives");
+    CheckNear(out.base.anchorY, in.base.anchorY, 1e-4, "base anchor Y survives");
 
     for (int i = 0; i < kMaxStages; ++i)
         CheckStagesEqual(out.stages[i], in.stages[i], "stage " + std::to_string(i + 1));
@@ -245,6 +283,44 @@ static void TestUnknownKeysIgnored()
     Check(out.schemaVersion == 99, "the schema version is preserved");
 }
 
+static void TestPreBaseTransformPresetsStillLoad()
+{
+    std::printf("Presets written before the base transform still load\n");
+
+    // A real file as written before split scale, orthographic rotation and the
+    // base pose existed: no "base" object, and no scaleY/tilt/swivel keys. It
+    // must load unchanged in meaning, which means every new channel lands
+    // neutral rather than on whatever the target happened to hold.
+    const std::string legacy =
+        "{\n"
+        "  \"schemaVersion\": 1,\n"
+        "  \"name\": \"Punch In\",\n"
+        "  \"scope\": \"effect\",\n"
+        "  \"sourceClipLength\": 155,\n"
+        "  \"stageCount\": 1,\n"
+        "  \"stages\": [ { \"enabled\": true, \"scaleFrom\": 1, \"scaleTo\": 1.4,\n"
+        "                  \"startFrame\": 0, \"endFrame\": 18 } ]\n"
+        "}";
+
+    PresetData out = BusyPreset();          // deliberately non-neutral to begin with
+    std::string err;
+    Check(FromJson(legacy, out, err), "a pre-change preset parses: " + err);
+
+    CheckNear(out.stages[0].scaleTo, 1.4, 1e-4, "the old keys still mean what they did");
+
+    // Split scale absent means the axes stay linked, so Scale Y is not consulted
+    // at all and the move is uniform exactly as it was.
+    Check(out.stages[0].linkScale, "an absent linkScale leaves the axes linked");
+    CheckNear(out.stages[0].tiltXFrom,   0.0, 1e-4, "absent tilt is neutral");
+    CheckNear(out.stages[0].tiltXTo,     0.0, 1e-4, "absent tilt is neutral at the end too");
+    CheckNear(out.stages[0].swivelYFrom, 0.0, 1e-4, "absent swivel is neutral");
+    CheckNear(out.stages[0].swivelYTo,   0.0, 1e-4, "absent swivel is neutral at the end too");
+
+    Check(out.base.IsNeutral(), "an absent base object leaves the resting pose neutral");
+    CheckNear(out.base.anchorX, 0.5, 1e-4, "an absent base anchor centres");
+    CheckNear(out.base.anchorY, 0.5, 1e-4, "an absent base anchor centres vertically");
+}
+
 static void TestRescaleTiming()
 {
     std::printf("Fit-to-clip rescaling\n");
@@ -342,6 +418,7 @@ int main()
     TestMalformedInputIsRejected();
     TestMissingKeysUseDefaults();
     TestUnknownKeysIgnored();
+    TestPreBaseTransformPresetsStillLoad();
     TestRescaleTiming();
     TestRescaleEdgeCases();
     TestNameEscaping();

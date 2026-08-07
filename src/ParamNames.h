@@ -26,6 +26,19 @@ constexpr const char* kParamShowCurve      = "showCurveEditor";
 constexpr const char* kParamFilter         = "filterMode";
 constexpr const char* kParamEdge           = "edgeMode";
 
+// --- Base transform: a static resting pose, applied under the animation ---
+constexpr const char* kParamLabelBase      = "lblBase";
+constexpr const char* kParamBaseScale      = "baseScale";
+constexpr const char* kParamBaseScaleY     = "baseScaleY";
+constexpr const char* kParamBaseLinkScale  = "baseLinkScale";
+constexpr const char* kParamBasePos        = "basePos";
+constexpr const char* kParamBaseRot        = "baseRot";
+constexpr const char* kParamBaseTiltX      = "baseTiltX";
+constexpr const char* kParamBaseSwivelY    = "baseSwivelY";
+constexpr const char* kParamBaseOpacity    = "baseOpacity";
+constexpr const char* kParamBaseAnchor     = "baseAnchor";
+constexpr const char* kParamBaseReset      = "baseReset";
+
 // --- Presets ---
 constexpr const char* kParamLabelPresets   = "lblPresets";
 constexpr const char* kParamSaveEffect     = "savePresetEffect";
@@ -56,8 +69,15 @@ constexpr const char* kParamEndFrame       = "endFrame";
 constexpr const char* kParamSetStart       = "setStart";
 constexpr const char* kParamSetEnd         = "setEnd";
 constexpr const char* kParamDuration       = "duration";   ///< derived, display only
+constexpr const char* kParamLinkScale      = "linkScale";
 constexpr const char* kParamScaleFrom      = "scaleFrom";
 constexpr const char* kParamScaleTo        = "scaleTo";
+constexpr const char* kParamScaleYFrom     = "scaleYFrom";
+constexpr const char* kParamScaleYTo       = "scaleYTo";
+constexpr const char* kParamTiltXFrom      = "tiltXFrom";
+constexpr const char* kParamTiltXTo        = "tiltXTo";
+constexpr const char* kParamSwivelYFrom    = "swivelYFrom";
+constexpr const char* kParamSwivelYTo      = "swivelYTo";
 constexpr const char* kParamPosFrom        = "posFrom";
 constexpr const char* kParamPosTo          = "posTo";
 constexpr const char* kParamRotFrom        = "rotFrom";

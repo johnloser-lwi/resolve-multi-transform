@@ -200,6 +200,17 @@ private:
     OFX::ChoiceParam*  _filter       = nullptr;
     OFX::ChoiceParam*  _edge         = nullptr;
 
+    // Base transform: a static pose composed under the animation.
+    OFX::DoubleParam*   _baseScale     = nullptr;
+    OFX::DoubleParam*   _baseScaleY    = nullptr;
+    OFX::BooleanParam*  _baseLinkScale = nullptr;
+    OFX::Double2DParam* _basePos       = nullptr;
+    OFX::DoubleParam*   _baseRot       = nullptr;
+    OFX::DoubleParam*   _baseTiltX     = nullptr;
+    OFX::DoubleParam*   _baseSwivelY   = nullptr;
+    OFX::DoubleParam*   _baseOpacity   = nullptr;
+    OFX::Double2DParam* _baseAnchor    = nullptr;
+
     OFX::BooleanParam* _blurEnabled  = nullptr;
     OFX::DoubleParam*  _shutterAngle = nullptr;
     OFX::DoubleParam*  _shutterPhase = nullptr;
@@ -223,8 +234,15 @@ private:
         OFX::PushButtonParam* setStart;
         OFX::PushButtonParam* setEnd;
         OFX::DoubleParam*   duration;
+        OFX::BooleanParam*  linkScale;
         OFX::DoubleParam*   scaleFrom;
         OFX::DoubleParam*   scaleTo;
+        OFX::DoubleParam*   scaleYFrom;
+        OFX::DoubleParam*   scaleYTo;
+        OFX::DoubleParam*   tiltXFrom;
+        OFX::DoubleParam*   tiltXTo;
+        OFX::DoubleParam*   swivelYFrom;
+        OFX::DoubleParam*   swivelYTo;
         OFX::Double2DParam* posFrom;
         OFX::Double2DParam* posTo;
         OFX::DoubleParam*   rotFrom;
@@ -272,6 +290,16 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _filter     = fetchChoiceParam(kParamFilter);
     _edge       = fetchChoiceParam(kParamEdge);
 
+    _baseScale     = fetchDoubleParam  (kParamBaseScale);
+    _baseScaleY    = fetchDoubleParam  (kParamBaseScaleY);
+    _baseLinkScale = fetchBooleanParam (kParamBaseLinkScale);
+    _basePos       = fetchDouble2DParam(kParamBasePos);
+    _baseRot       = fetchDoubleParam  (kParamBaseRot);
+    _baseTiltX     = fetchDoubleParam  (kParamBaseTiltX);
+    _baseSwivelY   = fetchDoubleParam  (kParamBaseSwivelY);
+    _baseOpacity   = fetchDoubleParam  (kParamBaseOpacity);
+    _baseAnchor    = fetchDouble2DParam(kParamBaseAnchor);
+
     _blurEnabled  = fetchBooleanParam(kParamBlurEnabled);
     _shutterAngle = fetchDoubleParam (kParamShutterAngle);
     _shutterPhase = fetchDoubleParam (kParamShutterPhase);
@@ -297,6 +325,13 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.setStart      = fetchPushButtonParam(StageParam(kParamSetStart,    i));
         s.setEnd        = fetchPushButtonParam(StageParam(kParamSetEnd,      i));
         s.duration      = fetchDoubleParam  (StageParam(kParamDuration,      i));
+        s.linkScale     = fetchBooleanParam (StageParam(kParamLinkScale,     i));
+        s.scaleYFrom    = fetchDoubleParam  (StageParam(kParamScaleYFrom,    i));
+        s.scaleYTo      = fetchDoubleParam  (StageParam(kParamScaleYTo,      i));
+        s.tiltXFrom     = fetchDoubleParam  (StageParam(kParamTiltXFrom,     i));
+        s.tiltXTo       = fetchDoubleParam  (StageParam(kParamTiltXTo,       i));
+        s.swivelYFrom   = fetchDoubleParam  (StageParam(kParamSwivelYFrom,   i));
+        s.swivelYTo     = fetchDoubleParam  (StageParam(kParamSwivelYTo,     i));
         s.scaleFrom     = fetchDoubleParam  (StageParam(kParamScaleFrom,     i));
         s.scaleTo       = fetchDoubleParam  (StageParam(kParamScaleTo,       i));
         s.posFrom       = fetchDouble2DParam(StageParam(kParamPosFrom,       i));
@@ -358,6 +393,23 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
     a.clipStart  = static_cast<float>(clipStart);
     a.clipLength = static_cast<float>(clipLength);
 
+    {
+        BasePose& b = a.base;
+        b.scaleX    = static_cast<float>(_baseScale->getValueAtTime(p_Time));
+        b.scaleY    = static_cast<float>(_baseScaleY->getValueAtTime(p_Time));
+        b.linkScale = _baseLinkScale->getValueAtTime(p_Time);
+        b.rot       = static_cast<float>(_baseRot->getValueAtTime(p_Time));
+        b.tiltX     = static_cast<float>(_baseTiltX->getValueAtTime(p_Time));
+        b.swivelY   = static_cast<float>(_baseSwivelY->getValueAtTime(p_Time));
+        b.opacity   = static_cast<float>(_baseOpacity->getValueAtTime(p_Time) * 0.01);
+
+        double bx = 0.0, by = 0.0;
+        _basePos->getValueAtTime(p_Time, bx, by);
+        b.posX = static_cast<float>(bx); b.posY = static_cast<float>(by);
+        _baseAnchor->getValueAtTime(p_Time, bx, by);
+        b.anchorX = static_cast<float>(bx); b.anchorY = static_cast<float>(by);
+    }
+
     int stageCountIndex = 0;
     _stageCount->getValueAtTime(p_Time, stageCountIndex);
     a.stageCount = stageCountIndex + 1;   // dropdown is 0-based, count is 1-based
@@ -401,6 +453,13 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         s.scaleTo       = static_cast<float>(h.scaleTo->getValueAtTime(p_Time));
         s.rotFrom       = static_cast<float>(h.rotFrom->getValueAtTime(p_Time));
         s.rotTo         = static_cast<float>(h.rotTo->getValueAtTime(p_Time));
+        s.linkScale     = h.linkScale->getValueAtTime(p_Time);
+        s.scaleYFrom    = static_cast<float>(h.scaleYFrom->getValueAtTime(p_Time));
+        s.scaleYTo      = static_cast<float>(h.scaleYTo->getValueAtTime(p_Time));
+        s.tiltXFrom     = static_cast<float>(h.tiltXFrom->getValueAtTime(p_Time));
+        s.tiltXTo       = static_cast<float>(h.tiltXTo->getValueAtTime(p_Time));
+        s.swivelYFrom   = static_cast<float>(h.swivelYFrom->getValueAtTime(p_Time));
+        s.swivelYTo     = static_cast<float>(h.swivelYTo->getValueAtTime(p_Time));
 
         // Parameters are percentages for familiarity; the engine works in 0..1.
         s.opacityFrom   = static_cast<float>(h.opacityFrom->getValueAtTime(p_Time) * 0.01);
@@ -495,6 +554,13 @@ mtx::PresetStage MultiTransformPlugin::captureStage(int i) const
     s.scaleTo   = static_cast<float>(h.scaleTo->getValue());
     s.rotFrom   = static_cast<float>(h.rotFrom->getValue());
     s.rotTo     = static_cast<float>(h.rotTo->getValue());
+    s.linkScale  = h.linkScale->getValue();
+    s.scaleYFrom = static_cast<float>(h.scaleYFrom->getValue());
+    s.scaleYTo   = static_cast<float>(h.scaleYTo->getValue());
+    s.tiltXFrom  = static_cast<float>(h.tiltXFrom->getValue());
+    s.tiltXTo    = static_cast<float>(h.tiltXTo->getValue());
+    s.swivelYFrom = static_cast<float>(h.swivelYFrom->getValue());
+    s.swivelYTo   = static_cast<float>(h.swivelYTo->getValue());
     s.opacityFrom = static_cast<float>(h.opacityFrom->getValue());
     s.opacityTo   = static_cast<float>(h.opacityTo->getValue());
 
@@ -540,6 +606,19 @@ mtx::PresetData MultiTransformPlugin::capturePreset(bool wholeEffect) const
         d.blurSamples  = _blurSamples->getValue();
         d.blurAdaptive = _blurAdaptive->getValue();
 
+        mtx::BasePose& b = d.base;
+        b.scaleX    = static_cast<float>(_baseScale->getValue());
+        b.scaleY    = static_cast<float>(_baseScaleY->getValue());
+        b.linkScale = _baseLinkScale->getValue();
+        b.rot       = static_cast<float>(_baseRot->getValue());
+        b.tiltX     = static_cast<float>(_baseTiltX->getValue());
+        b.swivelY   = static_cast<float>(_baseSwivelY->getValue());
+        b.opacity   = static_cast<float>(_baseOpacity->getValue() * 0.01);
+
+        double bx = 0.0, by = 0.0;
+        _basePos->getValue(bx, by);    b.posX    = static_cast<float>(bx); b.posY    = static_cast<float>(by);
+        _baseAnchor->getValue(bx, by); b.anchorX = static_cast<float>(bx); b.anchorY = static_cast<float>(by);
+
         for (int i = 0; i < kMaxStages; ++i) d.stages[i] = captureStage(i);
     }
     else
@@ -566,6 +645,13 @@ void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
     h.scaleTo->setValue(s.scaleTo);
     h.rotFrom->setValue(s.rotFrom);
     h.rotTo->setValue(s.rotTo);
+    h.linkScale->setValue(s.linkScale);
+    h.scaleYFrom->setValue(s.scaleYFrom);
+    h.scaleYTo->setValue(s.scaleYTo);
+    h.tiltXFrom->setValue(s.tiltXFrom);
+    h.tiltXTo->setValue(s.tiltXTo);
+    h.swivelYFrom->setValue(s.swivelYFrom);
+    h.swivelYTo->setValue(s.swivelYTo);
     h.opacityFrom->setValue(s.opacityFrom);
     h.opacityTo->setValue(s.opacityTo);
 
@@ -611,6 +697,16 @@ void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
         _shutterPhase->setValue(d.shutterPhase);
         _blurSamples->setValue(d.blurSamples);
         _blurAdaptive->setValue(d.blurAdaptive);
+
+        _baseScale->setValue(d.base.scaleX);
+        _baseScaleY->setValue(d.base.scaleY);
+        _baseLinkScale->setValue(d.base.linkScale);
+        _basePos->setValue(d.base.posX, d.base.posY);
+        _baseRot->setValue(d.base.rot);
+        _baseTiltX->setValue(d.base.tiltX);
+        _baseSwivelY->setValue(d.base.swivelY);
+        _baseOpacity->setValue(d.base.opacity * 100.0);
+        _baseAnchor->setValue(d.base.anchorX, d.base.anchorY);
 
         for (int i = 0; i < kMaxStages; ++i) applyStage(i, d.stages[i]);
     }
@@ -779,6 +875,12 @@ void MultiTransformPlugin::syncStageVisibility()
     _stageCount->getValue(countIdx);
     const int count = countIdx + 1;
 
+    // The base pose has the same link rule as a stage, and this runs from every
+    // place that could have changed it.
+    bool baseLinked = true;
+    _baseLinkScale->getValue(baseLinked);
+    _baseScaleY->setIsSecret(baseLinked);
+
     int active = 0;
     _activeStage->getValue(active);
 
@@ -818,15 +920,27 @@ void MultiTransformPlugin::syncStageVisibility()
         s.duration->setIsSecret(hidden);
         s.anchor->setIsSecret(hidden);
 
+        s.linkScale->setIsSecret(hidden);
         s.scaleFrom->setIsSecret(hidden);
         s.posFrom->setIsSecret(hidden);
         s.rotFrom->setIsSecret(hidden);
+        s.tiltXFrom->setIsSecret(hidden);
+        s.swivelYFrom->setIsSecret(hidden);
         s.opacityFrom->setIsSecret(hidden);
 
         s.scaleTo->setIsSecret(hidden);
         s.posTo->setIsSecret(hidden);
         s.rotTo->setIsSecret(hidden);
+        s.tiltXTo->setIsSecret(hidden);
+        s.swivelYTo->setIsSecret(hidden);
         s.opacityTo->setIsSecret(hidden);
+
+        // Same combined rule as the bounce amounts: visible only when the stage
+        // is active AND the axes are unlinked.
+        bool linked = true;
+        s.linkScale->getValue(linked);
+        s.scaleYFrom->setIsSecret(hidden || linked);
+        s.scaleYTo  ->setIsSecret(hidden || linked);
 
         s.easingPreset->setIsSecret(hidden);
         s.easeIn->setIsSecret(hidden);
@@ -947,6 +1061,37 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
 
+    if (p_ParamName == kParamBaseReset)
+    {
+        mtx::EditBlock block(this, "Reset Base Transform");
+        _baseScale->setValue(1.0);
+        _baseScaleY->setValue(1.0);
+        _baseLinkScale->setValue(true);
+        _basePos->setValue(0.0, 0.0);
+        _baseRot->setValue(0.0);
+        _baseTiltX->setValue(0.0);
+        _baseSwivelY->setValue(0.0);
+        _baseOpacity->setValue(100.0);
+        _baseAnchor->setValue(0.5, 0.5);
+        syncStageVisibility();   // Scale Y goes back into hiding with the link
+        return;
+    }
+
+    if (p_ParamName == kParamBaseLinkScale)
+    {
+        // Unlinking starts matched rather than snapping to whatever Scale Y last
+        // held, which would look like the image jumped for no reason.
+        bool linked = true;
+        _baseLinkScale->getValue(linked);
+        if (!linked)
+        {
+            mtx::EditBlock block(this, "Unlink Base Scale");
+            _baseScaleY->setValue(_baseScale->getValue());
+        }
+        syncStageVisibility();
+        return;
+    }
+
     // Retry point: if the constructor ran before the clip was connected, the
     // clip extent was unknown and the conversion was deferred. It is a no-op
     // once done.
@@ -998,6 +1143,21 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
             p_ParamName == StageParam(kParamEndFrame, i))
         {
             updateDuration(i);
+            return;
+        }
+        if (p_ParamName == StageParam(kParamLinkScale, i))
+        {
+            bool linked = true;
+            _stage[i].linkScale->getValue(linked);
+            if (!linked)
+            {
+                // Copy X into Y at both ends, so unlinking is visually a no-op
+                // and the split starts from the animation already on screen.
+                mtx::EditBlock block(this, "Unlink Scale");
+                _stage[i].scaleYFrom->setValue(_stage[i].scaleFrom->getValue());
+                _stage[i].scaleYTo  ->setValue(_stage[i].scaleTo->getValue());
+            }
+            syncStageVisibility();
             return;
         }
         if (p_ParamName == StageParam(kParamEasingPreset, i))
@@ -1318,6 +1478,16 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                    "impossible to reason about.",
                    0.5, 0.5);
 
+    // Shared by both ends, like the anchor: scale that were linked at one end and
+    // split at the other would be two different kinds of animation in one stage.
+    BooleanParamDescriptor* link = desc.defineBooleanParam(StageParam(kParamLinkScale, i));
+    link->setLabels("Link Scale X/Y", "Link Scale", "Link Scale X/Y");
+    link->setHint("Scale both axes together. Turn this off to squash or stretch one axis -- "
+                  "Scale Y then appears alongside Scale X at each end.");
+    link->setDefault(true);
+    page->addChild(*link);
+    InvalidatesCache(link);
+
     // --- From / To ---
     // Split so a pose reads top to bottom in one block, instead of picking every
     // other row out of an interleaved "Scale From / Scale To / Position From..."
@@ -1335,7 +1505,14 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
 
         DefineDouble(desc, page, nullptr,
                      StageParam(end.isTo ? kParamScaleTo : kParamScaleFrom, i), "Scale",
-                     "Uniform scale multiplier.", 1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
+                     "Scale multiplier. Drives both axes while Link Scale X/Y is on; "
+                     "the X axis alone once it is off.",
+                     1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
+
+        DefineDouble(desc, page, nullptr,
+                     StageParam(end.isTo ? kParamScaleYTo : kParamScaleYFrom, i), "Scale Y",
+                     "Vertical scale multiplier. Only used when Link Scale X/Y is off.",
+                     1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
 
         DefineDouble2D(desc, page, nullptr,
                        StageParam(end.isTo ? kParamPosTo : kParamPosFrom, i), "Position",
@@ -1344,6 +1521,23 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
         DefineDouble(desc, page, nullptr,
                      StageParam(end.isTo ? kParamRotTo : kParamRotFrom, i), "Rotation",
                      "Rotation in degrees.", 0.0, -100000.0, 100000.0, -360.0, 360.0, 1.0);
+
+        // Orthographic, not perspective: an axis rotation reads as a squash,
+        // because nothing foreshortens and parallel edges stay parallel. Past 90
+        // degrees the image mirrors, which is what the back of a card looks like.
+        DefineDouble(desc, page, nullptr,
+                     StageParam(end.isTo ? kParamTiltXTo : kParamTiltXFrom, i), "Tilt (X axis)",
+                     "Pseudo-3D rotation about the horizontal axis, in degrees -- the image "
+                     "tips towards or away from you. Orthographic, so it squashes vertically "
+                     "rather than converging in perspective. 90 is edge-on and invisible.",
+                     0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
+
+        DefineDouble(desc, page, nullptr,
+                     StageParam(end.isTo ? kParamSwivelYTo : kParamSwivelYFrom, i), "Swivel (Y axis)",
+                     "Pseudo-3D rotation about the vertical axis, in degrees -- a card flip. "
+                     "Animate -90 to 0 for a swing-in. 90 is edge-on and invisible; beyond it "
+                     "the image mirrors, as the back of a card would.",
+                     0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
 
         DefineDouble(desc, page, nullptr,
                      StageParam(end.isTo ? kParamOpacityTo : kParamOpacityFrom, i), "Opacity",
@@ -1522,6 +1716,62 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                        "toggled by the CURVE button in the overlay.");
     showCurve->setDefault(true);
     page->addChild(*showCurve);
+
+    // --- Base transform ---
+    //
+    // A resting pose applied underneath the animation, so a layer can simply sit
+    // somewhere at some size without spending a whole stage on a From == To pair.
+    // It composes innermost, which keeps each stage's translation measured in
+    // frame widths rather than in base-scaled widths.
+    DefineDivider(p_Desc, page, kParamLabelBase,
+                  "\xE2\x80\x94  BASE TRANSFORM  \xE2\x80\x94");
+
+    BooleanParamDescriptor* baseLink = p_Desc.defineBooleanParam(kParamBaseLinkScale);
+    baseLink->setLabels("Link Scale X/Y", "Link Scale", "Link Scale X/Y");
+    baseLink->setHint("Scale both axes together. Turn this off to squash or stretch the "
+                      "resting pose on one axis.");
+    baseLink->setDefault(true);
+    page->addChild(*baseLink);
+    InvalidatesCache(baseLink);
+
+    DefineDouble(p_Desc, page, nullptr, kParamBaseScale, "Scale",
+                 "Resting scale. Drives both axes while Link Scale X/Y is on; the X axis "
+                 "alone once it is off. The animation multiplies on top of this.",
+                 1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
+
+    DefineDouble(p_Desc, page, nullptr, kParamBaseScaleY, "Scale Y",
+                 "Resting vertical scale. Only used when Link Scale X/Y is off.",
+                 1.0, -100.0, 100.0, 0.0, 4.0, 0.01);
+
+    DefineDouble2D(p_Desc, page, nullptr, kParamBasePos, "Position",
+                   "Resting offset, normalised: 1.0 is one full image width/height. Stage "
+                   "movement is added on top, in the same units.", 0.0, 0.0);
+
+    DefineDouble(p_Desc, page, nullptr, kParamBaseRot, "Rotation",
+                 "Resting rotation in degrees.", 0.0, -100000.0, 100000.0, -360.0, 360.0, 1.0);
+
+    DefineDouble(p_Desc, page, nullptr, kParamBaseTiltX, "Tilt (X axis)",
+                 "Resting pseudo-3D rotation about the horizontal axis. Orthographic, so it "
+                 "squashes vertically rather than converging in perspective.",
+                 0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
+
+    DefineDouble(p_Desc, page, nullptr, kParamBaseSwivelY, "Swivel (Y axis)",
+                 "Resting pseudo-3D rotation about the vertical axis -- a held card flip.",
+                 0.0, -360.0, 360.0, -180.0, 180.0, 1.0);
+
+    DefineDouble(p_Desc, page, nullptr, kParamBaseOpacity, "Opacity",
+                 "Resting opacity as a percentage. Multiplies with each stage's fade, so a "
+                 "base of 50 and a stage fading 0 to 100 ends at 50.",
+                 100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
+
+    DefineDouble2D(p_Desc, page, nullptr, kParamBaseAnchor, "Anchor",
+                   "Point the resting scale and rotation pivot around. 0.5, 0.5 is the image "
+                   "centre.", 0.5, 0.5);
+
+    PushButtonParamDescriptor* baseReset = p_Desc.definePushButtonParam(kParamBaseReset);
+    baseReset->setLabels("Reset Base Transform", "Reset Base", "Reset Base Transform");
+    baseReset->setHint("Return the resting pose to neutral, leaving the animation alone.");
+    page->addChild(*baseReset);
 
     // --- Stages ---
     for (int i = 0; i < kMaxStages; ++i) DefineStage(p_Desc, page, i);

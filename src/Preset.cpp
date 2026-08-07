@@ -22,9 +22,13 @@ PresetStage PresetStage::Default()
     p.startFrame   = s.startFrame;
     p.endFrame     = s.endFrame;
     p.scaleFrom    = s.scaleFrom;    p.scaleTo    = s.scaleTo;
+    p.scaleYFrom   = s.scaleYFrom;   p.scaleYTo   = s.scaleYTo;
+    p.linkScale    = s.linkScale;
     p.posXFrom     = s.posXFrom;     p.posYFrom   = s.posYFrom;
     p.posXTo       = s.posXTo;       p.posYTo     = s.posYTo;
     p.rotFrom      = s.rotFrom;      p.rotTo      = s.rotTo;
+    p.tiltXFrom    = s.tiltXFrom;    p.tiltXTo    = s.tiltXTo;
+    p.swivelYFrom  = s.swivelYFrom;  p.swivelYTo  = s.swivelYTo;
     p.opacityFrom  = s.opacityFrom;  p.opacityTo  = s.opacityTo;
     p.anchorX      = s.anchorX;      p.anchorY    = s.anchorY;
     p.pathC1X      = s.pathC1X;      p.pathC1Y    = s.pathC1Y;
@@ -60,6 +64,7 @@ PresetData PresetData::Default()
     d.shutterPhase     = 0.0f;
     d.blurSamples      = 16;
     d.blurAdaptive     = true;
+    d.base             = BasePose::Default();
     for (int i = 0; i < kMaxStages; ++i) d.stages[i] = PresetStage::Default();
     return d;
 }
@@ -115,12 +120,19 @@ void WriteStage(std::string& o, const PresetStage& s, const char* indent)
     kv("endFrame",     Num(s.endFrame));
     kv("scaleFrom",    Num(s.scaleFrom));
     kv("scaleTo",      Num(s.scaleTo));
+    kv("scaleYFrom",   Num(s.scaleYFrom));
+    kv("scaleYTo",     Num(s.scaleYTo));
+    kv("linkScale",    s.linkScale ? "true" : "false");
     kv("posXFrom",     Num(s.posXFrom));
     kv("posYFrom",     Num(s.posYFrom));
     kv("posXTo",       Num(s.posXTo));
     kv("posYTo",       Num(s.posYTo));
     kv("rotFrom",      Num(s.rotFrom));
     kv("rotTo",        Num(s.rotTo));
+    kv("tiltXFrom",    Num(s.tiltXFrom));
+    kv("tiltXTo",      Num(s.tiltXTo));
+    kv("swivelYFrom",  Num(s.swivelYFrom));
+    kv("swivelYTo",    Num(s.swivelYTo));
     kv("opacityFrom",  Num(s.opacityFrom));
     kv("opacityTo",    Num(s.opacityTo));
     kv("anchorX",      Num(s.anchorX));
@@ -160,6 +172,22 @@ std::string ToJson(const PresetData& d)
     o += "  \"shutterPhase\": "     + Num(d.shutterPhase) + ",\n";
     o += "  \"blurSamples\": "      + Num(d.blurSamples) + ",\n";
     o += "  \"blurAdaptive\": "     + std::string(d.blurAdaptive ? "true" : "false") + ",\n";
+
+    // The resting pose, nested rather than flattened, so its Scale and Rotation
+    // are never confused with a stage's when reading the file by eye.
+    o += "  \"base\": {\n";
+    o += "    \"scaleX\": "    + Num(d.base.scaleX) + ",\n";
+    o += "    \"scaleY\": "    + Num(d.base.scaleY) + ",\n";
+    o += "    \"linkScale\": " + std::string(d.base.linkScale ? "true" : "false") + ",\n";
+    o += "    \"posX\": "      + Num(d.base.posX) + ",\n";
+    o += "    \"posY\": "      + Num(d.base.posY) + ",\n";
+    o += "    \"rot\": "       + Num(d.base.rot) + ",\n";
+    o += "    \"tiltX\": "     + Num(d.base.tiltX) + ",\n";
+    o += "    \"swivelY\": "   + Num(d.base.swivelY) + ",\n";
+    o += "    \"opacity\": "   + Num(d.base.opacity) + ",\n";
+    o += "    \"anchorX\": "   + Num(d.base.anchorX) + ",\n";
+    o += "    \"anchorY\": "   + Num(d.base.anchorY) + "\n";
+    o += "  },\n";
 
     // A single-stage preset writes one entry, so the file says plainly what it
     // contains rather than carrying three unused stages.
@@ -375,12 +403,19 @@ PresetStage StageFromFields(const Fields& f)
     s.endFrame      = static_cast<float>(FieldNum(f, "endFrame", s.endFrame));
     s.scaleFrom     = static_cast<float>(FieldNum(f, "scaleFrom", s.scaleFrom));
     s.scaleTo       = static_cast<float>(FieldNum(f, "scaleTo", s.scaleTo));
+    s.scaleYFrom    = static_cast<float>(FieldNum(f, "scaleYFrom", s.scaleYFrom));
+    s.scaleYTo      = static_cast<float>(FieldNum(f, "scaleYTo", s.scaleYTo));
+    s.linkScale     = FieldBool(f, "linkScale", s.linkScale);
     s.posXFrom      = static_cast<float>(FieldNum(f, "posXFrom", s.posXFrom));
     s.posYFrom      = static_cast<float>(FieldNum(f, "posYFrom", s.posYFrom));
     s.posXTo        = static_cast<float>(FieldNum(f, "posXTo", s.posXTo));
     s.posYTo        = static_cast<float>(FieldNum(f, "posYTo", s.posYTo));
     s.rotFrom       = static_cast<float>(FieldNum(f, "rotFrom", s.rotFrom));
     s.rotTo         = static_cast<float>(FieldNum(f, "rotTo", s.rotTo));
+    s.tiltXFrom     = static_cast<float>(FieldNum(f, "tiltXFrom", s.tiltXFrom));
+    s.tiltXTo       = static_cast<float>(FieldNum(f, "tiltXTo", s.tiltXTo));
+    s.swivelYFrom   = static_cast<float>(FieldNum(f, "swivelYFrom", s.swivelYFrom));
+    s.swivelYTo     = static_cast<float>(FieldNum(f, "swivelYTo", s.swivelYTo));
     s.opacityFrom   = static_cast<float>(FieldNum(f, "opacityFrom", s.opacityFrom));
     s.opacityTo     = static_cast<float>(FieldNum(f, "opacityTo", s.opacityTo));
     s.anchorX       = static_cast<float>(FieldNum(f, "anchorX", s.anchorX));
@@ -443,6 +478,24 @@ bool FromJson(const std::string& json, PresetData& out, std::string& error)
                 return false;
             }
             sawStages = true;
+        }
+        else if (key == "base")
+        {
+            Fields f;
+            if (!ReadFlatObject(r, f)) { error = r.err; return false; }
+
+            BasePose& b = d.base;
+            b.scaleX    = static_cast<float>(FieldNum(f, "scaleX", b.scaleX));
+            b.scaleY    = static_cast<float>(FieldNum(f, "scaleY", b.scaleY));
+            b.linkScale = FieldBool(f, "linkScale", b.linkScale);
+            b.posX      = static_cast<float>(FieldNum(f, "posX", b.posX));
+            b.posY      = static_cast<float>(FieldNum(f, "posY", b.posY));
+            b.rot       = static_cast<float>(FieldNum(f, "rot", b.rot));
+            b.tiltX     = static_cast<float>(FieldNum(f, "tiltX", b.tiltX));
+            b.swivelY   = static_cast<float>(FieldNum(f, "swivelY", b.swivelY));
+            b.opacity   = static_cast<float>(FieldNum(f, "opacity", b.opacity));
+            b.anchorX   = static_cast<float>(FieldNum(f, "anchorX", b.anchorX));
+            b.anchorY   = static_cast<float>(FieldNum(f, "anchorY", b.anchorY));
         }
         else
         {

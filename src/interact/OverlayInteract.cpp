@@ -162,6 +162,24 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.anim.stageCount = out.stageCount;
     out.anim.clipStart  = static_cast<float>(clipStart);
     out.anim.clipLength = static_cast<float>(clipLength);
+
+    {
+        BasePose& b = out.anim.base;
+        b.scaleX    = static_cast<float>(GetDouble(_effect, kParamBaseScale,   time));
+        b.scaleY    = static_cast<float>(GetDouble(_effect, kParamBaseScaleY,  time));
+        b.linkScale = GetBool  (_effect, kParamBaseLinkScale, time);
+        b.rot       = static_cast<float>(GetDouble(_effect, kParamBaseRot,     time));
+        b.tiltX     = static_cast<float>(GetDouble(_effect, kParamBaseTiltX,   time));
+        b.swivelY   = static_cast<float>(GetDouble(_effect, kParamBaseSwivelY, time));
+        b.opacity   = static_cast<float>(GetDouble(_effect, kParamBaseOpacity, time) * 0.01);
+
+        double bx = 0.0, by = 0.0;
+        GetDouble2D(_effect, kParamBasePos,    time, bx, by);
+        b.posX = static_cast<float>(bx); b.posY = static_cast<float>(by);
+        GetDouble2D(_effect, kParamBaseAnchor, time, bx, by);
+        b.anchorX = static_cast<float>(bx); b.anchorY = static_cast<float>(by);
+    }
+
     for (int i = 0; i < kMaxStages; ++i)
     {
         Stage& s = out.anim.stages[i];
@@ -184,6 +202,13 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         s.scaleTo    = static_cast<float>(GetDouble(_effect, StageParam(kParamScaleTo,    i), time));
         s.rotFrom    = static_cast<float>(GetDouble(_effect, StageParam(kParamRotFrom,    i), time));
         s.rotTo      = static_cast<float>(GetDouble(_effect, StageParam(kParamRotTo,      i), time));
+        s.linkScale  = GetBool  (_effect, StageParam(kParamLinkScale,  i), time);
+        s.scaleYFrom = static_cast<float>(GetDouble(_effect, StageParam(kParamScaleYFrom, i), time));
+        s.scaleYTo   = static_cast<float>(GetDouble(_effect, StageParam(kParamScaleYTo,   i), time));
+        s.tiltXFrom  = static_cast<float>(GetDouble(_effect, StageParam(kParamTiltXFrom,  i), time));
+        s.tiltXTo    = static_cast<float>(GetDouble(_effect, StageParam(kParamTiltXTo,    i), time));
+        s.swivelYFrom = static_cast<float>(GetDouble(_effect, StageParam(kParamSwivelYFrom, i), time));
+        s.swivelYTo   = static_cast<float>(GetDouble(_effect, StageParam(kParamSwivelYTo,   i), time));
         s.opacityFrom = static_cast<float>(GetDouble(_effect, StageParam(kParamOpacityFrom, i), time) * 0.01);
         s.opacityTo   = static_cast<float>(GetDouble(_effect, StageParam(kParamOpacityTo,   i), time) * 0.01);
 
