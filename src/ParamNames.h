@@ -15,6 +15,7 @@ constexpr const char* kParamStageCount     = "stageCount";
 constexpr const char* kParamActiveStage    = "activeStage";   ///< which stage the overlay edits
 constexpr const char* kParamEditTarget     = "editTarget";    ///< 0 = From, 1 = To
 constexpr const char* kParamShowCurve      = "showCurveEditor";
+constexpr const char* kParamShowLibrary    = "showCurveLibrary";
 
 // Note: there is deliberately no timing-version parameter. An earlier design
 // gated the absolute-to-clip-relative conversion on one, which failed badly --
@@ -45,6 +46,12 @@ constexpr const char* kParamSaveEffect     = "savePresetEffect";
 constexpr const char* kParamSaveStage      = "savePresetStage";
 constexpr const char* kParamLoadPreset     = "loadPreset";
 constexpr const char* kParamLoadPresetFit  = "loadPresetFit";
+
+/// Trigger for the overlay's LOAD button. A push button cannot be pressed
+/// programmatically in OFX, so the overlay flips this boolean instead and
+/// changedParam treats the flip as the press. Hidden and non-persistent: it is
+/// a message, not a setting.
+constexpr const char* kParamLoadFromOverlay = "loadPresetFromOverlay";
 constexpr const char* kParamPresetFolder   = "presetFolderPath";   ///< read-out only
 constexpr const char* kParamSetFolder      = "setPresetFolder";
 constexpr const char* kParamResetFolder    = "resetPresetFolder";
@@ -74,6 +81,8 @@ constexpr const char* kParamGroupTiming    = "grpTiming";
 constexpr const char* kParamGroupFrom      = "grpFrom";
 constexpr const char* kParamGroupTo        = "grpTo";
 constexpr const char* kParamGroupEasing    = "grpEasing";
+constexpr const char* kParamCurveName      = "curveName";
+constexpr const char* kParamSaveCurve      = "saveCurve";
 constexpr const char* kParamGroupPath      = "grpPath";
 constexpr const char* kParamEnabled        = "enabled";
 constexpr const char* kParamAnchor2        = "timingAnchor";   ///< TimingAnchor

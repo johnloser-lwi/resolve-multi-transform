@@ -152,6 +152,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.activeStage = GetChoice(_effect, kParamActiveStage);
     out.editTo      = GetChoice(_effect, kParamEditTarget) != 0;
     out.showCurve   = GetBool(_effect, kParamShowCurve, time);
+    out.showLibrary = GetBool(_effect, kParamShowLibrary, time);
     out.shiftHeld   = _shiftHeld;
 
     if (out.activeStage >= out.stageCount) out.activeStage = out.stageCount - 1;
@@ -284,6 +285,16 @@ OfxRectD MultiTransformInteract::curveToggleRect(const OverlayContext& c) const
     return rightButtonRect(c, 2, kToggleWPx);
 }
 
+OfxRectD MultiTransformInteract::libraryToggleRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 3, kToggleWPx);
+}
+
+OfxRectD MultiTransformInteract::loadPresetRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 4, kToggleWPx);
+}
+
 void MultiTransformInteract::drawToolbar(const OverlayContext& c)
 {
     for (int i = 0; i < c.stageCount; ++i)
@@ -335,6 +346,35 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
         Text(c, "CURVE", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
              kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
     }
+
+    // Saved-curve picker.
+    {
+        const OfxRectD r = libraryToggleRect(c);
+
+        SetColour(c, c.showLibrary ? colours::kAccent : colours::kPanel);
+        FillRect(c, r.x1, r.y1, r.x2, r.y2);
+        SetColour(c, c.showLibrary ? colours::kHandle : colours::kPanelEdge);
+        SetLineWidth(c, 1.0f);
+        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+
+        SetColour(c, c.showLibrary ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kTextDim);
+        Text(c, "CURVES", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
+             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
+    }
+    // Load a whole-effect or single-stage preset. Momentary, so never lit.
+    {
+        const OfxRectD r = loadPresetRect(c);
+
+        SetColour(c, colours::kPanel);
+        FillRect(c, r.x1, r.y1, r.x2, r.y2);
+        SetColour(c, colours::kPanelEdge);
+        SetLineWidth(c, 1.0f);
+        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+
+        SetColour(c, colours::kText);
+        Text(c, "LOAD", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
+             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
+    }
 }
 
 bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD& p)
@@ -358,6 +398,27 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
             _effect->fetchChoiceParam(kParamEditTarget)->setValue(k);
             return true;
         }
+    }
+    if (Contains(loadPresetRect(c), p))
+    {
+        // Flipping the hidden trigger is the press: OFX offers no way to fire a
+        // push button from code, and changedParam is where the dialog belongs.
+        EditBlock block(_effect, "Load Preset");
+        OFX::BooleanParam* trigger = _effect->fetchBooleanParam(kParamLoadFromOverlay);
+        bool v = false;
+        trigger->getValue(v);
+        trigger->setValue(!v);
+        return true;
+    }
+    if (Contains(libraryToggleRect(c), p))
+    {
+        // Re-scanned every time it opens, so a curve saved since the last look
+        // is there, and a file deleted outside Resolve is not.
+        _library.invalidate();
+
+        EditBlock block(_effect, "Show Curve Library");
+        _effect->fetchBooleanParam(kParamShowLibrary)->setValue(!c.showLibrary);
+        return true;
     }
     if (Contains(curveToggleRect(c), p))
     {
@@ -420,6 +481,9 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         _timeline.draw(c);
         if (c.showCurve) _curve.draw(c);
         drawToolbar(c);
+
+        // Last, and therefore on top of everything: it is a modal picker.
+        if (c.showLibrary) _library.draw(c);
     }
     catch (...)
     {
@@ -450,7 +514,11 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         // whatever is visually on top. A hidden curve panel is skipped entirely
         // rather than merely not drawn -- otherwise it would keep swallowing
         // clicks aimed at the motion path handles beneath it.
-        Widget* order[4] = { c.showCurve ? &_curve : nullptr, &_timeline, &_path, &_gizmo };
+        // The library is first because it is modal: while it is up it takes
+        // every click inside itself, and nothing beneath it should react.
+        Widget* order[5] = { c.showLibrary ? &_library : nullptr,
+                             c.showCurve   ? &_curve   : nullptr,
+                             &_timeline, &_path, &_gizmo };
         for (Widget* w : order)
         {
             if (!w) continue;

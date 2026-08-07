@@ -54,11 +54,13 @@ add_library(MultiTransform MODULE
     src/Preset.cpp
     src/PresetIO.cpp
     src/Settings.cpp
+    src/CurvePreset.cpp
     src/interact/OverlayInteract.cpp
     src/interact/TimelineWidget.cpp
     src/interact/CurveWidget.cpp
     src/interact/GizmoWidget.cpp
     src/interact/PathWidget.cpp
+    src/interact/LibraryWidget.cpp
 )
 target_include_directories(MultiTransform PRIVATE src)
 # ole32/shell32: the preset-folder picker is IFileDialog, which is COM.
@@ -89,7 +91,7 @@ add_test(NAME render_parity COMMAND test_render_parity)
 # Preset serialisation is OFX-free for exactly this reason: a preset that half
 # loads or mis-scales is worse than one that refuses, so the rules get tested
 # directly rather than only through the host.
-add_executable(test_preset tests/test_preset.cpp src/Preset.cpp src/Settings.cpp)
+add_executable(test_preset tests/test_preset.cpp src/Preset.cpp src/Settings.cpp src/CurvePreset.cpp)
 target_include_directories(test_preset PRIVATE src)
 add_test(NAME preset COMMAND test_preset)
 

@@ -1,10 +1,26 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
+#include "CurvePreset.h"
 #include "Settings.h"
 
 namespace mtx {
+
+/** @brief Where saved curves live: a `Curves` subfolder of the preset folder.
+ *
+ *  Separate from the effect and stage presets deliberately. Every file this
+ *  plugin writes is a `.json`, so a flat folder gives no clue which of them is
+ *  a whole setup and which is nine numbers describing an ease -- and the curve
+ *  library has to be able to list one without the other. Created on demand,
+ *  and it follows the preset folder if that is moved. */
+std::string CurveFolder();
+
+/** @brief Every `.json` in @p folder, as full paths, sorted by name.
+ *  Empty if the folder does not exist. */
+std::vector<std::string> ListJsonFiles(const std::string& folder);
+
 
 /** @brief Where the preset dialogs open.
  *

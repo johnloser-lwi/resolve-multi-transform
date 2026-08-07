@@ -73,6 +73,10 @@ struct OverlayContext
     /// it out of the way.
     bool showCurve   = true;
 
+    /// The saved-curve picker. Modal while it is up: it covers the middle of
+    /// the image and takes every click inside itself.
+    bool showLibrary = false;
+
     /// Shift held. OFX's pen actions carry no modifier state at all -- PenArgs
     /// has position and pressure and nothing else -- so this is tracked from
     /// keyDown/keyUp and folded in here rather than read off the drag.

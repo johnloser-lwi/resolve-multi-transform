@@ -19,6 +19,7 @@
 #include "EditBlock.h"
 #include "HostProbe.h"
 #include "Preset.h"
+#include "CurvePreset.h"
 #include "PresetIO.h"
 #include "ParamNames.h"
 #include "Sampler.h"
@@ -188,6 +189,9 @@ private:
     /// Refresh the preset-folder read-out from preferences.
     void             syncPresetFolderLabel();
 
+    /// Write stage @p i's easing into the curve library.
+    void             saveCurve(int stage);
+
     /** @brief Move poses between a stage's two ends.
      *  @param mode 0 copies From onto To, 1 copies To onto From, 2 swaps them. */
     void             transferEnds(int stage, int mode);
@@ -237,6 +241,8 @@ private:
         OFX::GroupParam*    grpTo;
         OFX::GroupParam*    grpEasing;
         OFX::GroupParam*    grpPath;
+        OFX::StringParam*     curveName;
+        OFX::PushButtonParam* saveCurve;
         OFX::Double2DParam* pathC1;
         OFX::Double2DParam* pathC2;
         OFX::PushButtonParam* pathReset;
@@ -332,6 +338,8 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.grpTo         = fetchGroupParam   (StageParam(kParamGroupTo,       i));
         s.grpEasing     = fetchGroupParam   (StageParam(kParamGroupEasing,   i));
         s.grpPath       = fetchGroupParam   (StageParam(kParamGroupPath,     i));
+        s.curveName     = fetchStringParam  (StageParam(kParamCurveName,     i));
+        s.saveCurve     = fetchPushButtonParam(StageParam(kParamSaveCurve,  i));
         s.pathC1        = fetchDouble2DParam(StageParam(kParamPathC1,        i));
         s.pathC2        = fetchDouble2DParam(StageParam(kParamPathC2,        i));
         s.pathReset     = fetchPushButtonParam(StageParam(kParamPathReset,   i));
@@ -712,6 +720,50 @@ void MultiTransformPlugin::syncPresetFolderLabel()
     _presetFolder->setValue(mtx::PresetFolder());
 }
 
+void MultiTransformPlugin::saveCurve(int stage)
+{
+    StageParamHandles& h = _stage[stage];
+
+    std::string raw;
+    h.curveName->getValue(raw);
+
+    const std::string name = mtx::SanitiseFileName(raw);
+    if (name.empty())
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "Type a name for the curve first.\n\n"
+                    "It becomes the file name, so it cannot contain \\ / : * ? \" < > |");
+        return;
+    }
+
+    mtx::CurvePreset c = mtx::CurvePreset::Default();
+    c.name          = name;
+    c.easeIn        = static_cast<float>(h.easeIn->getValue());
+    c.easeOut       = static_cast<float>(h.easeOut->getValue());
+    c.anticipation  = static_cast<float>(h.anticipation->getValue());
+    c.overshoot     = static_cast<float>(h.overshoot->getValue());
+    h.bounceType->getValue(c.bounceType);
+    c.bounceAmount  = static_cast<float>(h.bounceAmount->getValue());
+    c.bounceCount   = static_cast<float>(h.bounceCount->getValue());
+    c.bounceDamping = static_cast<float>(h.bounceDamping->getValue());
+    c.bounceStart   = static_cast<float>(h.bounceStart->getValue());
+
+    const std::string folder = mtx::CurveFolder();
+    if (folder.empty())
+    {
+        sendMessage(OFX::Message::eMessageError, "", "Could not locate the curve folder.");
+        return;
+    }
+
+    std::string error;
+    if (!mtx::WriteTextFile(folder + "\\" + name + ".json", mtx::CurveToJson(c), error))
+    {
+        sendMessage(OFX::Message::eMessageError, "", "Could not save the curve:\n" + error);
+        return;
+    }
+    mtx::ProbeLog("curve saved: " + name);
+}
+
 void MultiTransformPlugin::transferEnds(int stage, int mode)
 {
     StageParamHandles& h = _stage[stage];
@@ -1003,6 +1055,8 @@ void MultiTransformPlugin::syncStageVisibility()
         s.grpTo->setIsSecret(hidden);
         s.grpEasing->setIsSecret(hidden);
         s.grpPath->setIsSecret(hidden);
+        s.curveName->setIsSecret(hidden);
+        s.saveCurve->setIsSecret(hidden);
         s.pathC1->setIsSecret(hidden);
         s.pathC2->setIsSecret(hidden);
         s.pathReset->setIsSecret(hidden);
@@ -1195,6 +1249,8 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     if (p_ParamName == kParamSaveStage)     { savePreset(false); return; }
     if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
+    if (p_ParamName == kParamLoadFromOverlay) { loadPreset(false); return; }
+    if (p_ParamName == kParamLoadFromOverlay) { loadPreset(false); return; }
 
     if (p_ParamName == kParamBaseReset)
     {
@@ -1298,6 +1354,7 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
             syncStageVisibility();
             return;
         }
+        if (p_ParamName == StageParam(kParamSaveCurve, i)) { saveCurve(i); return; }
         if (p_ParamName == StageParam(kParamEasingPreset, i))
         {
             applyEasingPreset(i);
@@ -1845,6 +1902,27 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                  "and everything after it is the bounce -- so lower values give a quicker "
                  "arrival and a longer bounce.",
                  55.0, 5.0, 95.0, 5.0, 95.0, 1.0);
+
+    // Saving a curve to the library. A name field and a button rather than a
+    // file dialog: the whole point of the library is that curves are picked
+    // visually, and making the *saving* half go through Explorer would put the
+    // friction straight back.
+    StringParamDescriptor* curveName = desc.defineStringParam(StageParam(kParamCurveName, i));
+    curveName->setLabels("Curve Name", "Curve Name", "Curve Name");
+    curveName->setStringType(eStringTypeSingleLine);
+    curveName->setHint("Name to save this stage's easing under. Saving with a name that already "
+                       "exists overwrites it.");
+    curveName->setDefault("");
+    curveName->setIsPersistant(false);   // scratch text, not part of the animation
+    curveName->setParent(*gEase);
+    page->addChild(*curveName);
+
+    PushButtonParamDescriptor* saveCurve = desc.definePushButtonParam(StageParam(kParamSaveCurve, i));
+    saveCurve->setLabels("Save Curve to Library", "Save Curve", "Save Curve to Library");
+    saveCurve->setHint("Store this easing in the curve library, where it can be picked by its "
+                       "shape from the LIBRARY panel in the viewer overlay.");
+    saveCurve->setParent(*gEase);
+    page->addChild(*saveCurve);
 }
 
 } // namespace
@@ -1908,6 +1986,14 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     showCurve->setDefault(true);
     showCurve->setParent(*gOverlay);
     page->addChild(*showCurve);
+
+    BooleanParamDescriptor* showLib = p_Desc.defineBooleanParam(kParamShowLibrary);
+    showLib->setLabels("Show Curve Library", "Curve Library", "Show Curve Library");
+    showLib->setHint("Draw the saved-curve picker in the viewer overlay. Also toggled by the "
+                     "LIBRARY button there. Clicking a curve applies it to the active stage.");
+    showLib->setDefault(false);
+    showLib->setParent(*gOverlay);
+    page->addChild(*showLib);
 
     // --- Base transform ---
     //
@@ -2002,6 +2088,15 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                         "motion blur and sampling. A stage preset loads into the active stage.");
     loadPreset->setParent(*gPresets);
     page->addChild(*loadPreset);
+
+    // Invisible: the overlay's LOAD button writes to it, and nothing else ever
+    // should. See kParamLoadFromOverlay.
+    BooleanParamDescriptor* overlayLoad = p_Desc.defineBooleanParam(kParamLoadFromOverlay);
+    overlayLoad->setDefault(false);
+    overlayLoad->setIsSecret(true);
+    overlayLoad->setIsPersistant(false);
+    overlayLoad->setParent(*gPresets);
+    page->addChild(*overlayLoad);
 
     PushButtonParamDescriptor* loadFit = p_Desc.definePushButtonParam(kParamLoadPresetFit);
     loadFit->setLabels("Load from File (Fit to Clip)...", "Load (Fit)",

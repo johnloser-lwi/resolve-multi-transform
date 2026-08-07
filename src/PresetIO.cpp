@@ -5,6 +5,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -82,6 +83,41 @@ bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& o
 }
 
 } // namespace
+
+std::string CurveFolder()
+{
+    const std::string base = PresetFolder();
+    if (base.empty()) return "";
+
+    const std::string curves = base + "\\Curves";
+    CreateDirectoryA(curves.c_str(), nullptr);
+    return curves;
+}
+
+std::vector<std::string> ListJsonFiles(const std::string& folder)
+{
+    std::vector<std::string> out;
+    if (folder.empty()) return out;
+
+    WIN32_FIND_DATAA fd = {};
+    const HANDLE h = FindFirstFileA((folder + "\\*.json").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;      // no folder, or nothing in it
+
+    do
+    {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        out.push_back(folder + "\\" + fd.cFileName);
+    }
+    while (FindNextFileA(h, &fd));
+
+    FindClose(h);
+
+    // FindFirstFile's order is whatever the filesystem hands back, which is not
+    // stable. The library is a visual grid, so a curve moving between sessions
+    // for no reason would be worse than it sounds.
+    std::sort(out.begin(), out.end());
+    return out;
+}
 
 std::string SettingsFilePath()
 {

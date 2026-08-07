@@ -5,6 +5,7 @@
 // undo than an outright failure.
 
 #include "Preset.h"
+#include "CurvePreset.h"
 #include "Settings.h"
 
 #include <cmath>
@@ -454,6 +455,104 @@ static void TestSettings()
     Check(future.presetFolder == "C:\\X", "known keys still read correctly");
 }
 
+static void TestCurvePresets()
+{
+    std::printf("Curve presets round-trip and stay distinct from effect presets\n");
+
+    CurvePreset c = CurvePreset::Default();
+    c.name          = "Heavy Settle";
+    c.easeIn        = 12.5f;
+    c.easeOut       = 71.0f;
+    c.anticipation  = -30.0f;
+    c.overshoot     = 95.0f;
+    c.bounceType    = kBounceSpring;
+    c.bounceAmount  = -42.0f;
+    c.bounceCount   = 5.0f;
+    c.bounceDamping = 33.0f;
+    c.bounceStart   = 62.0f;
+
+    CurvePreset out;
+    std::string err;
+    Check(CurveFromJson(CurveToJson(c), out, err), "a curve parses back: " + err);
+
+    Check(out.name == c.name, "name survives");
+    CheckNear(out.easeIn,        c.easeIn,        1e-3, "easeIn survives");
+    CheckNear(out.easeOut,       c.easeOut,       1e-3, "easeOut survives");
+    CheckNear(out.anticipation,  c.anticipation,  1e-3, "anticipation survives");
+    CheckNear(out.overshoot,     c.overshoot,     1e-3, "overshoot survives");
+    Check(out.bounceType == c.bounceType, "bounce type survives");
+    CheckNear(out.bounceAmount,  c.bounceAmount,  1e-3, "bounce amount survives");
+    CheckNear(out.bounceCount,   c.bounceCount,   1e-3, "bounce count survives");
+    CheckNear(out.bounceDamping, c.bounceDamping, 1e-3, "bounce damping survives");
+    CheckNear(out.bounceStart,   c.bounceStart,   1e-3, "bounce start survives");
+    Check(CurveToJson(out) == CurveToJson(c), "re-serialising is byte-identical");
+
+    // The thumbnail is drawn from ToEasing(), so it has to be the same curve the
+    // renderer would animate -- otherwise the library would show one shape and
+    // apply another, which is the single worst failure this feature could have.
+    const Easing fromCurve = out.ToEasing();
+    const Easing direct    = MakeEasing(c.easeIn, c.easeOut, c.anticipation, c.overshoot,
+                                        c.bounceType, c.bounceAmount, c.bounceCount,
+                                        c.bounceDamping, c.bounceStart);
+    for (int k = 0; k <= 10; ++k)
+    {
+        const float p = static_cast<float>(k) / 10.0f;
+        CheckNear(ApplyEasing(p, fromCurve), ApplyEasing(p, direct), 1e-5,
+                  "the previewed curve is the curve that gets applied");
+    }
+
+    // An effect preset must not read as a curve. Both are .json in folders the
+    // user can rearrange, so the type tag is the only thing keeping a whole
+    // saved setup from being silently accepted as nine defaulted numbers.
+    PresetData effect = PresetData::Default();
+    CurvePreset target = CurvePreset::Default();
+    target.name = "SENTINEL";
+    Check(!CurveFromJson(ToJson(effect), target, err),
+          "an effect preset is refused as a curve");
+    Check(target.name == "SENTINEL", "a refused load leaves the target alone");
+
+    // And the converse: a curve file is not a valid effect preset either.
+    PresetData pTarget = PresetData::Default();
+    pTarget.name = "SENTINEL";
+    Check(!FromJson(CurveToJson(c), pTarget, err),
+          "a curve is refused as an effect preset");
+    Check(pTarget.name == "SENTINEL", "a refused load leaves the preset alone");
+
+    // Missing keys inside a genuine curve resolve to defaults, and unknown keys
+    // from a newer build are ignored.
+    CurvePreset partial;
+    Check(CurveFromJson("{ \"type\": \"curve\", \"easeOut\": 90, \"whatIsThis\": 1 }",
+                        partial, err), "a sparse curve parses: " + err);
+    CheckNear(partial.easeOut, 90.0, 1e-3, "the stated key is applied");
+    CheckNear(partial.easeIn, CurvePreset::Default().easeIn, 1e-3,
+              "an absent key uses the default");
+
+    const char* bad[] = { "", "   ", "not json", "{", "{ \"type\": \"effect\" }", "[]" };
+    for (const char* b : bad)
+    {
+        CurvePreset t;
+        t.name = "SENTINEL";
+        std::string e;
+        Check(!CurveFromJson(b, t, e), std::string("rejects: ") + (b[0] ? b : "(empty)"));
+        Check(t.name == "SENTINEL", "a failed parse leaves the target alone");
+    }
+}
+
+static void TestFileNameSanitising()
+{
+    std::printf("Curve names are reduced to something writable\n");
+
+    // The name becomes the file name, so anything Windows forbids has to go or
+    // the save fails with an error about a path rather than about the name.
+    Check(SanitiseFileName("Heavy Settle") == "Heavy Settle", "an ordinary name is untouched");
+    Check(SanitiseFileName("a/b\\c:d*e?f\"g<h>i|j") == "abcdefghij", "illegal characters go");
+    Check(SanitiseFileName("  padded  ") == "padded", "surrounding spaces go");
+    Check(SanitiseFileName("...") == "", "a name of only dots is left empty, not unwritable");
+    Check(SanitiseFileName("") == "", "an empty name stays empty");
+    Check(SanitiseFileName("   ") == "", "whitespace only is empty");
+    Check(SanitiseFileName("trailing.") == "trailing", "a trailing dot goes");
+}
+
 int main()
 {
     std::printf("=== MultiTransform preset tests ===\n");
@@ -468,6 +567,8 @@ int main()
     TestRescaleEdgeCases();
     TestNameEscaping();
     TestSettings();
+    TestCurvePresets();
+    TestFileNameSanitising();
 
     std::printf("\n%d checks, %d failure(s)\n", g_checks, g_failures);
     if (g_failures == 0) std::printf("ALL TESTS PASSED\n");

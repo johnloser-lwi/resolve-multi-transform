@@ -49,6 +49,8 @@ private:
     OfxRectD rightButtonRect(const OverlayContext& c, int indexFromRight, double widthPx) const;
     OfxRectD fromToRect(const OverlayContext& c, bool toButton) const;
     OfxRectD curveToggleRect(const OverlayContext& c) const;
+    OfxRectD libraryToggleRect(const OverlayContext& c) const;
+    OfxRectD loadPresetRect(const OverlayContext& c) const;
 
     OFX::ImageEffect* _effect = nullptr;
 
@@ -56,6 +58,7 @@ private:
     PathWidget     _path;
     TimelineWidget _timeline;
     CurveWidget    _curve;
+    LibraryWidget  _library;
 
     /// Widget that claimed the current drag, so motion/up go to the same place.
     Widget* _captured = nullptr;

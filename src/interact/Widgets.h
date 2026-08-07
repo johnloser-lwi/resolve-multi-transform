@@ -2,6 +2,10 @@
 
 #include "DrawUtils.h"
 
+#include "CurvePreset.h"
+
+#include <vector>
+
 namespace mtx {
 
 /** @brief A piece of the overlay that draws itself and may claim pen input.
@@ -120,6 +124,50 @@ private:
     OfxRectD _plot{};
     double   _yMin = kYMinDefault;
     double   _yMax = kYMaxDefault;
+};
+
+/** @brief The saved-curve picker: a grid of curves drawn as curves.
+ *
+ * A dropdown of names would say "Heavy Settle" and leave you to remember what
+ * that looked like. Each cell here is plotted with the renderer's own
+ * evaluator, so the thumbnail is the curve, and picking one is recognition
+ * rather than recall.
+ *
+ * The library is read from disk when the panel opens rather than on every
+ * redraw -- a directory scan and a parse per frame during a drag would be
+ * absurd, and curves do not change while the panel is up.
+ */
+class LibraryWidget : public Widget
+{
+public:
+    void layout(const OverlayContext& c) override;
+    void draw(const OverlayContext& c) override;
+    bool penDown  (const OverlayContext& c, const OfxPointD& p) override;
+    bool penMotion(const OverlayContext& c, const OfxPointD& p) override;
+    bool penUp    (const OverlayContext& c, const OfxPointD& p) override;
+
+    const OfxRectD& rect() const { return _rect; }
+
+    /// Re-scan the curve folder. Called when the panel is opened, and after a
+    /// save, so a curve just stored shows up without a reload.
+    void invalidate() { _loaded = false; }
+
+private:
+    struct Entry
+    {
+        CurvePreset curve;
+        std::string label;
+    };
+
+    void      reloadIfNeeded(const OverlayContext& c);
+    OfxRectD  cellRect(const OverlayContext& c, int index) const;
+    void      applyCurve(const OverlayContext& c, const Entry& e) const;
+
+    OfxRectD             _rect{};
+    std::vector<Entry>   _entries;
+    bool                 _loaded = false;
+    int                  _columns = 1;
+    int                  _rows    = 1;
 };
 
 /** @brief The trajectory the active stage travels, drawn over the image.
