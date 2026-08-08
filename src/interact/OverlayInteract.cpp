@@ -73,29 +73,36 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
 void MultiTransformInteract::openEditBlock(const char* name)
 {
     if (!_effect || _editBlockOpen) return;
-    try
-    {
-        _effect->beginEditBlock(name);
-        _editBlockOpen = true;
-    }
-    catch (...)
-    {
-        mtx::ProbeOnce("edit-block-failed", "overlay: beginEditBlock threw");
-    }
+
+    // Through the shared counter, so the widget's own blocks and the ones
+    // changedParam opens underneath them collapse into this single one as far
+    // as the host is concerned. See EditBlock.h.
+    BeginEdit(_effect, name);
+    _editBlockOpen = true;
 }
 
 void MultiTransformInteract::closeEditBlock()
 {
     if (!_effect || !_editBlockOpen) return;
     _editBlockOpen = false;   // cleared first, so a throw cannot leave it stuck open
-    try
-    {
-        _effect->endEditBlock();
-    }
-    catch (...)
-    {
-        mtx::ProbeOnce("edit-block-end-failed", "overlay: endEditBlock threw");
-    }
+    EndEdit(_effect);
+}
+
+void MultiTransformInteract::abandonDrag(const char* why)
+{
+    // Recovery for a drag that was started and never finished, because the host
+    // did not deliver the mouse-up: released outside the viewer, a page switched
+    // mid-drag, a modal dialog taking the release. Without this the block stays
+    // open for the rest of the session, openEditBlock quietly does nothing ever
+    // after, and the host is left holding an edit that never ends.
+    if (!_captured && !_editBlockOpen && EditDepthOf(_effect) == 0) return;
+
+    mtx::ProbeLog(std::string("overlay: abandoned drag (") + why + "), depth was "
+                  + std::to_string(EditDepthOf(_effect)));
+
+    _captured      = nullptr;
+    _editBlockOpen = false;
+    ForceCloseEdits(_effect);
 }
 
 bool MultiTransformInteract::buildContext(OverlayContext& out, double time,
@@ -403,7 +410,14 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
     {
         // Flipping the hidden trigger is the press: OFX offers no way to fire a
         // push button from code, and changedParam is where the dialog belongs.
-        EditBlock block(_effect, "Load Preset");
+        //
+        // Deliberately NOT inside an EditBlock. The host dispatches changedParam
+        // synchronously from the setValue below, so the file dialog opens inside
+        // this call -- and a modal Win32 dialog pumps its own message loop. Doing
+        // that between a paramEditBegin and its End means the host is holding an
+        // open edit while the user is free to click elsewhere, switch pages, and
+        // re-enter this interact. Nothing is being edited yet in any case: the
+        // trigger is hidden and not persisted, so there is no undo step to group.
         OFX::BooleanParam* trigger = _effect->fetchBooleanParam(kParamLoadFromOverlay);
         bool v = false;
         trigger->getValue(v);
@@ -455,6 +469,10 @@ bool MultiTransformInteract::keyUp(const OFX::KeyArgs& args)
 void MultiTransformInteract::loseFocus(const OFX::FocusArgs& /*args*/)
 {
     _shiftHeld = false;
+
+    // Losing focus mid-drag means the mouse-up is going somewhere else and will
+    // never arrive here.
+    abandonDrag("focus lost");
 }
 
 // --- Interact actions --------------------------------------------------------
@@ -496,6 +514,12 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
 
 bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
 {
+    // A fresh press means any previous drag is over, however it ended. If one is
+    // still marked as in progress the mouse-up for it never arrived, so clear it
+    // here rather than letting it accumulate. This is the backstop for the cases
+    // loseFocus does not see.
+    abandonDrag("new press while a drag was still open");
+
     OverlayContext c;
     if (!buildContext(c, args.time, args.pixelScale)) return false;
 

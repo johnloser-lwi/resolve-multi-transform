@@ -1604,6 +1604,39 @@ GroupParamDescriptor* DefineSection(OFX::ImageEffectDescriptor& desc, PageParamD
     return g;
 }
 
+/** @brief Stage buttons that live at the top of the panel, outside every group.
+ *
+ * These are reached constantly while building a move, so putting them behind a
+ * disclosure arrow costs a click every time. They are defined separately from
+ * the rest of the stage because *position in the Inspector is decided by
+ * definition order*, and ungrouped parameters must all come before the first
+ * group -- an ungrouped island between two groups gets scattered by Resolve,
+ * which is how the preset buttons ended up split across the panel once before.
+ */
+void DefineStageRootButtons(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, int i)
+{
+    // Moving poses between the two ends. Building a move usually starts by
+    // matching one end to the other and then changing only what should differ,
+    // which is otherwise seven fields retyped by hand.
+    PushButtonParamDescriptor* copyFwd = desc.definePushButtonParam(StageParam(kParamCopyFromTo, i));
+    copyFwd->setLabels("Copy FROM to TO", "From > To", "Copy FROM to TO");
+    copyFwd->setHint("Overwrite the TO pose with the FROM pose, leaving the stage holding still "
+                     "until you change one of them.");
+    page->addChild(*copyFwd);
+
+    PushButtonParamDescriptor* copyBack = desc.definePushButtonParam(StageParam(kParamCopyToFrom, i));
+    copyBack->setLabels("Copy TO to FROM", "To > From", "Copy TO to FROM");
+    copyBack->setHint("Overwrite the FROM pose with the TO pose. Useful after posing the end "
+                      "state on screen: copy it back, then pull the start away from it.");
+    page->addChild(*copyBack);
+
+    PushButtonParamDescriptor* swapEnds = desc.definePushButtonParam(StageParam(kParamSwapEnds, i));
+    swapEnds->setLabels("Swap FROM and TO", "Swap", "Swap FROM and TO");
+    swapEnds->setHint("Reverse the move. The motion path's two handles swap with it, so a bent "
+                      "route keeps its exact shape and simply runs the other way.");
+    page->addChild(*swapEnds);
+}
+
 void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, int i)
 {
     const std::string idx = std::to_string(i + 1);
@@ -1705,8 +1738,6 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
         { kParamGroupTo,   "To (end)",     true  }
     };
 
-    GroupParamDescriptor* gTo = nullptr;
-
     for (const EndSpec& end : ends)
     {
         GroupParamDescriptor* g = DefineSection(desc, page, StageParam(end.groupName, i),
@@ -1757,32 +1788,8 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                      "timing and easing, so a fade can be staggered against the movement.",
                      100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
 
-        if (end.isTo) gTo = g;
     }
 
-    // Moving poses between the two ends. Building a move usually starts by
-    // matching one end to the other and then changing only what should differ,
-    // which is otherwise seven fields retyped by hand.
-    PushButtonParamDescriptor* copyFwd = desc.definePushButtonParam(StageParam(kParamCopyFromTo, i));
-    copyFwd->setLabels("Copy FROM to TO", "From > To", "Copy FROM to TO");
-    copyFwd->setHint("Overwrite the TO pose with the FROM pose, leaving the stage holding still "
-                     "until you change one of them.");
-    copyFwd->setParent(*gTo);
-    page->addChild(*copyFwd);
-
-    PushButtonParamDescriptor* copyBack = desc.definePushButtonParam(StageParam(kParamCopyToFrom, i));
-    copyBack->setLabels("Copy TO to FROM", "To > From", "Copy TO to FROM");
-    copyBack->setHint("Overwrite the FROM pose with the TO pose. Useful after posing the end "
-                      "state on screen: copy it back, then pull the start away from it.");
-    copyBack->setParent(*gTo);
-    page->addChild(*copyBack);
-
-    PushButtonParamDescriptor* swapEnds = desc.definePushButtonParam(StageParam(kParamSwapEnds, i));
-    swapEnds->setLabels("Swap FROM and TO", "Swap", "Swap FROM and TO");
-    swapEnds->setHint("Reverse the move. The motion path's two handles swap with it, so a bent "
-                      "route keeps its exact shape and simply runs the other way.");
-    swapEnds->setParent(*gTo);
-    page->addChild(*swapEnds);
 
     // --- Motion path ---
     // The path belongs to the stage as a whole rather than to either end, since
@@ -1962,6 +1969,53 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     active->setDefault(0);
     page->addChild(*active);
 
+    // --- Root-level buttons ------------------------------------------------
+    //
+    // Everything below this is inside a collapsible group; these are not. They
+    // are the controls reached constantly while working, and a disclosure arrow
+    // in front of each would cost a click every time.
+    //
+    // They must all be defined BEFORE the first group. Resolve lays the panel
+    // out in definition order, and ungrouped parameters that sit between two
+    // groups get scattered -- that is how the preset buttons once ended up split
+    // between the top and the bottom of the panel.
+    for (int i = 0; i < kMaxStages; ++i) DefineStageRootButtons(p_Desc, page, i);
+    PushButtonParamDescriptor* saveEffect = p_Desc.definePushButtonParam(kParamSaveEffect);
+    saveEffect->setLabels("Save Preset to File...", "Save Preset", "Save Preset to File...");
+    saveEffect->setHint("Write every stage, plus motion blur and sampling, to a JSON file.");
+    page->addChild(*saveEffect);
+
+    PushButtonParamDescriptor* saveStage = p_Desc.definePushButtonParam(kParamSaveStage);
+    saveStage->setLabels("Save Active Stage to File...", "Save Stage",
+                         "Save Active Stage to File...");
+    saveStage->setHint("Write only the active stage, for building a library of reusable pieces "
+                       "such as a punch in or a fade out.");
+    page->addChild(*saveStage);
+
+    PushButtonParamDescriptor* loadPreset = p_Desc.definePushButtonParam(kParamLoadPreset);
+    loadPreset->setLabels("Load Preset from File...", "Load Preset", "Load Preset from File...");
+    loadPreset->setHint("Apply a preset exactly as it was saved. Loads everything: all stages, "
+                        "motion blur and sampling. A stage preset loads into the active stage.");
+    page->addChild(*loadPreset);
+
+    // Invisible: the overlay's LOAD button writes to it, and nothing else ever
+    // should. See kParamLoadFromOverlay.
+    BooleanParamDescriptor* overlayLoad = p_Desc.defineBooleanParam(kParamLoadFromOverlay);
+    overlayLoad->setDefault(false);
+    overlayLoad->setIsSecret(true);
+    overlayLoad->setIsPersistant(false);
+    page->addChild(*overlayLoad);
+
+    PushButtonParamDescriptor* loadFit = p_Desc.definePushButtonParam(kParamLoadPresetFit);
+    loadFit->setLabels("Load from File (Fit to Clip)...", "Load (Fit)",
+                       "Load from File (Fit to Clip)...");
+    loadFit->setHint("Loads exactly the same settings as Load Preset from File, with one "
+                     "difference: frame-based Start and End values are rescaled to this clip's "
+                     "length so the pacing is preserved. Stages anchored to Stretch are already "
+                     "proportional and are left untouched.");
+    page->addChild(*loadFit);
+
+
     GroupParamDescriptor* gOverlay = DefineSection(p_Desc, page, kParamGroupOverlay,
         "Viewer Overlay",
         "State shared with the on-screen controls. Both of these have a button in the overlay "
@@ -2068,45 +2122,6 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     GroupParamDescriptor* gPresets = DefineSection(p_Desc, page, kParamGroupPresets, "Presets",
         "Saving and loading setups as JSON files, and where those files live.");
 
-    PushButtonParamDescriptor* saveEffect = p_Desc.definePushButtonParam(kParamSaveEffect);
-    saveEffect->setLabels("Save Preset to File...", "Save Preset", "Save Preset to File...");
-    saveEffect->setHint("Write every stage, plus motion blur and sampling, to a JSON file.");
-    saveEffect->setParent(*gPresets);
-    page->addChild(*saveEffect);
-
-    PushButtonParamDescriptor* saveStage = p_Desc.definePushButtonParam(kParamSaveStage);
-    saveStage->setLabels("Save Active Stage to File...", "Save Stage",
-                         "Save Active Stage to File...");
-    saveStage->setHint("Write only the active stage, for building a library of reusable pieces "
-                       "such as a punch in or a fade out.");
-    saveStage->setParent(*gPresets);
-    page->addChild(*saveStage);
-
-    PushButtonParamDescriptor* loadPreset = p_Desc.definePushButtonParam(kParamLoadPreset);
-    loadPreset->setLabels("Load Preset from File...", "Load Preset", "Load Preset from File...");
-    loadPreset->setHint("Apply a preset exactly as it was saved. Loads everything: all stages, "
-                        "motion blur and sampling. A stage preset loads into the active stage.");
-    loadPreset->setParent(*gPresets);
-    page->addChild(*loadPreset);
-
-    // Invisible: the overlay's LOAD button writes to it, and nothing else ever
-    // should. See kParamLoadFromOverlay.
-    BooleanParamDescriptor* overlayLoad = p_Desc.defineBooleanParam(kParamLoadFromOverlay);
-    overlayLoad->setDefault(false);
-    overlayLoad->setIsSecret(true);
-    overlayLoad->setIsPersistant(false);
-    overlayLoad->setParent(*gPresets);
-    page->addChild(*overlayLoad);
-
-    PushButtonParamDescriptor* loadFit = p_Desc.definePushButtonParam(kParamLoadPresetFit);
-    loadFit->setLabels("Load from File (Fit to Clip)...", "Load (Fit)",
-                       "Load from File (Fit to Clip)...");
-    loadFit->setHint("Loads exactly the same settings as Load Preset from File, with one "
-                     "difference: frame-based Start and End values are rescaled to this clip's "
-                     "length so the pacing is preserved. Stages anchored to Stretch are already "
-                     "proportional and are left untouched.");
-    loadFit->setParent(*gPresets);
-    page->addChild(*loadFit);
 
     // The folder those four dialogs open in. A preference, not a parameter:
     // it is stored per user in settings.json rather than in the project, so it

@@ -1,5 +1,7 @@
 #include "PresetIO.h"
 
+#include "HostProbe.h"
+
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
@@ -33,53 +35,104 @@ std::string Narrow(const std::wstring& w)
     return s;
 }
 
-/** Shared dialog setup. The filter is a double-null-terminated pair list. */
+/** @brief Shared open/save dialog, built on IFileDialog.
+ *
+ * Deliberately not GetOpenFileName/GetSaveFileName any more.
+ *
+ * The old code had to smuggle the starting folder in through `lpstrFile`,
+ * because `lpstrInitialDir` has only been advisory since Vista -- Windows
+ * prefers the calling executable's last-visited-folder MRU, and that executable
+ * is Resolve, whose MRU is shared with every other dialog it opens. Putting a
+ * bare directory in `lpstrFile` did beat the MRU, and then broke Open outright:
+ * with OFN_FILEMUSTEXIST the dialog validates that string as a *file name*,
+ * finds a path ending in a backslash, and returns FALSE before it ever appears.
+ * The button did nothing at all.
+ *
+ * IFileDialog has SetFolder, so the folder can simply be stated. No filename
+ * hack, nothing for the MRU to override, and failures come back as an HRESULT
+ * that can be logged instead of vanishing.
+ */
 bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& outPath)
 {
-    const std::wstring folder = Widen(PresetFolder());
+    const std::string folder = PresetFolder();
 
-    // The folder is seeded into lpstrFile, not just lpstrInitialDir.
-    //
-    // Since Vista, lpstrInitialDir is only advisory: Windows prefers the calling
-    // *executable's* last-visited-folder MRU, and that executable is Resolve --
-    // an MRU shared with every other file dialog Resolve opens. So after using
-    // any unrelated dialog in the host, this one would open there instead of in
-    // the preset folder, which looked like the setting being ignored at random.
-    // A path in lpstrFile takes priority over that MRU, so it is the one place
-    // the folder can be stated and actually respected.
-    wchar_t file[MAX_PATH] = { 0 };
-    if (!folder.empty())
+    // The host's UI thread is already COM-initialised, but this must not assume
+    // it: initialise, tolerate a different existing mode, and only uninitialise
+    // if this call is what initialised it.
+    const HRESULT coInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool weInitialised = SUCCEEDED(coInit);
+
+    bool ok = false;
+    IFileDialog* dialog = nullptr;
+
+    HRESULT hr = CoCreateInstance(saving ? CLSID_FileSaveDialog : CLSID_FileOpenDialog,
+                                  nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+    if (SUCCEEDED(hr))
     {
-        std::wstring seed = folder;
-        if (seed.back() != L'\\') seed += L'\\';
-        if (saving && !suggestedName.empty()) seed += Widen(suggestedName);
-        wcsncpy_s(file, seed.c_str(), _TRUNCATE);
+        static const COMDLG_FILTERSPEC kFilter[] = {
+            { L"Multi Transform preset (*.json)", L"*.json" },
+            { L"All files (*.*)",                 L"*.*"    }
+        };
+        dialog->SetFileTypes(2, kFilter);
+        dialog->SetDefaultExtension(L"json");
+        dialog->SetTitle(saving ? L"Save Multi Transform preset"
+                                : L"Load Multi Transform preset");
+
+        DWORD flags = 0;
+        if (SUCCEEDED(dialog->GetOptions(&flags)))
+        {
+            flags |= FOS_FORCEFILESYSTEM;
+            flags |= saving ? FOS_OVERWRITEPROMPT : (FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+            dialog->SetOptions(flags);
+        }
+
+        if (!folder.empty())
+        {
+            IShellItem* start = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(Widen(folder).c_str(), nullptr,
+                                                      IID_PPV_ARGS(&start))))
+            {
+                // SetFolder, not SetDefaultFolder: the latter is a suggestion the
+                // last-visited folder overrides, which is the trap above.
+                dialog->SetFolder(start);
+                start->Release();
+            }
+        }
+
+        if (saving && !suggestedName.empty())
+            dialog->SetFileName(Widen(suggestedName).c_str());
+
+        hr = dialog->Show(GetActiveWindow());
+        if (SUCCEEDED(hr))
+        {
+            IShellItem* picked = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&picked)))
+            {
+                PWSTR wide = nullptr;
+                if (SUCCEEDED(picked->GetDisplayName(SIGDN_FILESYSPATH, &wide)) && wide)
+                {
+                    outPath = Narrow(wide);
+                    ok = !outPath.empty();
+                    CoTaskMemFree(wide);
+                }
+                picked->Release();
+            }
+        }
+        dialog->Release();
     }
-    else if (saving && !suggestedName.empty())
+
+    if (weInitialised) CoUninitialize();
+
+    // Cancelling is not a failure and must stay silent. Anything else is a
+    // dialog that refused to appear, which is precisely the bug that went
+    // unnoticed before -- so it gets recorded rather than swallowed.
+    if (!ok && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
     {
-        wcsncpy_s(file, Widen(suggestedName).c_str(), _TRUNCATE);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
+        ProbeLog(std::string("preset dialog failed: hr=") + buf);
     }
-
-    static const wchar_t kFilter[] = L"Multi Transform preset (*.json)\0*.json\0All files (*.*)\0*.*\0\0";
-
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize     = sizeof(ofn);
-    ofn.hwndOwner       = GetActiveWindow();
-    ofn.lpstrFilter     = kFilter;
-    ofn.lpstrFile       = file;
-    ofn.nMaxFile        = MAX_PATH;
-    ofn.lpstrInitialDir = folder.empty() ? nullptr : folder.c_str();
-    ofn.lpstrDefExt     = L"json";
-    ofn.lpstrTitle      = saving ? L"Save Multi Transform preset"
-                                 : L"Load Multi Transform preset";
-    ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR
-              | (saving ? OFN_OVERWRITEPROMPT : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST));
-
-    const BOOL ok = saving ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
-    if (!ok) return false;   // cancelled, or the dialog failed
-
-    outPath = Narrow(file);
-    return !outPath.empty();
+    return ok;
 }
 
 } // namespace

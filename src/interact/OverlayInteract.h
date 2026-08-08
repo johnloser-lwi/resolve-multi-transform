@@ -75,6 +75,10 @@ private:
 
     void openEditBlock(const char* name);
     void closeEditBlock();
+
+    /** Recover from a drag whose mouse-up never arrived: drop the capture and
+     *  force every open edit block shut. Safe to call when nothing is open. */
+    void abandonDrag(const char* why);
 };
 
 /** @brief Descriptor that registers the overlay with the effect. */
