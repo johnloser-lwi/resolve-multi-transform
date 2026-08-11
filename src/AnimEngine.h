@@ -694,6 +694,123 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
     return Clamp01(opacity);
 }
 
+/** @brief A whole animation collapsed to one static pose.
+ *
+ * Always expressed about the image centre, because the anchor is a free choice
+ * here -- fixing it at 0.5, 0.5 removes an unknown and makes the translation
+ * solvable.
+ */
+struct FlatPose
+{
+    float scaleX, scaleY;
+    float rot;              ///< degrees
+    float posX, posY;       ///< normalised, as the position parameters are
+    float opacity;          ///< 0..1
+
+    /// How much shear had to be discarded, relative to the pose's own size.
+    /// Zero for anything built from rotations and uniform scales; non-zero only
+    /// when a rotation is combined with a non-uniform scale, an orthographic
+    /// tilt or a swivel. See FlattenTransform.
+    float shear;
+};
+
+/** @brief Collapse the entire animation at time @p t into a single pose.
+ *
+ * For carrying a move across a cut: the composed result at the end of one
+ * clip's animation becomes the starting pose of the next, so the movement
+ * continues instead of snapping back.
+ *
+ * The maths is a Gram-Schmidt (QR) decomposition of the composed matrix. A
+ * transform built as anchor/scale/rotate/translate has orthogonal columns, and
+ * recovering the parts is then exact. Composition does not always preserve
+ * that: rotate, then scale one axis, and the result contains **shear**, which
+ * no combination of this plugin's parameters can express. That component is
+ * dropped and reported in @c shear so the caller can say so rather than quietly
+ * producing a pose that does not match what was on screen.
+ */
+inline FlatPose FlattenTransform(const AnimParams& a, float t, float width, float height)
+{
+    const Mat3 m = EvaluateTransform(a, t, width, height);
+
+    // Columns of the linear part. The first is the image's X axis after the
+    // transform, the second its Y axis.
+    const float c1x = m.m[0], c1y = m.m[3];
+    const float c2x = m.m[1], c2y = m.m[4];
+
+    FlatPose f;
+    f.scaleX = sqrtf(c1x * c1x + c1y * c1y);
+    f.rot    = atan2f(c1y, c1x) * 180.0f / static_cast<float>(kPi);
+
+    if (f.scaleX > 1e-9f)
+    {
+        // Unit vector along the first column, and the one at right angles to it
+        // -- which is where an unsheared second column would lie.
+        const float q1x = c1x / f.scaleX;
+        const float q1y = c1y / f.scaleX;
+        const float q2x = -q1y;
+        const float q2y =  q1x;
+
+        // Signed, so a mirrored transform (a swivel past 90 degrees) survives
+        // as a negative scale rather than as a rotation of 180 degrees.
+        f.scaleY = c2x * q2x + c2y * q2y;
+        f.shear  = c2x * q1x + c2y * q1y;
+    }
+    else
+    {
+        // Collapsed to nothing: no axis to measure the second column against.
+        f.scaleY = sqrtf(c2x * c2x + c2y * c2y);
+        f.shear  = 0.0f;
+        f.rot    = 0.0f;
+    }
+
+    // Translation, solved for an anchor at the centre. MakeTransform maps
+    //     p -> L(p - anchor) + anchor + translation
+    // so the matrix's own translation is  anchor - L*anchor + translation.
+    const float ax = 0.5f * width;
+    const float ay = 0.5f * height;
+    const float lax = m.m[0] * ax + m.m[1] * ay;
+    const float lay = m.m[3] * ax + m.m[4] * ay;
+
+    const float tx = m.m[2] - ax + lax;
+    const float ty = m.m[5] - ay + lay;
+
+    f.posX = width  > 1e-9f ? tx / width  : 0.0f;
+    f.posY = height > 1e-9f ? ty / height : 0.0f;
+
+    f.opacity = EvaluateOpacity(a, t);
+
+    // Relative to the pose's size, so the caller can judge "is this a lot"
+    // without knowing the frame dimensions.
+    const float scale = fabsf(f.scaleX) > 1e-6f ? fabsf(f.scaleX) : 1.0f;
+    f.shear /= scale;
+
+    return f;
+}
+
+/** @brief Clip time at which the animation has finished.
+ *
+ * The latest end frame of any enabled stage, which is the moment the composed
+ * pose stops changing and therefore the one worth carrying to the next clip.
+ */
+inline float AnimationEndTime(const AnimParams& a, float fallback)
+{
+    const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
+
+    bool  any  = false;
+    float last = 0.0f;
+    for (int i = 0; i < count; ++i)
+    {
+        const Stage& s = a.stages[i];
+        if (!s.enabled) continue;
+
+        const float e = ClipTimeFromStageFrame(a, s, s.endFrame > s.startFrame ? s.endFrame
+                                                                               : s.startFrame);
+        if (!any || e > last) { last = e; any = true; }
+    }
+    return any ? last : fallback;
+}
+
+
 /** @brief Whether the animation does nothing at *any* time.
  *
  * Deliberately time-independent, and that is the whole point.

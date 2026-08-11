@@ -82,6 +82,10 @@ struct OverlayContext
     /// keyDown/keyUp and folded in here rather than read off the drag.
     bool shiftHeld   = false;
 
+    /// Control held: drag both handles of a pair together, mirrored. Combines
+    /// with Shift, giving an axis-locked symmetric edit.
+    bool ctrlHeld    = false;
+
     /// The animation as the renderer will see it, read straight from the
     /// parameters, so the overlay can never show something different.
     AnimParams anim = AnimParams::Default();
@@ -172,6 +176,45 @@ inline void Handle(const OverlayContext& c, double x, double y,
     FillRect(c, x - hx - c.sx(1), y - hy - c.sy(1), x + hx + c.sx(1), y + hy + c.sy(1));
     SetColour(c, fill);
     FillRect(c, x - hx, y - hy, x + hx, y + hy);
+}
+
+/** @brief Draw a button: filled rect, outline, and a label inside it.
+ *
+ * The label is placed with **single-bit alignment flags only**, and that is the
+ * point of this existing at all.
+ *
+ * OFX defines the centring flags as combinations of the edge ones --
+ * `kOfxDrawTextAlignmentCenterH` is literally `Left|Right`, and `CenterV` is
+ * `Top|Baseline`. A host that tests those bits in order rather than matching
+ * the combined value will see the Left bit (or the Top bit) and align to that
+ * edge instead of to the centre. Resolve appears to do exactly this: labels
+ * came out offset from their boxes by roughly half a word, which is what
+ * "centred" degrades into when the centring flag is read as an edge.
+ *
+ * `Left` (0x1) and `Baseline` (0x10) are single bits with no such ambiguity, so
+ * the text is positioned by hand against them and the host has nothing left to
+ * interpret. There is no way to measure text in OfxDrawSuite -- no metrics call
+ * exists -- so true centring cannot be computed by the plugin either; a fixed
+ * inset is both simpler and stable.
+ */
+inline void Button(const OverlayContext& c, const OfxRectD& r, const std::string& label,
+                   bool active, const Colour& activeFill)
+{
+    SetColour(c, active ? activeFill : colours::kPanel);
+    FillRect(c, r.x1, r.y1, r.x2, r.y2);
+
+    SetColour(c, active ? colours::kHandle : colours::kPanelEdge);
+    SetLineWidth(c, 1.0f);
+    StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+
+    SetColour(c, active ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kText);
+
+    // Baseline sits a little below the box's middle, which is where a cap-height
+    // glyph looks vertically centred.
+    const OfxPointD p = { r.x1 + c.sx(6.0), (r.y1 + r.y2) * 0.5 - c.sy(4.0) };
+    OFX::Private::gDrawSuite->drawText(c.ctx, label.c_str(), &p,
+                                       kOfxDrawTextAlignmentLeft
+                                       | kOfxDrawTextAlignmentBaseline);
 }
 
 /** @brief A filled panel with a border, used as the backdrop for HUD widgets. */

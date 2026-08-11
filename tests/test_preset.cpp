@@ -411,6 +411,44 @@ static void TestNameEscaping()
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static void TestOpacityUnits()
+{
+    std::printf("Preset opacity is in parameter units, not renderer units\n");
+
+    // Two unit systems meet here and only opacity differs between them: Stage
+    // (the renderer's struct) carries 0..1, while a PresetStage holds raw
+    // parameter values and the Opacity parameter is a percentage. Getting this
+    // backwards makes a stage one percent opaque instead of fully opaque, which
+    // reads as "the image vanished" rather than as an obviously wrong number.
+    const PresetStage def = PresetStage::Default();
+    CheckNear(def.opacityFrom, 100.0, 1e-3, "a default stage is fully opaque, not 1%");
+    CheckNear(def.opacityTo,   100.0, 1e-3, "both ends default to fully opaque");
+
+    // The path that actually bit: a preset written without opacity keys. Before
+    // the fix this loaded as 1 and the clip came back all but invisible.
+    PresetData out = BusyPreset();
+    std::string err;
+    Check(FromJson("{ \"stages\": [ { \"scaleTo\": 2 } ] }", out, err),
+          "a preset with no opacity keys parses: " + err);
+    CheckNear(out.stages[0].opacityFrom, 100.0, 1e-3,
+              "an absent opacity key loads as fully opaque");
+    CheckNear(out.stages[0].opacityTo,   100.0, 1e-3,
+              "an absent opacity key loads as fully opaque at the other end too");
+
+    // And a stage cleared by Flatten, which uses the same defaults.
+    CheckNear(PresetStage::Default().opacityTo, 100.0, 1e-3,
+              "a cleared stage is fully opaque");
+
+    // Round-tripping a real percentage must not rescale it.
+    PresetData in = PresetData::Default();
+    in.stages[0].opacityFrom = 35.0f;
+    in.stages[0].opacityTo   = 90.0f;
+    PresetData back;
+    Check(FromJson(ToJson(in), back, err), "opacity round-trips: " + err);
+    CheckNear(back.stages[0].opacityFrom, 35.0, 1e-3, "opacity survives unscaled");
+    CheckNear(back.stages[0].opacityTo,   90.0, 1e-3, "opacity survives unscaled at the end");
+}
+
 static void TestSettings()
 {
     std::printf("Preferences round-trip and survive a bad file\n");
@@ -566,6 +604,7 @@ int main()
     TestRescaleTiming();
     TestRescaleEdgeCases();
     TestNameEscaping();
+    TestOpacityUnits();
     TestSettings();
     TestCurvePresets();
     TestFileNameSanitising();

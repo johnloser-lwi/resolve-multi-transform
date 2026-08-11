@@ -35,6 +35,7 @@ public:
 
 private:
     static bool isShift(int keySymbol);
+    static bool isCtrl(int keySymbol);
     /** Snapshot the parameters and viewport for this event.
      *  Never throws: an exception escaping into the host mid-draw is worse than
      *  a frame without an overlay. */
@@ -46,11 +47,16 @@ private:
     bool     toolbarHit(const OverlayContext& c, const OfxPointD& p);
     OfxRectD tabRect(const OverlayContext& c, int index) const;
     /** Buttons right-aligned above the timeline, counted from the right edge. */
-    OfxRectD rightButtonRect(const OverlayContext& c, int indexFromRight, double widthPx) const;
+    OfxRectD rightButtonRect(const OverlayContext& c, int indexFromRight, double widthPx,
+                             int row = 0) const;
     OfxRectD fromToRect(const OverlayContext& c, bool toButton) const;
     OfxRectD curveToggleRect(const OverlayContext& c) const;
     OfxRectD libraryToggleRect(const OverlayContext& c) const;
     OfxRectD loadPresetRect(const OverlayContext& c) const;
+    OfxRectD enableStageRect(const OverlayContext& c) const;
+
+    /** Flip a hidden trigger parameter, which changedParam reads as a press. */
+    void     fireTrigger(const char* paramName);
 
     OFX::ImageEffect* _effect = nullptr;
 
@@ -67,6 +73,7 @@ private:
     /// delivers the press but takes focus away before the release would
     /// otherwise leave it stuck on for good.
     bool _shiftHeld = false;
+    bool _ctrlHeld  = false;
 
     /// Whether a parameter edit block is currently open for that drag. The
     /// block must be closed exactly once, including when a drag is abandoned

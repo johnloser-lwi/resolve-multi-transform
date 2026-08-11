@@ -206,6 +206,28 @@ bool PathWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
     const double dx = static_cast<double>(s.posXTo - s.posXFrom);
     const double dy = static_cast<double>(s.posYTo - s.posYFrom);
 
+    // The offset this drag produces, in the same units both handles store.
+    const double offX = (_drag == kDragC1)
+                      ? nx - (static_cast<double>(s.posXFrom) + dx / 3.0)
+                      : nx - (static_cast<double>(s.posXFrom) + dx * 2.0 / 3.0);
+    const double offY = (_drag == kDragC1)
+                      ? ny - (static_cast<double>(s.posYFrom) + dy / 3.0)
+                      : ny - (static_cast<double>(s.posYFrom) + dy * 2.0 / 3.0);
+
+    // Control bends both halves of the route together.
+    //
+    // Both handles are stored as offsets from their own point along the
+    // straight line -- one third and two thirds of the way -- so giving them
+    // the *same* offset bows the path symmetrically rather than producing an S.
+    // That is what "together" means for a trajectory, and it is why this is a
+    // plain copy rather than a mirror.
+    if (c.ctrlHeld)
+    {
+        SetDouble2D(c.effect, StageParam(kParamPathC1, c.activeStage), offX, offY);
+        SetDouble2D(c.effect, StageParam(kParamPathC2, c.activeStage), offX, offY);
+        return true;
+    }
+
     if (_drag == kDragC1)
     {
         SetDouble2D(c.effect, StageParam(kParamPathC1, c.activeStage),

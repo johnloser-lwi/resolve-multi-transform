@@ -512,7 +512,10 @@ Edit, Fusion and Color pages.
 The overlay has four parts:
 
 **Stage tabs** (above the timeline) — click `1`–`4` to choose which stage the gizmo and curve
-editor act on. **FROM / TO** picks which end of that stage the gizmo poses. **CURVE** shows or
+editor act on. A stage that is switched off shows in brackets, `(3)`, so the tabs say which
+stages are actually contributing without clicking through them. **ON / OFF**, immediately right
+of the tabs, enables the selected stage — raising Stage Count alone leaves the new stage
+switched off, and this saves opening its Timing section every time. **FROM / TO** picks which end of that stage the gizmo poses. **CURVE** shows or
 hides the curve editor panel.
 
 Hide the curve editor when it is sitting over something you want to drag. It occupies the
@@ -583,6 +586,12 @@ overlay always agree, and every edit is undoable in the normal way.
 | Anchor point | Locks to one axis |
 | Motion path handle | Locks to one axis |
 | Curve editor handle | Locks to timing *or* to overshoot, not both |
+
+**Hold Ctrl to drive both handles of a pair at once.** On the curve editor it
+mirrors the far handle, so one drag shapes a symmetric ease — Ease Out follows Ease In, and
+Overshoot follows Anticipation. On the motion path it gives both handles the same offset, bowing
+the route symmetrically instead of bending it into an S. Ctrl and Shift combine: an axis-locked
+symmetric edit.
 
 The axis is chosen from the drag as it goes, not fixed when Shift goes down, so you can press and
 release Shift mid-drag. The gizmo locks to the **stage's own** axes rather than the screen's — on

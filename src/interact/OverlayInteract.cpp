@@ -14,7 +14,7 @@ namespace {
 constexpr double kTabWidthPx  = 26.0;
 constexpr double kTabHeightPx = 18.0;
 constexpr double kTabGapPx    = 4.0;
-constexpr double kToggleWPx   = 46.0;
+constexpr double kToggleWPx   = 54.0;
 } // namespace
 
 MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
@@ -161,6 +161,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.showCurve   = GetBool(_effect, kParamShowCurve, time);
     out.showLibrary = GetBool(_effect, kParamShowLibrary, time);
     out.shiftHeld   = _shiftHeld;
+    out.ctrlHeld    = _ctrlHeld;
 
     if (out.activeStage >= out.stageCount) out.activeStage = out.stageCount - 1;
     if (out.activeStage < 0)               out.activeStage = 0;
@@ -266,7 +267,8 @@ OfxRectD MultiTransformInteract::tabRect(const OverlayContext& c, int index) con
 }
 
 OfxRectD MultiTransformInteract::rightButtonRect(const OverlayContext& c,
-                                                 int indexFromRight, double widthPx) const
+                                                 int indexFromRight, double widthPx,
+                                                 int row) const
 {
     const OfxRectD& tl = _timeline.rect();
     const double w   = c.sx(widthPx);
@@ -274,10 +276,12 @@ OfxRectD MultiTransformInteract::rightButtonRect(const OverlayContext& c,
     const double gap = c.sx(kTabGapPx);
 
     // Every button in the row is the same width, so stepping by index is enough.
+    // A second row keeps the first from running past the left edge of the
+    // timeline once there are more than five or six of them.
     OfxRectD r;
     r.x2 = tl.x2 - static_cast<double>(indexFromRight) * (c.sx(kToggleWPx) + gap);
     r.x1 = r.x2 - w;
-    r.y1 = tl.y2 + c.sy(6.0);
+    r.y1 = tl.y2 + c.sy(6.0) + static_cast<double>(row) * (h + c.sy(4.0));
     r.y2 = r.y1 + h;
     return r;
 }
@@ -302,88 +306,79 @@ OfxRectD MultiTransformInteract::loadPresetRect(const OverlayContext& c) const
     return rightButtonRect(c, 4, kToggleWPx);
 }
 
+OfxRectD MultiTransformInteract::enableStageRect(const OverlayContext& c) const
+{
+    // On the left, immediately after the stage tabs, rather than at the end of
+    // the right-hand run. It belongs with the stage selection, and a sixth
+    // right-hand button would have grown that row into the tabs: the buttons are
+    // a fixed size *on screen* while the timeline is a fraction of the image, so
+    // the further the viewer is zoomed out the more of the row they occupy.
+    const OfxRectD& tl = _timeline.rect();
+    const double g = c.sx(kTabGapPx);
+
+    OfxRectD r;
+    r.x1 = tl.x1 + static_cast<double>(c.stageCount) * (c.sx(kTabWidthPx) + g) + g;
+    r.x2 = r.x1 + c.sx(kToggleWPx);
+    r.y1 = tl.y2 + c.sy(6.0);
+    r.y2 = r.y1 + c.sy(kTabHeightPx);
+    return r;
+}
+
+void MultiTransformInteract::fireTrigger(const char* paramName)
+{
+    // Flipping a hidden boolean is the press. Not wrapped in an edit block: the
+    // host dispatches changedParam synchronously, and these handlers open their
+    // own blocks -- and Flatten can raise a modal warning, which must not run
+    // inside somebody else's paramEditBegin.
+    OFX::BooleanParam* t = _effect->fetchBooleanParam(paramName);
+    bool v = false;
+    t->getValue(v);
+    t->setValue(!v);
+}
+
 void MultiTransformInteract::drawToolbar(const OverlayContext& c)
 {
     for (int i = 0; i < c.stageCount; ++i)
     {
-        const OfxRectD r = tabRect(c, i);
         const bool active = (i == c.activeStage);
 
-        SetColour(c, active ? colours::kStage[i % 4] : colours::kPanel);
-        FillRect(c, r.x1, r.y1, r.x2, r.y2);
-        SetColour(c, active ? colours::kHandle : colours::kPanelEdge);
-        SetLineWidth(c, 1.0f);
-        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+        // A disabled stage is drawn in brackets, so the tabs say at a glance
+        // which stages are actually contributing without having to click each
+        // one to find out.
+        const std::string label = c.anim.stages[i].enabled
+                                ? std::to_string(i + 1)
+                                : "(" + std::to_string(i + 1) + ")";
 
-        SetColour(c, active ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kText);
-        Text(c, std::to_string(i + 1), (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
-             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
+        Button(c, tabRect(c, i), label, active, colours::kStage[i % 4]);
+    }
+
+    // Enable / disable the active stage. A new stage arrives switched off, and
+    // digging into the Timing section to turn it on was a step every single
+    // time.
+    {
+        const bool on = c.anim.stages[c.activeStage].enabled;
+        Button(c, enableStageRect(c), on ? "ON" : "OFF", on, colours::kStage[c.activeStage % 4]);
     }
 
     // From / To decides which end of the stage the gizmo poses.
     for (int k = 0; k < 2; ++k)
     {
         const bool toButton = (k == 1);
-        const OfxRectD r = fromToRect(c, toButton);
-        const bool active = (toButton == c.editTo);
-
-        SetColour(c, active ? (toButton ? colours::kGizmoTo : colours::kGizmo) : colours::kPanel);
-        FillRect(c, r.x1, r.y1, r.x2, r.y2);
-        SetColour(c, active ? colours::kHandle : colours::kPanelEdge);
-        SetLineWidth(c, 1.0f);
-        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
-
-        SetColour(c, active ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kText);
-        Text(c, toButton ? "TO" : "FROM", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
-             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
+        Button(c, fromToRect(c, toButton), toButton ? "TO" : "FROM",
+               toButton == c.editTo, toButton ? colours::kGizmoTo : colours::kGizmo);
     }
 
     // Curve editor toggle. Stays visible when the panel is hidden, or there
     // would be no way to bring it back.
-    {
-        const OfxRectD r = curveToggleRect(c);
+    Button(c, curveToggleRect(c), "CURVE", c.showCurve, colours::kAccent);
 
-        SetColour(c, c.showCurve ? colours::kAccent : colours::kPanel);
-        FillRect(c, r.x1, r.y1, r.x2, r.y2);
-        SetColour(c, c.showCurve ? colours::kHandle : colours::kPanelEdge);
-        SetLineWidth(c, 1.0f);
-        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+    // Saved-curve picker. Labelled LIB rather than CURVES: one letter apart from
+    // the button beside it was unreadable at a glance.
+    Button(c, libraryToggleRect(c), "LIB", c.showLibrary, colours::kAccent);
 
-        SetColour(c, c.showCurve ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kTextDim);
-        Text(c, "CURVE", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
-             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
-    }
-
-    // Saved-curve picker.
-    {
-        const OfxRectD r = libraryToggleRect(c);
-
-        SetColour(c, c.showLibrary ? colours::kAccent : colours::kPanel);
-        FillRect(c, r.x1, r.y1, r.x2, r.y2);
-        SetColour(c, c.showLibrary ? colours::kHandle : colours::kPanelEdge);
-        SetLineWidth(c, 1.0f);
-        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
-
-        SetColour(c, c.showLibrary ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kTextDim);
-        Text(c, "CURVES", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
-             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
-    }
-    // Load a whole-effect or single-stage preset. Momentary, so never lit.
-    {
-        const OfxRectD r = loadPresetRect(c);
-
-        SetColour(c, colours::kPanel);
-        FillRect(c, r.x1, r.y1, r.x2, r.y2);
-        SetColour(c, colours::kPanelEdge);
-        SetLineWidth(c, 1.0f);
-        StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
-
-        SetColour(c, colours::kText);
-        Text(c, "LOAD", (r.x1 + r.x2) * 0.5, (r.y1 + r.y2) * 0.5,
-             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentCenterV);
-    }
+    // Load a preset. Momentary, so never lit.
+    Button(c, loadPresetRect(c), "LOAD", false, colours::kAccent);
 }
-
 bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD& p)
 {
     // Each branch brackets its own write. A plugin-initiated paramSetValue that
@@ -406,6 +401,16 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
             return true;
         }
     }
+    if (Contains(enableStageRect(c), p))
+    {
+        EditBlock block(_effect, "Enable Stage");
+        OFX::BooleanParam* en =
+            _effect->fetchBooleanParam(StageParam(kParamEnabled, c.activeStage));
+        bool on = false;
+        en->getValue(on);
+        en->setValue(!on);
+        return true;
+    }
     if (Contains(loadPresetRect(c), p))
     {
         // Flipping the hidden trigger is the press: OFX offers no way to fire a
@@ -418,10 +423,7 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
         // open edit while the user is free to click elsewhere, switch pages, and
         // re-enter this interact. Nothing is being edited yet in any case: the
         // trigger is hidden and not persisted, so there is no undo step to group.
-        OFX::BooleanParam* trigger = _effect->fetchBooleanParam(kParamLoadFromOverlay);
-        bool v = false;
-        trigger->getValue(v);
-        trigger->setValue(!v);
+        fireTrigger(kParamLoadFromOverlay);
         return true;
     }
     if (Contains(libraryToggleRect(c), p))
@@ -450,9 +452,15 @@ bool MultiTransformInteract::isShift(int keySymbol)
     return keySymbol == kOfxKey_Shift_L || keySymbol == kOfxKey_Shift_R;
 }
 
+bool MultiTransformInteract::isCtrl(int keySymbol)
+{
+    return keySymbol == kOfxKey_Control_L || keySymbol == kOfxKey_Control_R;
+}
+
 bool MultiTransformInteract::keyDown(const OFX::KeyArgs& args)
 {
     if (isShift(args.keySymbol)) _shiftHeld = true;
+    if (isCtrl (args.keySymbol)) _ctrlHeld  = true;
 
     // Never trapped. Returning true would block the key from every other
     // interact and from the host, so a plugin that merely wants to *observe*
@@ -463,12 +471,14 @@ bool MultiTransformInteract::keyDown(const OFX::KeyArgs& args)
 bool MultiTransformInteract::keyUp(const OFX::KeyArgs& args)
 {
     if (isShift(args.keySymbol)) _shiftHeld = false;
+    if (isCtrl (args.keySymbol)) _ctrlHeld  = false;
     return false;
 }
 
 void MultiTransformInteract::loseFocus(const OFX::FocusArgs& /*args*/)
 {
     _shiftHeld = false;
+    _ctrlHeld  = false;
 
     // Losing focus mid-drag means the mouse-up is going somewhere else and will
     // never arrive here.

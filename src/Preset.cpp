@@ -28,7 +28,14 @@ PresetStage PresetStage::Default()
     p.rotFrom      = s.rotFrom;      p.rotTo      = s.rotTo;
     p.tiltXFrom    = s.tiltXFrom;    p.tiltXTo    = s.tiltXTo;
     p.swivelYFrom  = s.swivelYFrom;  p.swivelYTo  = s.swivelYTo;
-    p.opacityFrom  = s.opacityFrom;  p.opacityTo  = s.opacityTo;
+    // Opacity, and only opacity, is stored in different units in the two
+    // structs: Stage carries 0..1 because that is what the renderer multiplies
+    // by, while a preset stores raw *parameter* values -- and the Opacity
+    // parameter is a percentage. Copying s.opacityFrom straight across gave a
+    // default of 1, meaning one percent, so any preset written without opacity
+    // keys loaded as very nearly invisible. Every other field means the same
+    // thing in both, which is exactly why this one slipped through.
+    p.opacityFrom  = 100.0f;         p.opacityTo  = 100.0f;
     p.anchorX      = s.anchorX;      p.anchorY    = s.anchorY;
     p.pathC1X      = s.pathC1X;      p.pathC1Y    = s.pathC1Y;
     p.pathC2X      = s.pathC2X;      p.pathC2Y    = s.pathC2Y;

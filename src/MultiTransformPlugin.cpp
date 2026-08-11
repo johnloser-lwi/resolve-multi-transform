@@ -192,6 +192,10 @@ private:
     /// Write stage @p i's easing into the curve library.
     void             saveCurve(int stage);
 
+    void             copyStage();     ///< active stage -> clipboard
+    void             pasteStage();    ///< clipboard -> active stage
+    void             flattenToFirstStage();
+
     /** @brief Move poses between a stage's two ends.
      *  @param mode 0 copies From onto To, 1 copies To onto From, 2 swaps them. */
     void             transferEnds(int stage, int mode);
@@ -718,6 +722,147 @@ void MultiTransformPlugin::syncPresetFolderLabel()
     // answer "where will the dialog open", and a label that says "default" only
     // moves the question along.
     _presetFolder->setValue(mtx::PresetFolder());
+}
+
+namespace {
+
+/** @brief The stage clipboard.
+ *
+ * Deliberately process-global rather than per instance. Copying a stage is at
+ * least as useful between two clips as within one -- carrying a move across a
+ * cut is the whole reason it exists -- and an instance-local clipboard could
+ * only ever paste into the effect it was copied from.
+ */
+struct StageClipboard
+{
+    mtx::PresetStage stage;
+    bool             valid = false;
+};
+
+StageClipboard g_stageClipboard;
+
+} // namespace
+
+void MultiTransformPlugin::copyStage()
+{
+    int active = 0;
+    _activeStage->getValue(active);
+    if (active < 0) active = 0;
+    if (active >= kMaxStages) active = kMaxStages - 1;
+
+    g_stageClipboard.stage = captureStage(active);
+    g_stageClipboard.valid = true;
+
+    mtx::ProbeLog("stage " + std::to_string(active + 1) + " copied");
+}
+
+void MultiTransformPlugin::pasteStage()
+{
+    if (!g_stageClipboard.valid)
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "Nothing to paste.\n\nUse Copy Stage first -- on this clip or another one.");
+        return;
+    }
+
+    int active = 0;
+    _activeStage->getValue(active);
+    if (active < 0) active = 0;
+    if (active >= kMaxStages) active = kMaxStages - 1;
+
+    {
+        // Suppressed exactly as a preset load is: applyStage writes the easing
+        // dropdown and its four amounts, and letting changedParam run in between
+        // would have the dropdown stamp its canned values over them.
+        _applyingPreset = true;
+        mtx::EditBlock block(this, "Paste Stage");
+        applyStage(active, g_stageClipboard.stage);
+        _applyingPreset = false;
+    }
+
+    updateDuration(active);
+    syncStageVisibility();
+}
+
+void MultiTransformPlugin::flattenToFirstStage()
+{
+    // Where the animation has finished: the composed pose there is the one the
+    // next clip has to start from if the movement is to continue across a cut.
+    double clipStart = 0.0, clipLength = 0.0;
+    mtx::GetClipRange(this, clipStart, clipLength);
+
+    const AnimParams a = fetchAnimParams(clipStart);
+    const float endT   = AnimationEndTime(a, 0.0f);
+
+    OfxRectD rod = _srcClip ? _srcClip->getRegionOfDefinition(clipStart) : OfxRectD{ 0, 0, 0, 0 };
+    float w = static_cast<float>(rod.x2 - rod.x1);
+    float h = static_cast<float>(rod.y2 - rod.y1);
+    if (!(w > 1.0f) || !(h > 1.0f)) { w = 1920.0f; h = 1080.0f; }
+
+    const FlatPose f = FlattenTransform(a, endT, w, h);
+
+    {
+        mtx::EditBlock block(this, "Flatten to Stage 1");
+        _applyingPreset = true;
+
+        // The base is folded into the flattened pose, so leaving it set would
+        // apply it a second time.
+        _baseScale->setValue(1.0);      _baseScaleY->setValue(1.0);
+        _baseLinkScale->setValue(true); _basePos->setValue(0.0, 0.0);
+        _baseRot->setValue(0.0);        _baseTiltX->setValue(0.0);
+        _baseSwivelY->setValue(0.0);    _baseOpacity->setValue(100.0);
+        _baseAnchor->setValue(0.5, 0.5);
+
+        // Stage 1 holds the flattened pose at both ends. A hold rather than a
+        // move: the next thing the user does is drag the To somewhere, and
+        // anything else here would animate away from the pose just inherited.
+        mtx::PresetStage s = mtx::PresetStage::Default();
+        s.enabled    = true;
+        s.anchor     = kAnchorClipStart;
+        s.startFrame = 0.0f;
+        s.endFrame   = 24.0f;
+        s.anchorX    = 0.5f;   s.anchorY  = 0.5f;
+        s.linkScale  = false;              // the two axes rarely match after this
+        s.scaleFrom  = f.scaleX;  s.scaleTo  = f.scaleX;
+        s.scaleYFrom = f.scaleY;  s.scaleYTo = f.scaleY;
+        s.rotFrom    = f.rot;     s.rotTo    = f.rot;
+        s.posXFrom   = f.posX;    s.posXTo   = f.posX;
+        s.posYFrom   = f.posY;    s.posYTo   = f.posY;
+        // FlatPose carries opacity as 0..1, the way the renderer uses it, but a
+        // PresetStage holds raw parameter values and the Opacity parameter is a
+        // percentage. Without this the whole animation flattened to one percent.
+        s.opacityFrom = f.opacity * 100.0f; s.opacityTo = f.opacity * 100.0f;
+
+        // Tilt and swivel are orthographic scale factors, so the decomposition
+        // has already absorbed them into scaleX and scaleY.
+        applyStage(0, s);
+
+        // Everything else goes back to neutral and switches off.
+        for (int i = 1; i < kMaxStages; ++i)
+        {
+            mtx::PresetStage blank = mtx::PresetStage::Default();
+            blank.enabled = false;
+            applyStage(i, blank);
+        }
+        _stageCount->setValue(0);   // one stage
+
+        _applyingPreset = false;
+    }
+
+    for (int i = 0; i < kMaxStages; ++i) updateDuration(i);
+    syncStageVisibility();
+
+    // Shear is the one thing a stage cannot express, so if any was dropped the
+    // result genuinely does not match what was on screen and saying nothing
+    // would be the wrong call.
+    if (std::fabs(f.shear) > 0.01f)
+    {
+        sendMessage(OFX::Message::eMessageWarning, "",
+                    "Flattened, but this animation contained shear that a single stage "
+                    "cannot represent, so the pose is approximate.\n\n"
+                    "Shear comes from scaling one axis after a rotation -- an outer stage "
+                    "with Link Scale off above an inner stage that rotates.");
+    }
 }
 
 void MultiTransformPlugin::saveCurve(int stage)
@@ -1250,7 +1395,13 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
     if (p_ParamName == kParamLoadFromOverlay) { loadPreset(false); return; }
-    if (p_ParamName == kParamLoadFromOverlay) { loadPreset(false); return; }
+
+    if (p_ParamName == kParamCopyStage  || p_ParamName == kParamCopyFromOverlay)
+    { copyStage();  return; }
+    if (p_ParamName == kParamPasteStage || p_ParamName == kParamPasteFromOverlay)
+    { pasteStage(); return; }
+    if (p_ParamName == kParamFlatten    || p_ParamName == kParamFlattenFromOverlay)
+    { flattenToFirstStage(); return; }
 
     if (p_ParamName == kParamBaseReset)
     {
@@ -1980,6 +2131,38 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     // groups get scattered -- that is how the preset buttons once ended up split
     // between the top and the bottom of the panel.
     for (int i = 0; i < kMaxStages; ++i) DefineStageRootButtons(p_Desc, page, i);
+
+    PushButtonParamDescriptor* copyStage = p_Desc.definePushButtonParam(kParamCopyStage);
+    copyStage->setLabels("Copy Stage", "Copy Stage", "Copy Stage");
+    copyStage->setHint("Copy the active stage -- pose, timing, easing and path -- to a "
+                       "clipboard shared by every instance of this effect, so it can be "
+                       "pasted into another stage or onto another clip.");
+    page->addChild(*copyStage);
+
+    PushButtonParamDescriptor* pasteStage = p_Desc.definePushButtonParam(kParamPasteStage);
+    pasteStage->setLabels("Paste Stage", "Paste Stage", "Paste Stage");
+    pasteStage->setHint("Overwrite the active stage with the copied one.");
+    page->addChild(*pasteStage);
+
+    PushButtonParamDescriptor* flatten = p_Desc.definePushButtonParam(kParamFlatten);
+    flatten->setLabels("Flatten to Stage 1", "Flatten", "Flatten to Stage 1");
+    flatten->setHint("Collapse the finished animation into a single held pose in Stage 1, and "
+                     "clear the rest. For continuing a move across a cut: copy this effect to "
+                     "the next clip, flatten it, and animate onward from where it left off.");
+    page->addChild(*flatten);
+
+    // Overlay triggers. Hidden and not persisted -- these are messages, not
+    // settings. See kParamLoadFromOverlay for why a boolean and not a button.
+    const char* const kTriggers[3] = { kParamCopyFromOverlay, kParamPasteFromOverlay,
+                                       kParamFlattenFromOverlay };
+    for (const char* name : kTriggers)
+    {
+        BooleanParamDescriptor* t = p_Desc.defineBooleanParam(name);
+        t->setDefault(false);
+        t->setIsSecret(true);
+        t->setIsPersistant(false);
+        page->addChild(*t);
+    }
     PushButtonParamDescriptor* saveEffect = p_Desc.definePushButtonParam(kParamSaveEffect);
     saveEffect->setLabels("Save Preset to File...", "Save Preset", "Save Preset to File...");
     saveEffect->setHint("Write every stage, plus motion blur and sampling, to a JSON file.");

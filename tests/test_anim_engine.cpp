@@ -1095,6 +1095,127 @@ static void TestEdgeOnRendersNothing()
               "an edge-on tilt is also transparent");
 }
 
+static void TestFlattenReproducesTheTransform()
+{
+    std::printf("Flattening an animation reproduces the pose it collapsed\n");
+
+    const float W = 1920.0f, H = 1080.0f;
+
+    // Rotations and uniform scales compose without shear, so for these the
+    // flattened pose must rebuild the original matrix exactly -- this is the
+    // whole promise of "continue the move on the next clip".
+    AnimParams a = AnimParams::Default();
+    a.stageCount = 3;
+    for (int i = 0; i < 3; ++i)
+    {
+        Stage& s = a.stages[i];
+        s.enabled    = true;
+        s.easing     = Easing::Linear();
+        s.startFrame = 0.0f;
+        s.endFrame   = 20.0f;
+        s.scaleTo    = 1.0f + 0.15f * static_cast<float>(i + 1);
+        s.rotTo      = 12.0f * static_cast<float>(i + 1);
+        s.posXTo     = 0.05f * static_cast<float>(i + 1);
+        s.posYTo     = -0.04f * static_cast<float>(i + 1);
+        s.anchorX    = 0.35f;
+        s.anchorY    = 0.7f;
+    }
+    a.base.scaleX = 0.8f;
+    a.base.rot    = -20.0f;
+    a.base.posX   = 0.1f;
+
+    const float t = 20.0f;
+    const FlatPose f = FlattenTransform(a, t, W, H);
+
+    CheckNear(f.shear, 0.0f, 1e-4f,
+              "rotation and uniform scale compose without shear");
+
+    // Rebuild the pose the way a stage would, and compare against what the
+    // renderer actually produces.
+    const Mat3 original = EvaluateTransform(a, t, W, H);
+    const Mat3 rebuilt  = MakeTransform(0.5f * W, 0.5f * H,
+                                        f.scaleX, f.scaleY, f.rot,
+                                        f.posX * W, f.posY * H);
+
+    for (int e = 0; e < 6; ++e)
+        CheckNear(rebuilt.m[e], original.m[e], 1e-2f,
+                  "the flattened pose rebuilds the composed transform");
+
+    // A corner is the practical test: sub-pixel agreement on where the image
+    // actually lands is what stops a visible jump at the cut.
+    const float cx[4] = { 0.0f, W, 0.0f, W };
+    const float cy[4] = { 0.0f, 0.0f, H, H };
+    for (int k = 0; k < 4; ++k)
+    {
+        float ox, oy, rx, ry;
+        original.Apply(cx[k], cy[k], ox, oy);
+        rebuilt.Apply (cx[k], cy[k], rx, ry);
+        CheckNear(rx, ox, 0.05f, "a corner lands in the same place");
+        CheckNear(ry, oy, 0.05f, "a corner lands in the same place vertically");
+    }
+
+    // Opacity multiplies through, so a half-faded animation flattens to half.
+    AnimParams fade = AnimParams::Default();
+    fade.stageCount = 2;
+    for (int i = 0; i < 2; ++i)
+    {
+        fade.stages[i].enabled     = true;
+        fade.stages[i].easing      = Easing::Linear();
+        fade.stages[i].startFrame  = 0.0f;
+        fade.stages[i].endFrame    = 10.0f;
+        fade.stages[i].opacityFrom = 1.0f;
+        fade.stages[i].opacityTo   = 0.5f;
+    }
+    CheckNear(FlattenTransform(fade, 10.0f, W, H).opacity, 0.25f, 1e-4f,
+              "opacity flattens as the product of the stages");
+
+    // Shear is reported, not hidden.
+    //
+    // Note the stage order. Stages compose as S0 * S1 * ... , so the *later*
+    // stage is applied first. A rotate stage followed by a scale stage is
+    // therefore scale-then-rotate = R*S, which is precisely the form
+    // MakeTransform builds and carries no shear at all. Shear needs the
+    // opposite: scale applied after the rotation, so the scale stage has to be
+    // the outer (lower-numbered) one.
+    AnimParams sheared = AnimParams::Default();
+    sheared.stageCount = 2;
+    sheared.stages[0].enabled = true;                       // outer: scales
+    sheared.stages[0].easing  = Easing::Linear();
+    sheared.stages[0].startFrame = 0.0f; sheared.stages[0].endFrame = 10.0f;
+    sheared.stages[0].linkScale  = false;
+    sheared.stages[0].scaleFrom  = 2.0f; sheared.stages[0].scaleTo  = 2.0f;
+    sheared.stages[0].scaleYFrom = 0.5f; sheared.stages[0].scaleYTo = 0.5f;
+    sheared.stages[1].enabled = true;                       // inner: rotates
+    sheared.stages[1].easing  = Easing::Linear();
+    sheared.stages[1].startFrame = 0.0f; sheared.stages[1].endFrame = 10.0f;
+    sheared.stages[1].rotFrom = 45.0f;   sheared.stages[1].rotTo    = 45.0f;
+
+    Check(std::fabs(FlattenTransform(sheared, 10.0f, W, H).shear) > 0.1f,
+          "a non-uniform scale applied after a rotation reports its shear");
+
+    // And the benign order really is benign, which is what makes the warning
+    // worth trusting when it does appear.
+    AnimParams benign = sheared;
+    benign.stages[0] = sheared.stages[1];
+    benign.stages[1] = sheared.stages[0];
+    CheckNear(FlattenTransform(benign, 10.0f, W, H).shear, 0.0f, 1e-4f,
+              "rotate-then-scale is exactly representable and reports none");
+
+    // The end of the animation is the latest end frame of any enabled stage,
+    // since that is when the composed pose stops moving.
+    AnimParams staggered = AnimParams::Default();
+    staggered.stageCount = 3;
+    for (int i = 0; i < 3; ++i)
+    {
+        staggered.stages[i].enabled    = true;
+        staggered.stages[i].startFrame = static_cast<float>(i) * 5.0f;
+        staggered.stages[i].endFrame   = staggered.stages[i].startFrame + 12.0f;
+    }
+    staggered.stages[1].enabled = false;      // a disabled stage does not count
+    CheckNear(AnimationEndTime(staggered, 0.0f), 22.0f, 1e-3f,
+              "the animation ends with the last enabled stage");
+}
+
 static void TestStageContextRebuildsTheWhole()
 {
     std::printf("A stage's context reconstitutes the full transform\n");
@@ -1970,6 +2091,7 @@ int main()
     TestOrthographicRotation();
     TestEdgeOnRendersNothing();
     TestIsNoOpCoversNewChannels();
+    TestFlattenReproducesTheTransform();
     TestStageContextRebuildsTheWhole();
     TestEndpointsAreExact();
     TestSwappingEndsReversesThePathExactly();

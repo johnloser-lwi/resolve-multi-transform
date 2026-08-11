@@ -171,19 +171,43 @@ void CurveWidget::writeHandle(const OverlayContext& c, int which, const OfxPoint
     // the opposite rail is what produces the steep, snappy curves, and clamping
     // it to only anticipation-below / overshoot-above made half the curve space
     // unreachable.
+    // Ease In is x1 directly; Ease Out is measured from the right-hand end, so
+    // it grows as the second handle is pulled left.
+    const double easeIn  = ux * 100.0;
+    const double easeOut = (1.0 - ux) * 100.0;
+    const double antic   = Clamp((-uy / 0.55) * 100.0, -200.0, 200.0);
+    const double over    = Clamp(((uy - 1.0) / 0.55) * 100.0, -200.0, 200.0);
+
     if (which == kDragP1)
     {
-        SetDouble(c.effect, StageParam(kParamEaseIn, c.activeStage), ux * 100.0);
-        SetDouble(c.effect, StageParam(kParamAnticipation, c.activeStage),
-                  Clamp((-uy / 0.55) * 100.0, -200.0, 200.0));
+        SetDouble(c.effect, StageParam(kParamEaseIn, c.activeStage), easeIn);
+        SetDouble(c.effect, StageParam(kParamAnticipation, c.activeStage), antic);
     }
     else
     {
-        // x2 is measured from the right-hand end, so ease-out grows as the
-        // handle is pulled left.
-        SetDouble(c.effect, StageParam(kParamEaseOut, c.activeStage), (1.0 - ux) * 100.0);
-        SetDouble(c.effect, StageParam(kParamOvershoot, c.activeStage),
-                  Clamp(((uy - 1.0) / 0.55) * 100.0, -200.0, 200.0));
+        SetDouble(c.effect, StageParam(kParamEaseOut, c.activeStage), easeOut);
+        SetDouble(c.effect, StageParam(kParamOvershoot, c.activeStage), over);
+    }
+
+    // Control drives the far handle too, mirrored, giving a symmetric curve
+    // from one drag.
+    //
+    // The mirror is about the curve's centre: the second handle at (1-x1, 1-y1)
+    // is what makes an ease-in-out symmetric. Working that through the
+    // parameters, it comes out as simply Ease Out = Ease In and Overshoot =
+    // Anticipation -- so the same drag shapes both ends, which is what shaping
+    // an ease usually wants.
+    if (!c.ctrlHeld) return;
+
+    if (which == kDragP1)
+    {
+        SetDouble(c.effect, StageParam(kParamEaseOut, c.activeStage), easeIn);
+        SetDouble(c.effect, StageParam(kParamOvershoot, c.activeStage), antic);
+    }
+    else
+    {
+        SetDouble(c.effect, StageParam(kParamEaseIn, c.activeStage), easeOut);
+        SetDouble(c.effect, StageParam(kParamAnticipation, c.activeStage), over);
     }
 }
 

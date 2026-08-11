@@ -106,6 +106,16 @@ constexpr const char* kParamRotFrom        = "rotFrom";
 constexpr const char* kParamRotTo          = "rotTo";
 constexpr const char* kParamOpacityFrom    = "opacityFrom";
 constexpr const char* kParamOpacityTo      = "opacityTo";
+// Stage clipboard and flatten. The triggers exist because OFX has no way to
+// fire a push button from code, so the overlay flips a hidden boolean and
+// changedParam treats the flip as the press.
+constexpr const char* kParamCopyStage       = "copyStage";
+constexpr const char* kParamPasteStage      = "pasteStage";
+constexpr const char* kParamFlatten         = "flattenToStage1";
+constexpr const char* kParamCopyFromOverlay  = "copyStageFromOverlay";
+constexpr const char* kParamPasteFromOverlay = "pasteStageFromOverlay";
+constexpr const char* kParamFlattenFromOverlay = "flattenFromOverlay";
+
 constexpr const char* kParamCopyFromTo     = "copyFromTo";   ///< From -> To
 constexpr const char* kParamCopyToFrom     = "copyToFrom";   ///< To -> From
 constexpr const char* kParamSwapEnds       = "swapEnds";

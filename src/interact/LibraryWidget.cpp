@@ -170,9 +170,12 @@ void LibraryWidget::draw(const OverlayContext& c)
         SetLineWidth(c, 1.5f);
         Polyline(c, pts, kPlotSteps + 1);
 
+        // Left aligned inside the cell, not centred: CenterH is defined as
+        // Left|Right and Resolve resolves that to a single edge, so a centred
+        // label lands about half a word from where it belongs. See Button().
         SetColour(c, colours::kText);
-        Text(c, _entries[i].label, (cell.x1 + cell.x2) * 0.5, cell.y1 + c.sy(2.0),
-             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentBottom);
+        Text(c, _entries[i].label, cell.x1 + c.sx(4.0), cell.y1 + c.sy(2.0),
+             kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBottom);
     }
 }
 
