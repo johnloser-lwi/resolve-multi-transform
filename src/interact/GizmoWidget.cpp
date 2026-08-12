@@ -28,6 +28,24 @@ GizmoWidget::Pose GizmoWidget::readPose(const OverlayContext& c) const
     const int i = c.activeStage;
     const Stage& s = c.anim.stages[i];
 
+    if (c.editBase)
+    {
+        const BasePose& b = c.anim.base;
+
+        Pose bp;
+        bp.scale     = b.scaleX;
+        bp.scaleY    = b.scaleY;
+        bp.rot       = b.rot;
+        bp.posX      = b.posX;
+        bp.posY      = b.posY;
+        bp.anchorX   = b.anchorX;
+        bp.anchorY   = b.anchorY;
+        bp.linkScale = b.linkScale;
+        bp.tiltX     = b.tiltX;
+        bp.swivelY   = b.swivelY;
+        return bp;
+    }
+
     Pose p;
     p.scale   = c.editTo ? s.scaleTo  : s.scaleFrom;
     p.scaleY  = c.editTo ? s.scaleYTo : s.scaleYFrom;
@@ -44,6 +62,16 @@ GizmoWidget::Pose GizmoWidget::readPose(const OverlayContext& c) const
 
 void GizmoWidget::writePose(const OverlayContext& c, const Pose& p) const
 {
+    if (c.editBase)
+    {
+        SetDouble  (c.effect, kParamBaseScale,  p.scale);
+        SetDouble  (c.effect, kParamBaseRot,    p.rot);
+        SetDouble2D(c.effect, kParamBasePos,    p.posX, p.posY);
+        SetDouble2D(c.effect, kParamBaseAnchor, p.anchorX, p.anchorY);
+        if (!p.linkScale) SetDouble(c.effect, kParamBaseScaleY, p.scaleY);
+        return;
+    }
+
     const int i = c.activeStage;
 
     SetDouble(c.effect, StageParam(c.editTo ? kParamScaleTo : kParamScaleFrom, i), p.scale);
@@ -87,28 +115,44 @@ Mat3 GizmoWidget::poseMatrix(const OverlayContext& c, const Pose& p) const
 
 double GizmoWidget::refTime(const OverlayContext& c) const
 {
-    // The end this gizmo poses, in clip time. Fixed, so the gizmo marks a place
-    // in the move rather than sliding about as the playhead travels -- and it
-    // sits on the rendered image at exactly the frame it describes.
+    // The base is deliberately the exception: it follows the playhead.
+    //
+    // A stage gizmo is pinned to that stage's own start or end frame because it
+    // marks a fixed place in the move, and pinning is what stops it sliding
+    // about while scrubbing. The base marks no place in any move -- it is a
+    // static resting pose underneath all of them -- so the useful thing is a
+    // handle that sits on the picture as it looks right now, whenever that is.
+    if (c.editBase) return c.time;
+
     const Stage& s = c.anim.stages[c.activeStage];
     return ClipTimeFromStageFrame(c.anim, s, c.editTo ? s.endFrame : s.startFrame);
 }
 
+/** The transforms surrounding whatever this gizmo is posing. */
+StageContext GizmoWidget::context(const OverlayContext& c) const
+{
+    const float t = static_cast<float>(refTime(c));
+    const float w = static_cast<float>(c.rodWidth());
+    const float h = static_cast<float>(c.rodHeight());
+
+    // The base composes rightmost, so every stage is outside it and nothing is
+    // inside -- which EvaluateStageContext cannot express, since it always folds
+    // the base into `inner`.
+    return c.editBase ? EvaluateBaseContext(c.anim, t, w, h)
+                      : EvaluateStageContext(c.anim, c.activeStage, t, w, h);
+}
+
 Mat3 GizmoWidget::displayMatrix(const OverlayContext& c, const Pose& p) const
 {
-    const StageContext ctx = EvaluateStageContext(c.anim, c.activeStage,
-                                                  static_cast<float>(refTime(c)),
-                                                  static_cast<float>(c.rodWidth()),
-                                                  static_cast<float>(c.rodHeight()));
+    const StageContext ctx = context(c);
+
     return ctx.outer * poseMatrix(c, p) * ctx.inner;
 }
 
 OfxPointD GizmoWidget::toStageSpace(const OverlayContext& c, const OfxPointD& p) const
 {
-    const StageContext ctx = EvaluateStageContext(c.anim, c.activeStage,
-                                                  static_cast<float>(refTime(c)),
-                                                  static_cast<float>(c.rodWidth()),
-                                                  static_cast<float>(c.rodHeight()));
+    const StageContext ctx = context(c);
+
     float lx, ly;
     Invert(ctx.outer).Apply(static_cast<float>(p.x - c.rod.x1),
                             static_cast<float>(p.y - c.rod.y1), lx, ly);
@@ -117,10 +161,8 @@ OfxPointD GizmoWidget::toStageSpace(const OverlayContext& c, const OfxPointD& p)
 
 OfxPointD GizmoWidget::anchorScreen(const OverlayContext& c, const Pose& p) const
 {
-    const StageContext ctx = EvaluateStageContext(c.anim, c.activeStage,
-                                                  static_cast<float>(refTime(c)),
-                                                  static_cast<float>(c.rodWidth()),
-                                                  static_cast<float>(c.rodHeight()));
+    const StageContext ctx = context(c);
+
 
     // The anchor is expressed in the space the stage's matrix consumes, so it
     // must not be pushed through `inner` -- only through the stage itself and
@@ -153,7 +195,10 @@ void GizmoWidget::draw(const OverlayContext& c)
         corner[i].y = c.rod.y1 + oy;
     }
 
-    const Colour tint = c.editTo ? colours::kGizmoTo : colours::kGizmo;
+    // Violet for the base, matching its toolbar button, so it is obvious at a
+    // glance that a drag is moving the resting pose and not a keyframe.
+    const Colour tint = c.editBase ? colours::kStage[3]
+                                   : (c.editTo ? colours::kGizmoTo : colours::kGizmo);
 
     SetColour(c, { 0.0f, 0.0f, 0.0f, 0.55f });
     SetLineWidth(c, 3.0f);
@@ -198,8 +243,9 @@ void GizmoWidget::draw(const OverlayContext& c)
 
     // Label: which stage, and which end of it, is being posed.
     SetColour(c, tint);
-    Text(c, std::string("Stage ") + std::to_string(c.activeStage + 1)
-            + (c.editTo ? "  -  TO" : "  -  FROM"),
+    Text(c, c.editBase ? std::string("BASE TRANSFORM")
+                       : std::string("Stage ") + std::to_string(c.activeStage + 1)
+                         + (c.editTo ? "  -  TO" : "  -  FROM"),
          anchorX, anchorY + c.sy(22.0),
          kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentBottom);
 }

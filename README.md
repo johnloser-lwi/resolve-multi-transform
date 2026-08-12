@@ -515,7 +515,7 @@ The overlay has four parts:
 editor act on. A stage that is switched off shows in brackets, `(3)`, so the tabs say which
 stages are actually contributing without clicking through them. **ON / OFF**, immediately right
 of the tabs, enables the selected stage — raising Stage Count alone leaves the new stage
-switched off, and this saves opening its Timing section every time. **FROM / TO** picks which end of that stage the gizmo poses. **CURVE** shows or
+switched off, and this saves opening its Timing section every time. **FROM / TO / BASE** picks what the gizmo poses: either end of the active stage, or the Base Transform, so the resting pose can be dragged on the picture instead of typed in the Inspector. **CURVE** shows or
 hides the curve editor panel.
 
 Hide the curve editor when it is sitting over something you want to drag. It occupies the
@@ -535,7 +535,7 @@ off the image entirely. The overlay composes the surrounding stages back in for 
 your drag back out of them before writing, so the box lands on the picture while the numbers
 written stay the stage's own.
 
-The surrounding stages are sampled at **this stage's own start or end frame** — whichever end
+The base gizmo is the one exception to the rule below: it follows the playhead, because it marks no place in any move and is most useful sitting on the picture as it looks right now. For a stage, the surrounding stages are sampled at **this stage's own start or end frame** — whichever end
 the gizmo is posing — and never at the playhead. That is what keeps the gizmo still while you
 scrub: it marks a fixed place in the move. It also means the TO gizmo sits exactly on the
 rendered image at that stage's end frame, without having to park the playhead there.
@@ -575,6 +575,14 @@ frame sits on the curve.
 
 Everything written by the overlay lands in the ordinary parameters, so the Inspector and the
 overlay always agree, and every edit is undoable in the normal way.
+
+**Opacity slider** (left edge) — the one animated channel with no other on-screen control.
+It follows the same FROM / TO / BASE target the gizmo is on and takes that target's colour, so
+the two always describe the same thing. Click anywhere on the track to jump to a value; the grab
+area is much wider than the drawn track, which is deliberately thin to stay out of the way.
+
+Deliberately not attached to the gizmo: the gizmo rotates and scales with the pose it represents,
+and a slider that tilted with it would be unusable at exactly the moments it matters.
 
 ### Hold Shift to constrain a drag
 

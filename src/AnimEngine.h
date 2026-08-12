@@ -635,6 +635,29 @@ struct StageContext
     Mat3 inner;   ///< stages to the right, and the base pose
 };
 
+/** @brief The context surrounding the base pose at time @p t.
+ *
+ * The base composes rightmost, so *every* stage is outside it and there is
+ * nothing inside. Not expressible through EvaluateStageContext, which always
+ * folds the base into `inner` -- here the base is the thing being edited.
+ */
+inline StageContext EvaluateBaseContext(const AnimParams& a, float t,
+                                        float width, float height)
+{
+    StageContext ctx;
+    ctx.outer = Mat3::Identity();
+    ctx.inner = Mat3::Identity();
+
+    const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
+    for (int i = 0; i < count; ++i)
+    {
+        if (!a.stages[i].enabled) continue;
+        ctx.outer = ctx.outer * EvaluateStage(a.stages[i],
+                                              StageLocalTime(a, a.stages[i], t), width, height);
+    }
+    return ctx;
+}
+
 /** @brief The context surrounding @p stageIndex at time @p t.
  *
  * Every other stage is evaluated at the current time, not at the edited stage's

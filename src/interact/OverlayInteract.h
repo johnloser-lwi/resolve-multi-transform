@@ -31,6 +31,7 @@ public:
     // way to know Shift is down is to watch the key events and remember.
     bool keyDown(const OFX::KeyArgs& args) override;
     bool keyUp(const OFX::KeyArgs& args) override;
+    void gainFocus(const OFX::FocusArgs& args) override;
     void loseFocus(const OFX::FocusArgs& args) override;
 
 private:
@@ -47,9 +48,12 @@ private:
     bool     toolbarHit(const OverlayContext& c, const OfxPointD& p);
     OfxRectD tabRect(const OverlayContext& c, int index) const;
     /** Buttons right-aligned above the timeline, counted from the right edge. */
+    /** Button width that keeps the right-hand run clear of the stage tabs. */
+    double   toggleWidth(const OverlayContext& c) const;
     OfxRectD rightButtonRect(const OverlayContext& c, int indexFromRight, double widthPx,
                              int row = 0) const;
     OfxRectD fromToRect(const OverlayContext& c, bool toButton) const;
+    OfxRectD baseTargetRect(const OverlayContext& c) const;
     OfxRectD curveToggleRect(const OverlayContext& c) const;
     OfxRectD libraryToggleRect(const OverlayContext& c) const;
     OfxRectD loadPresetRect(const OverlayContext& c) const;
@@ -65,6 +69,7 @@ private:
     TimelineWidget _timeline;
     CurveWidget    _curve;
     LibraryWidget  _library;
+    OpacityWidget  _opacity;
 
     /// Widget that claimed the current drag, so motion/up go to the same place.
     Widget* _captured = nullptr;

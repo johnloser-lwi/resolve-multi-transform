@@ -66,6 +66,10 @@ struct OverlayContext
 
     int  activeStage = 0;      ///< which stage the gizmo and curve editor act on
     bool editTo      = true;   ///< gizmo edits the "To" state rather than "From"
+
+    /// The gizmo poses the Base Transform instead of a stage end. A third
+    /// setting of the same Gizmo Edits parameter, so the three are exclusive.
+    bool editBase    = false;
     int  stageCount  = 1;
 
     /// The curve panel sits over the image and is hit-tested before the motion

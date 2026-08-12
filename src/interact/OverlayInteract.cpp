@@ -14,7 +14,9 @@ namespace {
 constexpr double kTabWidthPx  = 26.0;
 constexpr double kTabHeightPx = 18.0;
 constexpr double kTabGapPx    = 4.0;
-constexpr double kToggleWPx   = 54.0;
+constexpr double kToggleWPx   = 54.0;   // preferred width
+constexpr double kToggleMinPx = 32.0;   // floor before the labels stop reading
+constexpr int    kToggleCount = 6;      // TO FROM BASE CURVE LIB LOAD
 } // namespace
 
 MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
@@ -157,7 +159,9 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
 
     out.stageCount  = GetChoice(_effect, kParamStageCount) + 1;
     out.activeStage = GetChoice(_effect, kParamActiveStage);
-    out.editTo      = GetChoice(_effect, kParamEditTarget) != 0;
+    const int editTarget = GetChoice(_effect, kParamEditTarget);
+    out.editTo      = (editTarget == 1);
+    out.editBase    = (editTarget == 2);
     out.showCurve   = GetBool(_effect, kParamShowCurve, time);
     out.showLibrary = GetBool(_effect, kParamShowLibrary, time);
     out.shiftHeld   = _shiftHeld;
@@ -266,12 +270,36 @@ OfxRectD MultiTransformInteract::tabRect(const OverlayContext& c, int index) con
     return r;
 }
 
+double MultiTransformInteract::toggleWidth(const OverlayContext& c) const
+{
+    // Sized to the room actually available rather than fixed.
+    //
+    // The buttons are a fixed size *on screen* while the timeline they sit above
+    // is a fraction of the *image*, so the further the viewer is zoomed out the
+    // more of that strip they occupy. At a fixed width the right-hand run
+    // eventually runs into the stage tabs coming the other way -- which looks
+    // exactly like the buttons being drawn in the wrong place.
+    const OfxRectD& tl = _timeline.rect();
+    const double scale   = c.pixelScale.x > 1e-9 ? c.pixelScale.x : 1.0;
+    const double totalPx = (tl.x2 - tl.x1) / scale;
+
+    // The left group: one tab per stage, then the enable toggle.
+    const double leftPx = static_cast<double>(c.stageCount) * (kTabWidthPx + kTabGapPx);
+
+    const double avail = totalPx - leftPx - kTabGapPx * (kToggleCount + 2);
+    double w = avail / (kToggleCount + 1);          // +1 for the enable toggle
+
+    if (w > kToggleWPx) w = kToggleWPx;
+    if (w < kToggleMinPx) w = kToggleMinPx;         // unreadable below this anyway
+    return w;
+}
+
 OfxRectD MultiTransformInteract::rightButtonRect(const OverlayContext& c,
-                                                 int indexFromRight, double widthPx,
+                                                 int indexFromRight, double /*widthPx*/,
                                                  int row) const
 {
     const OfxRectD& tl = _timeline.rect();
-    const double w   = c.sx(widthPx);
+    const double w   = c.sx(toggleWidth(c));
     const double h   = c.sy(kTabHeightPx);
     const double gap = c.sx(kTabGapPx);
 
@@ -279,7 +307,7 @@ OfxRectD MultiTransformInteract::rightButtonRect(const OverlayContext& c,
     // A second row keeps the first from running past the left edge of the
     // timeline once there are more than five or six of them.
     OfxRectD r;
-    r.x2 = tl.x2 - static_cast<double>(indexFromRight) * (c.sx(kToggleWPx) + gap);
+    r.x2 = tl.x2 - static_cast<double>(indexFromRight) * (w + gap);
     r.x1 = r.x2 - w;
     r.y1 = tl.y2 + c.sy(6.0) + static_cast<double>(row) * (h + c.sy(4.0));
     r.y2 = r.y1 + h;
@@ -291,19 +319,24 @@ OfxRectD MultiTransformInteract::fromToRect(const OverlayContext& c, bool toButt
     return rightButtonRect(c, toButton ? 0 : 1, kToggleWPx);
 }
 
-OfxRectD MultiTransformInteract::curveToggleRect(const OverlayContext& c) const
+OfxRectD MultiTransformInteract::baseTargetRect(const OverlayContext& c) const
 {
     return rightButtonRect(c, 2, kToggleWPx);
 }
 
-OfxRectD MultiTransformInteract::libraryToggleRect(const OverlayContext& c) const
+OfxRectD MultiTransformInteract::curveToggleRect(const OverlayContext& c) const
 {
     return rightButtonRect(c, 3, kToggleWPx);
 }
 
-OfxRectD MultiTransformInteract::loadPresetRect(const OverlayContext& c) const
+OfxRectD MultiTransformInteract::libraryToggleRect(const OverlayContext& c) const
 {
     return rightButtonRect(c, 4, kToggleWPx);
+}
+
+OfxRectD MultiTransformInteract::loadPresetRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 5, kToggleWPx);
 }
 
 OfxRectD MultiTransformInteract::enableStageRect(const OverlayContext& c) const
@@ -318,7 +351,7 @@ OfxRectD MultiTransformInteract::enableStageRect(const OverlayContext& c) const
 
     OfxRectD r;
     r.x1 = tl.x1 + static_cast<double>(c.stageCount) * (c.sx(kTabWidthPx) + g) + g;
-    r.x2 = r.x1 + c.sx(kToggleWPx);
+    r.x2 = r.x1 + c.sx(toggleWidth(c));
     r.y1 = tl.y2 + c.sy(6.0);
     r.y2 = r.y1 + c.sy(kTabHeightPx);
     return r;
@@ -367,6 +400,10 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
         Button(c, fromToRect(c, toButton), toButton ? "TO" : "FROM",
                toButton == c.editTo, toButton ? colours::kGizmoTo : colours::kGizmo);
     }
+
+    // Poses the resting pose instead of a stage end, so the base can be set by
+    // dragging on the picture rather than by typing in the Inspector.
+    Button(c, baseTargetRect(c), "BASE", c.editBase, colours::kStage[3]);
 
     // Curve editor toggle. Stays visible when the panel is hidden, or there
     // would be no way to bring it back.
@@ -436,6 +473,12 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
         _effect->fetchBooleanParam(kParamShowLibrary)->setValue(!c.showLibrary);
         return true;
     }
+    if (Contains(baseTargetRect(c), p))
+    {
+        EditBlock block(_effect, "Gizmo Edits");
+        _effect->fetchChoiceParam(kParamEditTarget)->setValue(2);
+        return true;
+    }
     if (Contains(curveToggleRect(c), p))
     {
         EditBlock block(_effect, "Show Curve Editor");
@@ -459,8 +502,30 @@ bool MultiTransformInteract::isCtrl(int keySymbol)
 
 bool MultiTransformInteract::keyDown(const OFX::KeyArgs& args)
 {
+    const bool modifier = isShift(args.keySymbol) || isCtrl(args.keySymbol);
+
     if (isShift(args.keySymbol)) _shiftHeld = true;
     if (isCtrl (args.keySymbol)) _ctrlHeld  = true;
+
+    // Any *other* key pressed mid-drag ends the drag.
+    //
+    // This is the recovery path that actually fires for the reproducible case:
+    // press Tab while dragging a handle and Resolve moves keyboard focus, so the
+    // mouse-up is delivered somewhere else and never reaches this interact. The
+    // edit block stays open, the host keeps waiting for an edit that will never
+    // end, and the viewer's on-screen controls stop responding everywhere --
+    // including in Fusion -- until Resolve is restarted.
+    //
+    // loseFocus cannot be relied on here (the host need not send it), and the
+    // penDown backstop cannot help either: with the overlay already wedged
+    // there is no way to click and trigger it. A key press is the one event
+    // still arriving at that moment, which makes it the place to recover.
+    //
+    // Shift and Control are excluded because they are pressed *during* drags on
+    // purpose -- axis lock and paired handles -- and cancelling on those would
+    // break the two features that depend on them.
+    if (!modifier && (_captured || _editBlockOpen))
+        abandonDrag("key pressed during a drag");
 
     // Never trapped. Returning true would block the key from every other
     // interact and from the host, so a plugin that merely wants to *observe*
@@ -473,6 +538,20 @@ bool MultiTransformInteract::keyUp(const OFX::KeyArgs& args)
     if (isShift(args.keySymbol)) _shiftHeld = false;
     if (isCtrl (args.keySymbol)) _ctrlHeld  = false;
     return false;
+}
+
+void MultiTransformInteract::gainFocus(const OFX::FocusArgs& /*args*/)
+{
+    // Anything still marked as a drag when focus comes back belongs to an
+    // interaction that ended somewhere else. Clearing it here means a wedge
+    // survives at most until the viewer is clicked back into, whatever route
+    // created it.
+    abandonDrag("focus regained with a drag still open");
+
+    // Modifier state cannot be trusted across a focus change: a key released
+    // while another panel had focus produces no keyUp here.
+    _shiftHeld = false;
+    _ctrlHeld  = false;
 }
 
 void MultiTransformInteract::loseFocus(const OFX::FocusArgs& /*args*/)
@@ -500,12 +579,14 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         _curve.layout(c);
         _gizmo.layout(c);
         _path.layout(c);
+        _opacity.layout(c);
 
         // Back to front: the gizmo lives on the image, the HUD panels above it.
         // The path sits over the gizmo: its handles are small and must not be
         // buried under the gizmo's outline.
         _gizmo.draw(c);
         _path.draw(c);
+        _opacity.draw(c);
         _timeline.draw(c);
         if (c.showCurve) _curve.draw(c);
         drawToolbar(c);
@@ -539,6 +620,7 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         _curve.layout(c);
         _gizmo.layout(c);
         _path.layout(c);
+        _opacity.layout(c);
 
         const OfxPointD p = args.penPosition;
 
@@ -550,9 +632,9 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         // clicks aimed at the motion path handles beneath it.
         // The library is first because it is modal: while it is up it takes
         // every click inside itself, and nothing beneath it should react.
-        Widget* order[5] = { c.showLibrary ? &_library : nullptr,
+        Widget* order[6] = { c.showLibrary ? &_library : nullptr,
                              c.showCurve   ? &_curve   : nullptr,
-                             &_timeline, &_path, &_gizmo };
+                             &_opacity, &_timeline, &_path, &_gizmo };
         for (Widget* w : order)
         {
             if (!w) continue;
@@ -600,6 +682,7 @@ bool MultiTransformInteract::penMotion(const OFX::PenArgs& args)
         _curve.layout(c);
         _gizmo.layout(c);
         _path.layout(c);
+        _opacity.layout(c);
 
         if (_captured->penMotion(c, args.penPosition))
         {

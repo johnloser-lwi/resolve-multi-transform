@@ -61,6 +61,7 @@ add_library(MultiTransform MODULE
     src/interact/GizmoWidget.cpp
     src/interact/PathWidget.cpp
     src/interact/LibraryWidget.cpp
+    src/interact/OpacityWidget.cpp
 )
 target_include_directories(MultiTransform PRIVATE src)
 # ole32/shell32: the preset-folder picker is IFileDialog, which is COM.

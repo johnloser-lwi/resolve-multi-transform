@@ -126,6 +126,37 @@ private:
     double   _yMax = kYMaxDefault;
 };
 
+/** @brief Opacity slider, pinned to the left edge of the image.
+ *
+ * The one animated channel that had no on-screen control at all -- every other
+ * one is reachable from the gizmo, the path or the curve editor, so opacity was
+ * the single reason to keep opening the Inspector mid-edit.
+ *
+ * Deliberately *not* attached to the gizmo. The gizmo rotates and scales with
+ * the pose it represents, and a slider that tilted with it would be unusable at
+ * exactly the moments it matters. A fixed position on an otherwise empty edge
+ * is predictable, and it tracks the same From / To / Base target the gizmo is
+ * posing, so the two always describe the same thing.
+ */
+class OpacityWidget : public Widget
+{
+public:
+    void layout(const OverlayContext& c) override;
+    void draw(const OverlayContext& c) override;
+    bool penDown  (const OverlayContext& c, const OfxPointD& p) override;
+    bool penMotion(const OverlayContext& c, const OfxPointD& p) override;
+    bool penUp    (const OverlayContext& c, const OfxPointD& p) override;
+
+private:
+    /// Current value of whichever target the gizmo is on, as a percentage.
+    double   value(const OverlayContext& c) const;
+    void     write(const OverlayContext& c, double percent) const;
+    /// Percentage from a Y position on the track, clamped to 0..100.
+    double   valueAt(const OverlayContext& c, double y) const;
+
+    OfxRectD _track{};
+};
+
 /** @brief The saved-curve picker: a grid of curves drawn as curves.
  *
  * A dropdown of names would say "Heavy Settle" and leave you to remember what
@@ -246,6 +277,10 @@ private:
      * picture rather than marking fixed places in the move.
      */
     double refTime(const OverlayContext& c) const;
+
+    /// The transforms surrounding whatever this gizmo is posing -- a stage, or
+    /// the base, which sits underneath every stage.
+    StageContext context(const OverlayContext& c) const;
 
     /// The same pose composed with the surrounding stages, which is where the
     /// image actually is. Everything drawn and hit-tested uses this.

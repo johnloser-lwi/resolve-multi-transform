@@ -2206,10 +2206,11 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
 
     ChoiceParamDescriptor* target = p_Desc.defineChoiceParam(kParamEditTarget);
     target->setLabels("Gizmo Edits", "Gizmo Edits", "Gizmo Edits");
-    target->setHint("Whether the on-screen gizmo poses the start or the end of the active "
-                    "stage.");
+    target->setHint("What the on-screen gizmo poses: the start or the end of the active stage, or "
+                    "the Base Transform. Also set by the FROM / TO / BASE buttons in the overlay.");
     target->appendOption("From (start)");
     target->appendOption("To (end)");
+    target->appendOption("Base Transform");
     target->setDefault(1);
     target->setParent(*gOverlay);
     page->addChild(*target);
