@@ -138,6 +138,25 @@ are hidden entirely, groups and all.
 **Anchor deliberately sits in the timing section**, not in either pose block — a pivot that
 moved between the start and end of a move would make the motion very hard to reason about.
 
+### Syncing a move to a beat
+
+**Sync Acceleration to Playhead**, in the stage's Timing section, slides the stage so the
+**fastest moment of the move** lands on the playhead. Start and End shift by the same amount, so
+the duration, the easing and every other value are untouched — only *when* the move happens
+changes.
+
+That moment is the red tick on the stage's timeline lane, so the frame it snaps to is one you can
+already see before pressing anything.
+
+Syncing to the peak rather than to an end is the point: for anything but linear easing the two
+are far apart. An Ease Out peaks almost immediately, so the stage ends up starting near the
+playhead; an Ease In peaks at the very end, so it finishes near it. Same button, opposite
+placement — which is what you want when matching a hit to a beat, because the beat should land on
+the impact, not on the beginning of the wind-up.
+
+Pressing it again does nothing once synced, and under a Stretch anchor the shift stays fractional
+rather than rounding to whole frames, since there the values are percentages.
+
 ### Moving poses between the two ends
 
 Three buttons below the TO block, because most moves are built by matching one end to the other

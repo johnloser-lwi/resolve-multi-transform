@@ -1095,6 +1095,49 @@ static void TestEdgeOnRendersNothing()
               "an edge-on tilt is also transparent");
 }
 
+static void TestSyncPeakShift()
+{
+    std::printf("Syncing the acceleration peak moves the stage without reshaping it\n");
+
+    // The arithmetic the Sync Acceleration button performs, checked here rather
+    // than only through the host: peak = start + progress * span, then both ends
+    // shift by (playhead - peak).
+    const Easing e = Easing::EaseOut();
+    const float  p = PeakVelocityProgress(e);
+
+    const double start = 10.0, end = 34.0;
+    const double span  = end - start;
+    const double peak  = start + static_cast<double>(p) * span;
+
+    const double playhead = 50.0;
+    const double delta    = std::floor((playhead - peak) + 0.5);
+
+    const double newStart = start + delta;
+    const double newEnd   = end   + delta;
+
+    // The invariant that matters: the span is preserved exactly, so duration,
+    // easing and the shape of the move cannot have changed.
+    CheckNear(newEnd - newStart, span, 1e-9, "the duration is unchanged by the shift");
+
+    // And the peak now lands on the playhead, within the rounding to a frame.
+    const double newPeak = newStart + static_cast<double>(p) * span;
+    Check(std::fabs(newPeak - playhead) <= 0.5,
+          "the peak lands on the playhead, to the nearest frame");
+
+    // Applying it a second time is a no-op, so the button is safe to press
+    // repeatedly rather than walking the stage along.
+    const double delta2 = std::floor((playhead - newPeak) + 0.5);
+    CheckNear(delta2, 0.0, 1e-9, "syncing an already-synced stage changes nothing");
+
+    // The peak really is where the timeline lane marks it: an Ease Out peaks
+    // early, so the stage ends up starting close to the playhead, while an Ease
+    // In peaks late and ends up finishing near it. Same button, opposite result,
+    // which is the whole point of syncing to the peak rather than to an end.
+    Check(p < 0.3f, "Ease Out peaks early, so the stage lands mostly after the playhead");
+    Check(PeakVelocityProgress(Easing::EaseIn()) > 0.7f,
+          "Ease In peaks late, so the stage lands mostly before it");
+}
+
 static void TestFlattenReproducesTheTransform()
 {
     std::printf("Flattening an animation reproduces the pose it collapsed\n");
@@ -2091,6 +2134,7 @@ int main()
     TestOrthographicRotation();
     TestEdgeOnRendersNothing();
     TestIsNoOpCoversNewChannels();
+    TestSyncPeakShift();
     TestFlattenReproducesTheTransform();
     TestStageContextRebuildsTheWhole();
     TestEndpointsAreExact();

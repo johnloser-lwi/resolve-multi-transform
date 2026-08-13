@@ -203,6 +203,10 @@ private:
     void             loadPreset(bool fitToClip);
     /** The playhead expressed in the units a given stage's frames use. */
     double playheadInStageFrames(int stageIndex, double absoluteTime) const;
+
+    /** Slide a stage so its fastest moment lands on the playhead, keeping its
+     *  duration and every other value untouched. */
+    void   syncPeakToPlayhead(int stageIndex, double absoluteTime);
     void updateDuration(int stageIndex);
     void applyEasingPreset(int stageIndex);
     void markEasingCustom(int stageIndex);
@@ -257,6 +261,7 @@ private:
         OFX::PushButtonParam* setStart;
         OFX::PushButtonParam* setEnd;
         OFX::DoubleParam*   duration;
+        OFX::PushButtonParam* syncPeak;
         OFX::PushButtonParam* copyFromTo;
         OFX::PushButtonParam* copyToFrom;
         OFX::PushButtonParam* swapEnds;
@@ -355,6 +360,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.setStart      = fetchPushButtonParam(StageParam(kParamSetStart,    i));
         s.setEnd        = fetchPushButtonParam(StageParam(kParamSetEnd,      i));
         s.duration      = fetchDoubleParam  (StageParam(kParamDuration,      i));
+        s.syncPeak      = fetchPushButtonParam(StageParam(kParamSyncPeak,    i));
         s.copyFromTo    = fetchPushButtonParam(StageParam(kParamCopyFromTo,  i));
         s.copyToFrom    = fetchPushButtonParam(StageParam(kParamCopyToFrom,  i));
         s.swapEnds      = fetchPushButtonParam(StageParam(kParamSwapEnds,    i));
@@ -909,6 +915,62 @@ void MultiTransformPlugin::saveCurve(int stage)
     mtx::ProbeLog("curve saved: " + name);
 }
 
+void MultiTransformPlugin::syncPeakToPlayhead(int stageIndex, double absoluteTime)
+{
+    StageParamHandles& h = _stage[stageIndex];
+
+    const double start = h.startFrame->getValue();
+    const double end   = h.endFrame->getValue();
+    const double span  = end - start;
+
+    if (std::fabs(span) < 1e-6)
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "This stage has no duration, so it has no moment of peak acceleration "
+                    "to sync. Give it a Start and End that differ first.");
+        return;
+    }
+
+    // The same curve the renderer uses, and the same peak the timeline lane
+    // marks with its red tick -- so the frame this snaps to is the frame you
+    // can already see.
+    int bounceType = kBounceNone;
+    h.bounceType->getValue(bounceType);
+
+    const Easing easing = MakeEasing(static_cast<float>(h.easeIn->getValue()),
+                                     static_cast<float>(h.easeOut->getValue()),
+                                     static_cast<float>(h.anticipation->getValue()),
+                                     static_cast<float>(h.overshoot->getValue()),
+                                     bounceType,
+                                     static_cast<float>(h.bounceAmount->getValue()),
+                                     static_cast<float>(h.bounceCount->getValue()),
+                                     static_cast<float>(h.bounceDamping->getValue()),
+                                     static_cast<float>(h.bounceStart->getValue()));
+
+    // PeakVelocityProgress is a fraction of the stage's *own* span, so it lands
+    // in the same units Start and End are written in whatever the anchor is --
+    // frames for most, percentages under Stretch.
+    const double peak     = start + static_cast<double>(PeakVelocityProgress(easing)) * span;
+    const double playhead = playheadInStageFrames(stageIndex, absoluteTime);
+
+    double delta = playhead - peak;
+
+    // Whole frames, except under Stretch where the values are percentages and
+    // rounding would be a much coarser move than it looks.
+    int anchor = kAnchorClipStart;
+    h.timingAnchor->getValue(anchor);
+    if (anchor != kAnchorStretch) delta = std::floor(delta + 0.5);
+
+    if (std::fabs(delta) < 1e-9) return;   // already synced; nothing to record
+
+    // Both ends by the same amount: the span is preserved exactly, so the
+    // duration, the easing and the shape of the move are all untouched. Only
+    // when it happens changes.
+    mtx::EditBlock block(this, "Sync Acceleration to Playhead");
+    h.startFrame->setValue(start + delta);
+    h.endFrame->setValue(end + delta);
+}
+
 void MultiTransformPlugin::transferEnds(int stage, int mode)
 {
     StageParamHandles& h = _stage[stage];
@@ -1216,6 +1278,7 @@ void MultiTransformPlugin::syncStageVisibility()
         s.duration->setIsSecret(hidden);
         s.anchor->setIsSecret(hidden);
 
+        s.syncPeak->setIsSecret(hidden);
         s.copyFromTo->setIsSecret(hidden);
         s.copyToFrom->setIsSecret(hidden);
         s.swapEnds->setIsSecret(hidden);
@@ -1463,6 +1526,11 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
         // range, so park-and-click beats typing frame numbers.
         // Stored clip-relative, so the captured value keeps meaning the same
         // thing after the clip is moved or trimmed.
+        if (p_ParamName == StageParam(kParamSyncPeak, i))
+        {
+            syncPeakToPlayhead(i, p_Args.time);
+            return;
+        }
         if (p_ParamName == StageParam(kParamSetStart, i))
         {
             {
@@ -1840,6 +1908,16 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     setEnd->setHint("Park the playhead where this stage should finish and click.");
     setEnd->setParent(*gTiming);
     page->addChild(*setEnd);
+
+    PushButtonParamDescriptor* syncPeak = desc.definePushButtonParam(StageParam(kParamSyncPeak, i));
+    syncPeak->setLabels("Sync Acceleration to Playhead", "Sync Accel",
+                        "Sync Acceleration to Playhead");
+    syncPeak->setHint("Slide this stage so the fastest moment of its move lands on the playhead. "
+                      "Start and End shift together, so the duration, the easing and every other "
+                      "value are untouched -- only when the move happens changes. The moment it "
+                      "syncs to is the red tick on the stage's timeline lane in the overlay.");
+    syncPeak->setParent(*gTiming);
+    page->addChild(*syncPeak);
 
     DefineDouble(desc, page, gTiming, StageParam(kParamStartFrame, i), "Start Frame",
                  "Frames from the START OF THE CLIP, not from the timeline: 0 is the clip's "

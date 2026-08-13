@@ -90,6 +90,7 @@ constexpr const char* kParamStartFrame     = "startFrame";
 constexpr const char* kParamEndFrame       = "endFrame";
 constexpr const char* kParamSetStart       = "setStart";
 constexpr const char* kParamSetEnd         = "setEnd";
+constexpr const char* kParamSyncPeak       = "syncPeakToPlayhead";
 constexpr const char* kParamDuration       = "duration";   ///< derived, display only
 constexpr const char* kParamLinkScale      = "linkScale";
 constexpr const char* kParamScaleFrom      = "scaleFrom";
