@@ -892,6 +892,76 @@ inline float PeakVelocityProgress(const Easing& e)
     return (static_cast<float>(peak) + 0.5f) / static_cast<float>(kVelocitySteps);
 }
 
+/** @brief Reshape a curve so its fastest moment lands at @p target progress.
+ *
+ * The companion to sliding a stage: same goal, but the stage stays exactly
+ * where it is and the *curve* moves instead.
+ *
+ * The total amount of easing is preserved and only its **balance** is changed.
+ * Ease In and Ease Out are what decide where the peak sits -- weight the curve
+ * towards Ease In and it accelerates late, towards Ease Out and it peaks early
+ * -- so redistributing between them moves the peak while leaving the curve
+ * about as soft as it was. Anticipation, overshoot and any bounce are untouched,
+ * which matters because those are the parts that give a move its character.
+ *
+ * Solved by sampling rather than by bisection. The peak is *usually* monotonic
+ * in the balance, but a bounce multiplies an oscillation into the curve and can
+ * break that; a search that assumed monotonicity would then converge on the
+ * wrong side. Sampling the whole range costs a few thousand evaluations once,
+ * on a button press, and cannot be fooled that way.
+ *
+ * @param outPeak where the peak actually ended up, which is not always @p target
+ *        -- a curve with little easing to redistribute simply cannot reach every
+ *        position, and the caller should say so rather than pretend.
+ * @return false when there is no easing at all to redistribute.
+ */
+inline bool SolvePeakBalance(const Easing& current, float target,
+                             float& outEaseInPct, float& outEaseOutPct, float& outPeak)
+{
+    // Recovered from the handles, which is where the two amounts live.
+    const float total = current.x1 * 100.0f + (1.0f - current.x2) * 100.0f;
+    if (total < 1e-3f) return false;      // linear: nothing to move around
+
+    constexpr int kSteps = 200;
+
+    float bestBalance = 0.5f;
+    float bestErr     = 1e9f;
+    float bestPeak    = 0.5f;
+    bool  any         = false;
+
+    for (int k = 0; k <= kSteps; ++k)
+    {
+        const float b      = static_cast<float>(k) / static_cast<float>(kSteps);
+        const float inPct  = total * b;
+        const float outPct = total * (1.0f - b);
+
+        // Neither amount may exceed its own range, so a heavily eased curve can
+        // only be rebalanced within the band where both ends stay legal.
+        if (inPct > 100.0f || outPct > 100.0f) continue;
+
+        Easing e = current;
+        e.x1 = inPct * 0.01f;
+        e.x2 = 1.0f - outPct * 0.01f;
+
+        const float peak = PeakVelocityProgress(e);
+        const float err  = fabsf(peak - target);
+        if (!any || err < bestErr)
+        {
+            any         = true;
+            bestErr     = err;
+            bestBalance = b;
+            bestPeak    = peak;
+        }
+    }
+
+    if (!any) return false;
+
+    outEaseInPct  = total * bestBalance;
+    outEaseOutPct = total * (1.0f - bestBalance);
+    outPeak       = bestPeak;
+    return true;
+}
+
 /** @brief Whether a stage actually changes anything between its two ends.
  *
  * Distinct from IsNoOp, which asks whether a stage is *neutral*. A stage held at

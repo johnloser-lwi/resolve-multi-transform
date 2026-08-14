@@ -1138,6 +1138,78 @@ static void TestSyncPeakShift()
           "Ease In peaks late, so the stage lands mostly before it");
 }
 
+static void TestSolvePeakBalance()
+{
+    std::printf("Rebalancing the easing moves the peak without changing how much easing there is\n");
+
+    const Easing smooth = Easing::Smooth();       // 42 / 42, total 84
+
+    // The peak can be placed across a wide span, and the total easing survives
+    // every one of them -- that is the promise the button makes.
+    const float targets[5] = { 0.15f, 0.3f, 0.5f, 0.7f, 0.85f };
+    for (float target : targets)
+    {
+        float easeIn = 0.0f, easeOut = 0.0f, peak = 0.0f;
+        Check(SolvePeakBalance(smooth, target, easeIn, easeOut, peak),
+              "a curve with easing can be rebalanced");
+
+        CheckNear(easeIn + easeOut, 84.0f, 0.5f,
+                  "the combined easing is preserved, so the move stays as soft as it was");
+
+        // Verify against the real evaluator rather than trusting the returned
+        // value: rebuild the curve the way the plugin will and re-measure it.
+        const Easing rebuilt = MakeEasing(easeIn, easeOut, 0.0f, 0.0f);
+        CheckNear(PeakVelocityProgress(rebuilt), peak, 1e-3f,
+                  "the reported peak is what the rebuilt curve actually does");
+        Check(std::fabs(PeakVelocityProgress(rebuilt) - target) < 0.1f,
+              "and it lands close to the requested position");
+    }
+
+    // The direction has to be right, or the button would move the peak the wrong
+    // way and still report success: weighting towards Ease In delays the
+    // acceleration, towards Ease Out brings it forward.
+    float lateIn = 0.0f, lateOut = 0.0f, latePeak = 0.0f;
+    float earlyIn = 0.0f, earlyOut = 0.0f, earlyPeak = 0.0f;
+    SolvePeakBalance(smooth, 0.85f, lateIn,  lateOut,  latePeak);
+    SolvePeakBalance(smooth, 0.15f, earlyIn, earlyOut, earlyPeak);
+
+    Check(lateIn > earlyIn,   "a later peak takes more Ease In");
+    Check(earlyOut > lateOut, "an earlier peak takes more Ease Out");
+    Check(latePeak > earlyPeak, "and the peaks really do end up in that order");
+
+    // Linear has no easing to redistribute, and must be refused rather than
+    // silently producing a curve out of nothing.
+    float a = 0.0f, b = 0.0f, c = 0.0f;
+    Check(!SolvePeakBalance(Easing::Linear(), 0.5f, a, b, c),
+          "a linear curve is refused, not invented");
+
+    // A heavily eased curve cannot be pushed all the way to one side, because
+    // neither amount may exceed 100. It must still return the closest legal
+    // answer rather than failing or producing an out-of-range value.
+    Easing heavy = MakeEasing(90.0f, 90.0f, 0.0f, 0.0f);   // total 180
+    float hIn = 0.0f, hOut = 0.0f, hPeak = 0.0f;
+    Check(SolvePeakBalance(heavy, 0.95f, hIn, hOut, hPeak),
+          "a heavily eased curve still solves");
+    Check(hIn <= 100.0f && hOut <= 100.0f && hIn >= 0.0f && hOut >= 0.0f,
+          "and stays inside the range both amounts are allowed");
+    CheckNear(hIn + hOut, 180.0f, 0.5f, "still preserving the total");
+
+    // Bounce curves are the reason this samples instead of bisecting: the
+    // oscillation can break monotonicity. It only has to return something legal
+    // and self-consistent.
+    const Easing bouncy = MakeEasing(30.0f, 30.0f, 0.0f, 0.0f,
+                                     kBounceSpring, 50.0f, 3.0f, 45.0f, 60.0f);
+    float bIn = 0.0f, bOut = 0.0f, bPeak = 0.0f;
+    Check(SolvePeakBalance(bouncy, 0.4f, bIn, bOut, bPeak), "a bounce curve solves");
+    CheckNear(bIn + bOut, 60.0f, 0.5f, "preserving its total too");
+
+    Easing bRebuilt = bouncy;
+    bRebuilt.x1 = bIn * 0.01f;
+    bRebuilt.x2 = 1.0f - bOut * 0.01f;
+    CheckNear(PeakVelocityProgress(bRebuilt), bPeak, 1e-3f,
+              "and the reported peak matches the rebuilt bounce curve");
+}
+
 static void TestFlattenReproducesTheTransform()
 {
     std::printf("Flattening an animation reproduces the pose it collapsed\n");
@@ -2135,6 +2207,7 @@ int main()
     TestEdgeOnRendersNothing();
     TestIsNoOpCoversNewChannels();
     TestSyncPeakShift();
+    TestSolvePeakBalance();
     TestFlattenReproducesTheTransform();
     TestStageContextRebuildsTheWhole();
     TestEndpointsAreExact();

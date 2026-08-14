@@ -207,6 +207,10 @@ private:
     /** Slide a stage so its fastest moment lands on the playhead, keeping its
      *  duration and every other value untouched. */
     void   syncPeakToPlayhead(int stageIndex, double absoluteTime);
+
+    /** Same target, reached by rebalancing Ease In against Ease Out instead of
+     *  moving the stage. */
+    void   syncPeakByEasing(int stageIndex, double absoluteTime);
     void updateDuration(int stageIndex);
     void applyEasingPreset(int stageIndex);
     void markEasingCustom(int stageIndex);
@@ -262,6 +266,7 @@ private:
         OFX::PushButtonParam* setEnd;
         OFX::DoubleParam*   duration;
         OFX::PushButtonParam* syncPeak;
+        OFX::PushButtonParam* syncPeakEase;
         OFX::PushButtonParam* copyFromTo;
         OFX::PushButtonParam* copyToFrom;
         OFX::PushButtonParam* swapEnds;
@@ -361,6 +366,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.setEnd        = fetchPushButtonParam(StageParam(kParamSetEnd,      i));
         s.duration      = fetchDoubleParam  (StageParam(kParamDuration,      i));
         s.syncPeak      = fetchPushButtonParam(StageParam(kParamSyncPeak,    i));
+        s.syncPeakEase  = fetchPushButtonParam(StageParam(kParamSyncPeakEase,i));
         s.copyFromTo    = fetchPushButtonParam(StageParam(kParamCopyFromTo,  i));
         s.copyToFrom    = fetchPushButtonParam(StageParam(kParamCopyToFrom,  i));
         s.swapEnds      = fetchPushButtonParam(StageParam(kParamSwapEnds,    i));
@@ -971,6 +977,86 @@ void MultiTransformPlugin::syncPeakToPlayhead(int stageIndex, double absoluteTim
     h.endFrame->setValue(end + delta);
 }
 
+void MultiTransformPlugin::syncPeakByEasing(int stageIndex, double absoluteTime)
+{
+    StageParamHandles& h = _stage[stageIndex];
+
+    const double start = h.startFrame->getValue();
+    const double end   = h.endFrame->getValue();
+    const double span  = end - start;
+
+    if (std::fabs(span) < 1e-6)
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "This stage has no duration, so it has no moment of peak acceleration "
+                    "to sync. Give it a Start and End that differ first.");
+        return;
+    }
+
+    // Where the playhead sits *within* the stage. Unlike the shift button, this
+    // one cannot move the stage to reach the playhead, so a playhead outside the
+    // stage has no answer at all rather than a poor one.
+    const double playhead = playheadInStageFrames(stageIndex, absoluteTime);
+    const double target   = (playhead - start) / span;
+
+    if (target < 0.0 || target > 1.0)
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "The playhead is outside this stage, so there is no point on its curve to "
+                    "move the acceleration to.\n\nPark the playhead within the stage, or use "
+                    "Sync Acceleration to Playhead to slide the stage to the playhead instead.");
+        return;
+    }
+
+    int bounceType = kBounceNone;
+    h.bounceType->getValue(bounceType);
+
+    const Easing current = MakeEasing(static_cast<float>(h.easeIn->getValue()),
+                                      static_cast<float>(h.easeOut->getValue()),
+                                      static_cast<float>(h.anticipation->getValue()),
+                                      static_cast<float>(h.overshoot->getValue()),
+                                      bounceType,
+                                      static_cast<float>(h.bounceAmount->getValue()),
+                                      static_cast<float>(h.bounceCount->getValue()),
+                                      static_cast<float>(h.bounceDamping->getValue()),
+                                      static_cast<float>(h.bounceStart->getValue()));
+
+    float easeIn = 0.0f, easeOut = 0.0f, achieved = 0.0f;
+    if (!SolvePeakBalance(current, static_cast<float>(target), easeIn, easeOut, achieved))
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "This stage has no easing to redistribute -- a linear move accelerates "
+                    "nowhere in particular.\n\nRaise Ease In or Ease Out first, then press "
+                    "this again.");
+        return;
+    }
+
+    {
+        // No _syncingEasing guard needed: writing these is exactly the case
+        // markEasingCustom exists for, and flipping the dropdown to Custom is
+        // the correct consequence of hand-shaping the curve.
+        mtx::EditBlock block(this, "Sync Acceleration by Easing");
+        h.easeIn->setValue(easeIn);
+        h.easeOut->setValue(easeOut);
+    }
+
+    // A curve with only a little easing to move around cannot put its peak just
+    // anywhere, so say when the result is not actually on the playhead rather
+    // than leaving it looking like the button half worked.
+    const double landedFrames = std::fabs(static_cast<double>(achieved) - target) * std::fabs(span);
+    if (landedFrames > 1.0)
+    {
+        char buf[320];
+        std::snprintf(buf, sizeof(buf),
+                      "Moved the acceleration as far as this curve allows -- it landed about "
+                      "%.0f frame(s) from the playhead.\n\nEase In and Ease Out keep their "
+                      "combined total, so there is only so far the peak can travel. Raise them "
+                      "both and press again, or use Sync Acceleration to Playhead to move the "
+                      "stage instead.", landedFrames);
+        sendMessage(OFX::Message::eMessageWarning, "", buf);
+    }
+}
+
 void MultiTransformPlugin::transferEnds(int stage, int mode)
 {
     StageParamHandles& h = _stage[stage];
@@ -1279,6 +1365,7 @@ void MultiTransformPlugin::syncStageVisibility()
         s.anchor->setIsSecret(hidden);
 
         s.syncPeak->setIsSecret(hidden);
+        s.syncPeakEase->setIsSecret(hidden);
         s.copyFromTo->setIsSecret(hidden);
         s.copyToFrom->setIsSecret(hidden);
         s.swapEnds->setIsSecret(hidden);
@@ -1529,6 +1616,11 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
         if (p_ParamName == StageParam(kParamSyncPeak, i))
         {
             syncPeakToPlayhead(i, p_Args.time);
+            return;
+        }
+        if (p_ParamName == StageParam(kParamSyncPeakEase, i))
+        {
+            syncPeakByEasing(i, p_Args.time);
             return;
         }
         if (p_ParamName == StageParam(kParamSetStart, i))
@@ -1918,6 +2010,19 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                       "syncs to is the red tick on the stage's timeline lane in the overlay.");
     syncPeak->setParent(*gTiming);
     page->addChild(*syncPeak);
+
+    PushButtonParamDescriptor* syncEase =
+        desc.definePushButtonParam(StageParam(kParamSyncPeakEase, i));
+    syncEase->setLabels("Sync Acceleration by Easing", "Sync Accel (Easing)",
+                        "Sync Acceleration by Easing");
+    syncEase->setHint("Same target as the button above, reached the other way: the stage stays "
+                      "exactly where it is and the curve is reshaped instead. Ease In and Ease "
+                      "Out are rebalanced against each other -- their total is preserved, so the "
+                      "move stays about as soft as it was -- and anticipation, overshoot and "
+                      "bounce are left alone. Use this when the timing is locked and only the "
+                      "feel may move.");
+    syncEase->setParent(*gTiming);
+    page->addChild(*syncEase);
 
     DefineDouble(desc, page, gTiming, StageParam(kParamStartFrame, i), "Start Frame",
                  "Frames from the START OF THE CLIP, not from the timeline: 0 is the clip's "

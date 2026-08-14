@@ -157,6 +157,28 @@ the impact, not on the beginning of the wind-up.
 Pressing it again does nothing once synced, and under a Stretch anchor the shift stays fractional
 rather than rounding to whole frames, since there the values are percentages.
 
+**Sync Acceleration by Easing** reaches the same target the other way: the stage stays exactly
+where it is and the *curve* is reshaped instead. Use it when the timing is locked — a title that
+must appear on a specific frame — and only the feel is free to move.
+
+It rebalances **Ease In against Ease Out**, keeping their combined total. Those two are what
+decide where the peak sits: weight the curve towards Ease In and it accelerates late, towards
+Ease Out and it peaks early. Preserving the total means the move stays about as soft as it was,
+and anticipation, overshoot and bounce are left alone, since those are what give it its
+character.
+
+Two things it will tell you rather than fudge:
+
+- **A linear stage is refused.** There is no easing to redistribute, and a curve invented out of
+  nothing would not be what you asked for.
+- **A lightly eased curve can't reach every position.** With little to redistribute the peak can
+  only travel so far, so if it lands more than a frame off you get told how far, and can either
+  raise both amounts and press again or move the stage instead.
+
+The solver samples the whole range rather than converging on it. The peak is usually monotonic in
+the balance, but a bounce multiplies an oscillation into the curve and can break that — a search
+assuming monotonicity would then confidently settle on the wrong side.
+
 ### Moving poses between the two ends
 
 Three buttons below the TO block, because most moves are built by matching one end to the other
