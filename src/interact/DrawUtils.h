@@ -9,6 +9,7 @@
 // that wrong is the classic overlay bug where handles become unusably tiny when
 // you zoom out.
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -100,6 +101,74 @@ struct OverlayContext
 
     double rodWidth()  const { return rod.x2 - rod.x1; }
     double rodHeight() const { return rod.y2 - rod.y1; }
+};
+
+/** @brief Detects a repeat click from a stream of single presses.
+ *
+ * OFX has no double-click action and PenArgs carries no click count -- it has a
+ * position and a pressure and nothing else -- so the only way to recognise one
+ * is to remember the last press and time the next.
+ *
+ * @p slot identifies *what* was hit, so two quick clicks on different handles
+ * are two single clicks rather than a repeat on whichever came second.
+ *
+ * ## It takes three clicks in Resolve, not two
+ *
+ * Known and accepted rather than unexplained. The window here is already very
+ * generous -- widening it from 400 ms to 900 ms changed nothing, which rules
+ * out the obvious culprit of the host delivering the second press late. What
+ * fits the behaviour is that Resolve consumes the *first* press to give the
+ * on-screen controls focus, so the plugin only ever sees presses two and three;
+ * those two then form the pair that fires.
+ *
+ * A duplicated press would produce the opposite symptom -- a reset on a single
+ * click -- so that is ruled out too. Nothing here can recover a press that never
+ * arrives, so the gesture is three clicks in this host and the feature is kept
+ * on that basis.
+ */
+class ClickTracker
+{
+public:
+    bool isDouble(const OverlayContext& c, const OfxPointD& p, int slot)
+    {
+        const double now = Seconds();
+
+        const bool quick = (now - _time) < kIntervalSeconds;
+        const bool near  = std::fabs(p.x - _point.x) <= c.sx(kSlopPx)
+                        && std::fabs(p.y - _point.y) <= c.sy(kSlopPx);
+        const bool same  = (slot == _slot);
+
+        _point = p;
+        _slot  = slot;
+
+        if (quick && near && same)
+        {
+            // Forgotten immediately, so a further click starts a fresh pair
+            // rather than firing again.
+            _time = -1e9;
+            return true;
+        }
+
+        _time = now;
+        return false;
+    }
+
+private:
+    static double Seconds()
+    {
+        using clock = std::chrono::steady_clock;
+        return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+    }
+
+    /// Deliberately loose. The tight position and handle tests are what stop
+    /// this firing on two deliberate separate clicks, so the time limit can
+    /// afford slack -- and slack is worth having when a press is being eaten.
+    static constexpr double kIntervalSeconds = 0.9;
+    static constexpr double kSlopPx          = 6.0;
+
+    double    _time  = -1e9;
+    OfxPointD _point{};
+    int       _slot  = -1;
 };
 
 /** @brief Drop the smaller component of a drag, locking it to one axis.

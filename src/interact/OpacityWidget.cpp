@@ -108,6 +108,15 @@ bool OpacityWidget::penDown(const OverlayContext& c, const OfxPointD& p)
                       && p.y <= _track.y2 + c.sy(kGrabPx);
     if (!onTrack) return false;
 
+    // Repeat-click restores full opacity, matching the gizmo's handles: each
+    // control resets exactly what it drives.
+    if (_clicks.isDouble(c, p, 1))
+    {
+        write(c, 100.0);
+        _drag = 0;
+        return true;
+    }
+
     // Clicking anywhere on the track jumps the knob there, so a value can be set
     // with one press rather than having to find the knob first.
     _drag = 1;

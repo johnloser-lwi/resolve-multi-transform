@@ -54,6 +54,11 @@ public:
 private:
     enum DragMode { kNone = 0, kDragStart, kDragEnd, kDragWhole };
 
+    /** The two sync buttons in the panel header, and their handling. */
+    OfxRectD syncButtonRect(const OverlayContext& c, bool easing) const;
+    void     drawSyncButtons(const OverlayContext& c);
+    bool     syncButtonHit(const OverlayContext& c, const OfxPointD& p) const;
+
     double frameToX(double frame) const;
     double xToFrame(double x) const;
 
@@ -154,7 +159,8 @@ private:
     /// Percentage from a Y position on the track, clamped to 0..100.
     double   valueAt(const OverlayContext& c, double y) const;
 
-    OfxRectD _track{};
+    OfxRectD     _track{};
+    ClickTracker _clicks;
 };
 
 /** @brief The saved-curve picker: a grid of curves drawn as curves.
@@ -223,6 +229,9 @@ private:
     /// Shift locks movement relative to this rather than to the cursor, so the
     /// handle slides along one axis instead of jumping to the pointer.
     double _grabNx = 0.0, _grabNy = 0.0;
+
+    /// Repeat-click a path handle to straighten that half of the route.
+    ClickTracker _clicks;
 
     /** Clip time of the stage's start or end. Every mapping below is pinned to
      *  one of these two, never to the playhead: the route the image travels is
@@ -299,6 +308,13 @@ private:
     /// input space, so it goes through `outer * Sᵢ` and not through `inner`.
     OfxPointD anchorScreen(const OverlayContext& c, const Pose& p) const;
 
+    /** Start a drag on @p mode, or reset it if this is a repeat click. */
+    bool      claim(const OverlayContext& c, const OfxPointD& p, int mode);
+
+    /** Repeat-click a handle to reset what that handle drives. */
+    void      resetHandle(const OverlayContext& c, int mode) const;
+
+    ClickTracker _clicks;
     Pose      _grabPose{};
     OfxPointD _anchorScreen{};   ///< screen space, for hit-testing the anchor handle
     // Drag state, all in the stage's own space rather than on screen -- see

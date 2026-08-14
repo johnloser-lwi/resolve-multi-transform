@@ -89,6 +89,71 @@ void GizmoWidget::writePose(const OverlayContext& c, const Pose& p) const
     SetDouble2D(c.effect, StageParam(kParamAnchor, i), p.anchorX, p.anchorY);
 }
 
+bool GizmoWidget::claim(const OverlayContext& c, const OfxPointD& p, int mode)
+{
+    if (_clicks.isDouble(c, p, mode))
+    {
+        resetHandle(c, mode);
+
+        // No drag follows a reset: the pointer has not moved, so the drag maths
+        // would be a no-op, and leaving the handle armed would mean the next
+        // stray motion event nudged the value straight back off its default.
+        _drag = kNone;
+        return true;
+    }
+
+    _drag = mode;
+    return true;
+}
+
+void GizmoWidget::resetHandle(const OverlayContext& c, int mode) const
+{
+    // Each handle resets exactly what that handle drives, rather than the whole
+    // pose. Repeat-clicking the rotation arm to have the position jump as well
+    // would be a nasty surprise, and there is no way to explain it in the moment.
+    const int  i    = c.activeStage;
+    const bool base = c.editBase;
+
+    switch (mode)
+    {
+        case kDragMove:
+            if (base) SetDouble2D(c.effect, kParamBasePos, 0.0, 0.0);
+            else      SetDouble2D(c.effect,
+                                  StageParam(c.editTo ? kParamPosTo : kParamPosFrom, i), 0.0, 0.0);
+            break;
+
+        case kDragScale:
+            // Both axes, whether or not they are linked: the corner is the size
+            // handle, and leaving a stale Scale Y behind to reappear the moment
+            // the link was released is the trap this avoids.
+            if (base)
+            {
+                SetDouble(c.effect, kParamBaseScale,  1.0);
+                SetDouble(c.effect, kParamBaseScaleY, 1.0);
+            }
+            else
+            {
+                SetDouble(c.effect, StageParam(c.editTo ? kParamScaleTo  : kParamScaleFrom,  i), 1.0);
+                SetDouble(c.effect, StageParam(c.editTo ? kParamScaleYTo : kParamScaleYFrom, i), 1.0);
+            }
+            break;
+
+        case kDragRotate:
+            if (base) SetDouble(c.effect, kParamBaseRot, 0.0);
+            else      SetDouble(c.effect,
+                                StageParam(c.editTo ? kParamRotTo : kParamRotFrom, i), 0.0);
+            break;
+
+        case kDragAnchor:
+            // Back to the image centre, which is what 0.5, 0.5 means.
+            if (base) SetDouble2D(c.effect, kParamBaseAnchor, 0.5, 0.5);
+            else      SetDouble2D(c.effect, StageParam(kParamAnchor, i), 0.5, 0.5);
+            break;
+
+        default: break;
+    }
+}
+
 Mat3 GizmoWidget::poseMatrix(const OverlayContext& c, const Pose& p) const
 {
     const double W = c.rodWidth();
@@ -304,23 +369,15 @@ bool GizmoWidget::penDown(const OverlayContext& c, const OfxPointD& p)
         dirX /= len; dirY /= len;
         const double rx = midX + dirX * c.sx(kRotateArmPx);
         const double ry = midY + dirY * c.sy(kRotateArmPx);
-        if (NearPoint(c, p, rx, ry, 10.0)) { _drag = kDragRotate; return true; }
+        if (NearPoint(c, p, rx, ry, 10.0)) return claim(c, p, kDragRotate);
     }
 
     for (int i = 0; i < 4; ++i)
     {
-        if (NearPoint(c, p, corner[i].x, corner[i].y, 10.0))
-        {
-            _drag = kDragScale;
-            return true;
-        }
+        if (NearPoint(c, p, corner[i].x, corner[i].y, 10.0)) return claim(c, p, kDragScale);
     }
 
-    if (NearPoint(c, p, _anchorScreen.x, _anchorScreen.y, 12.0))
-    {
-        _drag = kDragAnchor;
-        return true;
-    }
+    if (NearPoint(c, p, _anchorScreen.x, _anchorScreen.y, 12.0)) return claim(c, p, kDragAnchor);
 
     // Inside the transformed box: move. Tested by inverse-mapping the cursor
     // into source space, which handles rotation correctly without a polygon test.
@@ -330,8 +387,7 @@ bool GizmoWidget::penDown(const OverlayContext& c, const OfxPointD& p)
     if (sxp >= 0.0f && sxp <= static_cast<float>(W) &&
         syp >= 0.0f && syp <= static_cast<float>(H))
     {
-        _drag = kDragMove;
-        return true;
+        return claim(c, p, kDragMove);
     }
 
     _drag = kNone;

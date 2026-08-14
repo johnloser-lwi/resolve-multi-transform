@@ -174,6 +174,17 @@ bool PathWidget::penDown(const OverlayContext& c, const OfxPointD& p)
     else if (NearPoint(c, p, h2.x, h2.y, kGrabPx)) _drag = kDragC2;
     else                                           return false;   // fall through to the gizmo
 
+    // Repeat-click straightens that half of the route: a zero offset is exactly
+    // a straight line, not merely a nearly straight one -- see PathControlPoints.
+    if (_clicks.isDouble(c, p, _drag))
+    {
+        SetDouble2D(c.effect,
+                    StageParam(_drag == kDragC1 ? kParamPathC1 : kParamPathC2, c.activeStage),
+                    0.0, 0.0);
+        _drag = kNone;
+        return true;
+    }
+
     // The handle's own starting place, for Shift to constrain against.
     _grabNx = (_drag == kDragC1) ? c1x : c2x;
     _grabNy = (_drag == kDragC1) ? c1y : c2y;

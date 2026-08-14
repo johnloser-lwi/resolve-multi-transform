@@ -598,6 +598,11 @@ middle to slide the whole stage without changing its length. Clicking a lane als
 stage. This is where staggering becomes obvious: the offsets between stages are visible as
 offsets between bars.
 
+**SYNC TIME** and **SYNC EASE** sit in the panel's header and act on the active stage — the same
+two operations as the Inspector's *Sync Acceleration to Playhead* and *Sync Acceleration by
+Easing*. They are here because both are about placing the red peak tick against the playhead, and
+both are visible on the lanes directly underneath.
+
 Each bar is **shaded by how fast the move is going** at that point, brightest where the motion
 is quickest, and a red tick marks the **peak** — the single fastest moment. That is usually
 where a cut, a sound hit or an impact should land, and for anything but linear easing it is
@@ -624,6 +629,34 @@ area is much wider than the drawn track, which is deliberately thin to stay out 
 
 Deliberately not attached to the gizmo: the gizmo rotates and scales with the pose it represents,
 and a slider that tilted with it would be unusable at exactly the moments it matters.
+
+### Click a handle twice to reset it
+
+Each control resets exactly what it drives — repeat-clicking the rotation arm does not move the
+position too.
+
+| Repeat-click | Resets |
+|---|---|
+| Inside the gizmo box | Position |
+| A corner | Scale, both axes |
+| The rotation arm | Rotation |
+| The anchor crosshair | Anchor, back to centre |
+| A motion path handle | That half of the route, back to straight |
+| The opacity slider | Full opacity |
+
+Works on FROM, TO and BASE — it resets whichever target the gizmo is on.
+
+**In Resolve this takes three clicks, not two.** OFX has no double-click action and its pen
+events carry no click count, so the gesture is inferred from the interval and distance between
+presses. Widening the window from 400 ms to 900 ms changed nothing, which rules out the host
+merely being slow; what fits is that Resolve consumes the *first* press to give the on-screen
+controls focus, so the plugin only ever sees presses two and three. A duplicated press would
+cause the opposite symptom — a reset on a single click — so that is ruled out too. Nothing in a
+plugin can recover a press that never arrives, so three clicks it is.
+
+Scale resets both axes even when linked, because the corner *is* the size handle and a stale
+Scale Y waiting to reappear when you unlink would be a trap. Tilt and Swivel are left alone —
+separate channels, not part of the size.
 
 ### Hold Shift to constrain a drag
 

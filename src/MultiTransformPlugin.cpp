@@ -1553,6 +1553,20 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     if (p_ParamName == kParamFlatten    || p_ParamName == kParamFlattenFromOverlay)
     { flattenToFirstStage(); return; }
 
+    // The overlay's copies act on whichever stage is active, since that is the
+    // stage its timeline lane and gizmo are already editing.
+    if (p_ParamName == kParamSyncPeakFromOverlay || p_ParamName == kParamSyncEaseFromOverlay)
+    {
+        int active = 0;
+        _activeStage->getValue(active);
+        if (active < 0) active = 0;
+        if (active >= kMaxStages) active = kMaxStages - 1;
+
+        if (p_ParamName == kParamSyncPeakFromOverlay) syncPeakToPlayhead(active, p_Args.time);
+        else                                          syncPeakByEasing(active, p_Args.time);
+        return;
+    }
+
     if (p_ParamName == kParamBaseReset)
     {
         mtx::EditBlock block(this, "Reset Base Transform");
@@ -2336,8 +2350,9 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
 
     // Overlay triggers. Hidden and not persisted -- these are messages, not
     // settings. See kParamLoadFromOverlay for why a boolean and not a button.
-    const char* const kTriggers[3] = { kParamCopyFromOverlay, kParamPasteFromOverlay,
-                                       kParamFlattenFromOverlay };
+    const char* const kTriggers[5] = { kParamCopyFromOverlay, kParamPasteFromOverlay,
+                                       kParamFlattenFromOverlay,
+                                       kParamSyncPeakFromOverlay, kParamSyncEaseFromOverlay };
     for (const char* name : kTriggers)
     {
         BooleanParamDescriptor* t = p_Desc.defineBooleanParam(name);

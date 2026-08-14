@@ -14,6 +14,8 @@ constexpr double kLaneGapPx     = 4.0;
 constexpr double kHeaderPx      = 18.0;
 constexpr double kPadPx         = 8.0;
 constexpr double kEdgeGrabPx    = 7.0;
+constexpr double kSyncWPx       = 62.0;
+constexpr double kSyncHPx       = 14.0;
 } // namespace
 
 void TimelineWidget::layout(const OverlayContext& c)
@@ -111,6 +113,53 @@ OfxRectD TimelineWidget::laneRect(const OverlayContext& c, int stage) const
     return r;
 }
 
+OfxRectD TimelineWidget::syncButtonRect(const OverlayContext& c, bool easing) const
+{
+    // In the panel's header strip, between "STAGE TIMING" and the frame
+    // read-out. That band was empty, and both buttons act on the very thing the
+    // lanes below them show -- which is also the only space left: the toolbar's
+    // right-hand run is already six buttons deep.
+    const double w = c.sx(kSyncWPx);
+    const double h = c.sy(kSyncHPx);
+
+    OfxRectD r;
+    r.x2 = _rect.x2 - c.sx(kPadPx) - c.sx(58.0)          // clear of "frame 123"
+         - (easing ? 0.0 : (w + c.sx(kLaneGapPx)));
+    r.x1 = r.x2 - w;
+    r.y2 = _rect.y2 - c.sy(3.0);
+    r.y1 = r.y2 - h;
+    return r;
+}
+
+void TimelineWidget::drawSyncButtons(const OverlayContext& c)
+{
+    // Momentary, so neither is ever drawn lit.
+    Button(c, syncButtonRect(c, false), "SYNC TIME", false, colours::kAccent);
+    Button(c, syncButtonRect(c, true),  "SYNC EASE", false, colours::kAccent);
+}
+
+bool TimelineWidget::syncButtonHit(const OverlayContext& c, const OfxPointD& p) const
+{
+    for (int k = 0; k < 2; ++k)
+    {
+        const bool easing = (k == 1);
+        if (!Contains(syncButtonRect(c, easing), p)) continue;
+
+        // Flip the hidden trigger; changedParam reads the flip as the press and
+        // does the work, so the overlay and the Inspector run the same code.
+        // Not wrapped in an edit block here: the handler opens its own, and both
+        // can raise a message, which must not happen inside somebody else's
+        // paramEditBegin.
+        OFX::BooleanParam* t = c.effect->fetchBooleanParam(
+            easing ? kParamSyncEaseFromOverlay : kParamSyncPeakFromOverlay);
+        bool v = false;
+        t->getValue(v);
+        t->setValue(!v);
+        return true;
+    }
+    return false;
+}
+
 void TimelineWidget::drawVelocity(const OverlayContext& c, const Stage& s,
                                   const OfxRectD& lane, double xa, double xb,
                                   bool active) const
@@ -176,6 +225,8 @@ void TimelineWidget::draw(const OverlayContext& c)
     SetColour(c, colours::kText);
     Text(c, "frame " + FrameLabel(c.time), _rect.x2 - c.sx(kPadPx), _rect.y2 - c.sy(6.0),
          kOfxDrawTextAlignmentRight | kOfxDrawTextAlignmentTop);
+
+    drawSyncButtons(c);
 
     // The clip's own extent, so it is obvious where frame 0 and the last frame
     // are and whether a stage has been pushed outside them.
@@ -276,6 +327,8 @@ void TimelineWidget::draw(const OverlayContext& c)
 bool TimelineWidget::penDown(const OverlayContext& c, const OfxPointD& p)
 {
     if (!Contains(_rect, p)) return false;
+
+    if (syncButtonHit(c, p)) return true;
 
     for (int i = 0; i < c.stageCount; ++i)
     {
