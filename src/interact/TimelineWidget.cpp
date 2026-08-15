@@ -14,7 +14,7 @@ constexpr double kLaneGapPx     = 4.0;
 constexpr double kHeaderPx      = 18.0;
 constexpr double kPadPx         = 8.0;
 constexpr double kEdgeGrabPx    = 7.0;
-constexpr double kSyncWPx       = 62.0;
+constexpr double kSyncWPx       = 78.0;   // fits "SYNC TIME" without trimming
 constexpr double kSyncHPx       = 14.0;
 } // namespace
 

@@ -161,23 +161,24 @@ rather than rounding to whole frames, since there the values are percentages.
 where it is and the *curve* is reshaped instead. Use it when the timing is locked — a title that
 must appear on a specific frame — and only the feel is free to move.
 
-It rebalances **Ease In against Ease Out**, keeping their combined total. Those two are what
-decide where the peak sits: weight the curve towards Ease In and it accelerates late, towards
-Ease Out and it peaks early. Preserving the total means the move stays about as soft as it was,
-and anticipation, overshoot and bounce are left alone, since those are what give it its
-character.
+It reshapes **Ease In and Ease Out**, which are what decide where the peak sits: weight the curve
+towards Ease In and it accelerates late, towards Ease Out and it peaks early.
 
-Two things it will tell you rather than fudge:
+**Hitting the target is the only objective.** Both amounts are free to go anywhere in 0–100,
+including changing how much easing there is overall — a curve that stayed politely as soft as it
+was but missed the playhead would be no use. A linear stage is reshaped rather than refused: "no
+easing yet" is a starting point, not an obstacle. It never warns; it just lands.
 
-- **A linear stage is refused.** There is no easing to redistribute, and a curve invented out of
-  nothing would not be what you asked for.
-- **A lightly eased curve can't reach every position.** With little to redistribute the peak can
-  only travel so far, so if it lands more than a frame off you get told how far, and can either
-  raise both amounts and press again or move the stage instead.
+Anticipation, overshoot and bounce are left alone. Those carry the move's character, and none of
+them decide where the peak sits.
 
-The solver samples the whole range rather than converging on it. The peak is usually monotonic in
-the balance, but a bounce multiplies an oscillation into the curve and can break that — a search
-assuming monotonicity would then confidently settle on the wrong side.
+Two amounts fitted to one number leaves a whole family of answers, so among the settings that hit
+the target it picks the one **closest to the curve you already had**. A curve needing a nudge gets
+nudged; one needing a rebuild gets rebuilt.
+
+The solver searches a grid rather than converging on a solution. The peak is usually monotonic in
+the balance between the two amounts, but a bounce multiplies an oscillation into the curve and can
+break that — anything assuming monotonicity would then settle confidently on the wrong side.
 
 ### Moving poses between the two ends
 
@@ -552,9 +553,36 @@ Edit, Fusion and Color pages.
 
 The overlay has four parts:
 
+The toolbar is **two rows, grouped by kind** — *what am I looking at* above, *what am I editing*
+below:
+
+```
+TIME  PATH  OPAC  CURVE  LIB          LOAD      ← panels
+[1][2]⟨3⟩⟨4⟩ [-] ON          TO  FROM  BASE      ← stage and target
+```
+
+**Stage count is set from the tabs.** All four slots are always drawn: the ones past the current
+count are hollow, and clicking one raises the count to it and selects it. `-` drops the last
+stage. Neither goes near the Inspector's Stage Count dropdown, though that still works and stays
+in step.
+
+Two deliberate details. The slots never reflow — a row that resized as stages were added would
+slide the buttons out from under the cursor exactly when they are being clicked repeatedly. And
+adding a stage does **not** switch it on: Stage Count and Enabled are separate gates, enabling
+changes what renders, so that stays an explicit press of **ON** right beside it. Dropping a stage
+keeps its values too, so raising the count again brings the work back rather than a blank stage.
+
+Every panel switches independently, so the overlay can be pared back to what a given edit
+actually needs. A fresh effect opens as **gizmo + timeline + toolbar**; the motion path, opacity
+slider, curve editor and library start hidden. The same five switches are in the Inspector's
+**Viewer Overlay** group, and the state saves with the project.
+
+A hidden panel is skipped for **clicks as well as drawing** — an invisible panel that still
+swallowed clicks was a real bug once, when the curve editor ate the motion path's handles.
+
 **Stage tabs** (above the timeline) — click `1`–`4` to choose which stage the gizmo and curve
-editor act on. A stage that is switched off shows in brackets, `(3)`, so the tabs say which
-stages are actually contributing without clicking through them. **ON / OFF**, immediately right
+editor act on. A stage that is switched off is dimmed, so the tabs say which stages are actually
+contributing without clicking through them. **ON / OFF**, immediately right
 of the tabs, enables the selected stage — raising Stage Count alone leaves the new stage
 switched off, and this saves opening its Timing section every time. **FROM / TO / BASE** picks what the gizmo poses: either end of the active stage, or the Base Transform, so the resting pose can be dragged on the picture instead of typed in the Inspector. **CURVE** shows or
 hides the curve editor panel.
@@ -575,6 +603,37 @@ have already moved the picture to — a gizmo drawn from stage 2 in isolation wo
 off the image entirely. The overlay composes the surrounding stages back in for display, and maps
 your drag back out of them before writing, so the box lands on the picture while the numbers
 written stay the stage's own.
+
+**While you drag, the picture itself is previewed.** The plugin renders the image at the pose
+being dragged — the real frame, not a rectangle standing in for it — **instead of** the frame the
+playhead is parked on, tinted towards the gizmo's colour. Around it, the box being dragged is
+shaded, the *other* end of the move is outlined in its own colour, and thin lines join matching
+corners.
+
+**GHOST** in the toolbar turns it off. It sits on the gizmo's row rather than with the panel
+toggles above, because it is not a panel — it is how the gizmo behaves while being dragged. On a
+straight zoom the outline says most of what there is to say, and the preview is just motion.
+
+That exists because the gizmo shows where the image *will* be while the viewer shows whatever
+frame the playhead sits on — usually the start of the clip. Without it you are moving an outline
+around a picture that will not look like that, with nothing to judge the result against.
+
+It **replaces** the frame rather than sitting over it. Compositing the two meant the picture
+underneath was whatever the playhead happened to be parked on — a second, unrelated copy of the
+object competing with the one being posed. Showing only the dragged pose leaves nothing to
+confuse it with, and the tint is what says "preview" instead.
+
+The preview is a **render**, not an overlay drawing — the overlay can only draw lines, polygons
+and text, so it could never show the picture. It happens inside `RenderPixel`, which is shared by
+the CPU and CUDA paths, so there is no second implementation to keep in step and the parity tests
+cover it.
+
+It is strictly a preview. The parameter that switches it on is hidden, is set only while a gizmo
+drag is in progress, is cleared on pen-up and on every drag-recovery path, and is **not saved with
+the project** — so it cannot survive a reload or leak into an export.
+
+The Base Transform has no opposite end to ghost, being a single resting pose, so it gets the
+shading alone.
 
 The base gizmo is the one exception to the rule below: it follows the playhead, because it marks no place in any move and is most useful sitting on the picture as it looks right now. For a stage, the surrounding stages are sampled at **this stage's own start or end frame** — whichever end
 the gizmo is posing — and never at the playhead. That is what keeps the gizmo still while you
@@ -687,6 +746,17 @@ to adjust either without disturbing the other.
 position and a pressure and nothing else — so Shift has to be tracked from separate key events.
 If Resolve does not deliver those to plugin overlays, Shift simply does nothing and dragging
 behaves exactly as it did before.
+
+### Labels and why they sometimes shorten
+
+`OfxDrawSuite` has **no text-metrics call** — `drawText` is the only text entry point and nothing
+reports a width, so a plugin cannot know how wide its own label is. Overlay buttons therefore
+estimate it and trim anything that would not fit, rather than letting text run outside its box.
+
+Boxes are sized to their labels wherever the layout allows, so trimming stays a fallback. The one
+place it can still bite is the toolbar at extreme zoom-out, where the buttons shrink to keep clear
+of the stage tabs and `CURVE` becomes `CURV`. That is the deliberate trade: a clipped character
+is a better failure than a row of buttons colliding with the tabs.
 
 ### Known limitation
 

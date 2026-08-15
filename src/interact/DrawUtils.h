@@ -82,6 +82,19 @@ struct OverlayContext
     /// the image and takes every click inside itself.
     bool showLibrary = false;
 
+    /// Whether dragging a gizmo previews the picture at the dragged pose.
+    /// Not always wanted: on a pure zoom the preview says little the outline
+    /// does not already say.
+    bool dragPreview  = true;
+
+    // Every panel is independently switchable, so the overlay can be pared back
+    // to just what a given edit needs rather than showing all of its furniture
+    // over the picture at once. A hidden panel is skipped for hit-testing too,
+    // not merely undrawn -- see the widget order in OverlayInteract::penDown.
+    bool showTimeline = true;
+    bool showPath     = false;
+    bool showOpacity  = false;
+
     /// Shift held. OFX's pen actions carry no modifier state at all -- PenArgs
     /// has position and pressure and nothing else -- so this is tracked from
     /// keyDown/keyUp and folded in here rather than read off the drag.
@@ -219,6 +232,13 @@ inline void Polyline(const OverlayContext& c, const OfxPointD* pts, int n)
     if (n >= 2) OFX::Private::gDrawSuite->draw(c.ctx, kOfxDrawPrimitiveLineStrip, pts, n);
 }
 
+/** @brief Filled convex polygon. The only way to shade a *rotated* quad --
+ *  kOfxDrawPrimitiveRectangle takes two corners and is axis-aligned. */
+inline void Polygon(const OverlayContext& c, const OfxPointD* pts, int n)
+{
+    if (n >= 3) OFX::Private::gDrawSuite->draw(c.ctx, kOfxDrawPrimitivePolygon, pts, n);
+}
+
 inline void LineLoop(const OverlayContext& c, const OfxPointD* pts, int n)
 {
     if (n >= 2) OFX::Private::gDrawSuite->draw(c.ctx, kOfxDrawPrimitiveLineLoop, pts, n);
@@ -249,6 +269,37 @@ inline void Handle(const OverlayContext& c, double x, double y,
     FillRect(c, x - hx - c.sx(1), y - hy - c.sy(1), x + hx + c.sx(1), y + hy + c.sy(1));
     SetColour(c, fill);
     FillRect(c, x - hx, y - hy, x + hx, y + hy);
+}
+
+/** @brief Rough on-screen width of a string, in screen pixels.
+ *
+ * An estimate, and it has to be: OfxDrawSuite has no text-metrics call at all.
+ * `drawText` is the only text entry point and nothing reports a width, so the
+ * true size of a label is simply not knowable from a plugin.
+ *
+ * Deliberately a little pessimistic. Erring wide costs at most one trimmed
+ * character; erring narrow puts text back outside its box, which is the bug
+ * this exists to stop.
+ */
+inline double EstimateTextPx(const std::string& text)
+{
+    constexpr double kGlyphAdvancePx = 7.0;
+    return static_cast<double>(text.size()) * kGlyphAdvancePx;
+}
+
+/** @brief Trim @p text until the estimate fits @p maxPx. */
+inline std::string FitLabel(const std::string& text, double maxPx)
+{
+    if (maxPx <= 0.0) return std::string();
+    if (EstimateTextPx(text) <= maxPx) return text;
+
+    constexpr double kGlyphAdvancePx = 7.0;
+    size_t n = static_cast<size_t>(maxPx / kGlyphAdvancePx);
+    if (n >= text.size()) return text;
+
+    // A box too small for even one character shows nothing rather than a stray
+    // glyph hanging over the edge.
+    return n == 0 ? std::string() : text.substr(0, n);
 }
 
 /** @brief Draw a button: filled rect, outline, and a label inside it.
@@ -282,10 +333,20 @@ inline void Button(const OverlayContext& c, const OfxRectD& r, const std::string
 
     SetColour(c, active ? Colour{ 0.05f, 0.06f, 0.08f, 1.0f } : colours::kText);
 
+    // Trimmed to the box before it is drawn. This is the backstop: no caller
+    // can overflow, including ones written later, and a layout that grows a
+    // label or shrinks a box degrades to a clipped word instead of text running
+    // across whatever is beside it.
+    constexpr double kInsetPx = 6.0;
+    const double avail = (r.x2 - r.x1) / (c.pixelScale.x > 1e-9 ? c.pixelScale.x : 1.0)
+                       - kInsetPx * 2.0;
+    const std::string shown = FitLabel(label, avail);
+    if (shown.empty()) return;
+
     // Baseline sits a little below the box's middle, which is where a cap-height
     // glyph looks vertically centred.
-    const OfxPointD p = { r.x1 + c.sx(6.0), (r.y1 + r.y2) * 0.5 - c.sy(4.0) };
-    OFX::Private::gDrawSuite->drawText(c.ctx, label.c_str(), &p,
+    const OfxPointD p = { r.x1 + c.sx(kInsetPx), (r.y1 + r.y2) * 0.5 - c.sy(4.0) };
+    OFX::Private::gDrawSuite->drawText(c.ctx, shown.c_str(), &p,
                                        kOfxDrawTextAlignmentLeft
                                        | kOfxDrawTextAlignmentBaseline);
 }

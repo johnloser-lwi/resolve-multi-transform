@@ -71,6 +71,7 @@ struct Case
     FilterMode  filter;
     EdgeMode    edge;
     BlurParams  blur = BlurParams::Default();
+    bool        ghost = false;   ///< composite the drag preview as well
 };
 
 static void RunCase(const Case& c, int w, int h)
@@ -79,9 +80,22 @@ static void RunCase(const Case& c, int w, int h)
     std::vector<float> cpu(static_cast<size_t>(w) * h * 4, 0.0f);
     std::vector<float> gpu(static_cast<size_t>(w) * h * 4, 0.0f);
 
-    const SampleTransforms st = BuildSampleTransforms(c.anim, c.blur, c.time,
-                                                      static_cast<float>(w),
-                                                      static_cast<float>(h));
+    SampleTransforms st = BuildSampleTransforms(c.anim, c.blur, c.time,
+                                                static_cast<float>(w),
+                                                static_cast<float>(h));
+
+    // The drag preview composites a second, faded copy of the source through
+    // its own inverse. It runs inside RenderPixel, so both paths execute it and
+    // both must agree -- otherwise the preview would look different depending
+    // on whether the viewer happened to be on the GPU.
+    if (c.ghost)
+    {
+        st.hasGhost     = true;
+        st.ghostInv     = Invert(EvaluateTransform(c.anim, c.time + 6.0f,
+                                                   static_cast<float>(w),
+                                                   static_cast<float>(h)));
+        st.ghostOpacity = 0.4f;
+    }
 
     RenderCpu(src, w, h, cpu, st, c.filter, c.edge);
     RunMultiTransformCudaSync(src.data(), w, h, gpu.data(), w, h,
@@ -320,6 +334,19 @@ int main()
         based.base.opacity   = 0.8f;
         cases.push_back({ "base pose under a moving stage", based, 12.0f,
                           kFilterBilinear, kEdgeBlack });
+        // The drag preview, on top of a pose that is itself mid-move: the ghost
+        // is sampled and composited per pixel, so any disagreement between the
+        // two paths would show as a differently-faded copy.
+        Case ghosted{ "drag preview ghost", based, 12.0f, kFilterBilinear, kEdgeBlack };
+        ghosted.ghost = true;
+        cases.push_back(ghosted);
+
+        BlurParams gb = BlurParams::Default();
+        gb.enabled = true; gb.adaptive = false; gb.samples = 8;
+        Case ghostBlur{ "drag preview ghost + motion blur", based, 12.0f,
+                        kFilterBilinear, kEdgeBlack, gb };
+        ghostBlur.ghost = true;
+        cases.push_back(ghostBlur);
     }
 
     for (const Case& c : cases) RunCase(c, W, H);

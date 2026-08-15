@@ -206,6 +206,10 @@ private:
 
     /** Slide a stage so its fastest moment lands on the playhead, keeping its
      *  duration and every other value untouched. */
+    /** Composite a faded copy of the source at the pose being dragged. */
+    void   addPreviewGhost(SampleTransforms& st, const AnimParams& a,
+                           double clipTime, float w, float h) const;
+
     void   syncPeakToPlayhead(int stageIndex, double absoluteTime);
 
     /** Same target, reached by rebalancing Ease In against Ease Out instead of
@@ -236,7 +240,8 @@ private:
 
     /// Read-out of the preference, refreshed from settings.json rather than
     /// stored in the project.
-    OFX::StringParam* _presetFolder = nullptr;
+    OFX::StringParam*  _presetFolder = nullptr;
+    OFX::BooleanParam* _previewGhost = nullptr;
 
     OFX::BooleanParam* _blurEnabled  = nullptr;
     OFX::DoubleParam*  _shutterAngle = nullptr;
@@ -327,6 +332,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _edge       = fetchChoiceParam(kParamEdge);
 
     _presetFolder = fetchStringParam(kParamPresetFolder);
+    _previewGhost = fetchBooleanParam(kParamPreviewGhost);
 
     _baseScale     = fetchDoubleParam  (kParamBaseScale);
     _baseScaleY    = fetchDoubleParam  (kParamBaseScaleY);
@@ -921,6 +927,70 @@ void MultiTransformPlugin::saveCurve(int stage)
     mtx::ProbeLog("curve saved: " + name);
 }
 
+void MultiTransformPlugin::addPreviewGhost(SampleTransforms& st, const AnimParams& a,
+                                           double clipTime, float w, float h) const
+{
+    // Only while a gizmo drag is actually happening. The overlay sets this on
+    // pen-down and clears it on pen-up and on every drag-recovery path, and the
+    // parameter is not persisted, so a project can never be reopened -- or
+    // rendered -- with a ghost still in it.
+    bool wanted = false;
+    _previewGhost->getValue(wanted);
+    if (!wanted) return;
+
+    // The pose the gizmo is dragging, which is the whole point: the viewer is
+    // showing the frame the playhead sits on, so without this there is nothing
+    // on screen that looks like the pose being edited.
+    //
+    // Evaluated at the *same* reference the gizmo uses -- the active stage's own
+    // start or end frame, or the playhead for the base -- so the ghost lands
+    // exactly inside the gizmo's outline rather than near it.
+    int active = 0;
+    _activeStage->getValue(active);
+    if (active < 0) active = 0;
+    if (active >= kMaxStages) active = kMaxStages - 1;
+
+    int target = 1;
+    fetchChoiceParam(kParamEditTarget)->getValue(target);
+
+    float refTime = static_cast<float>(clipTime);          // 2 == the base pose
+    if (target != 2)
+    {
+        const Stage& s = a.stages[active];
+        refTime = ClipTimeFromStageFrame(a, s, target == 1 ? s.endFrame : s.startFrame);
+    }
+
+    const Mat3 fwd = EvaluateTransform(a, refTime, w, h);
+
+    // A collapsed pose has no inverse worth sampling through, and Invert falls
+    // back to the identity -- which would slap a full-size ghost over the frame.
+    // Same trap the edge-on swivel set in BuildSampleTransforms.
+    const float area   = w * h;
+    const float minDet = area > 1.0f ? 1.0f / area : 1e-6f;
+    const float det    = fwd.Determinant();
+    if (det > -minDet && det < minDet) return;
+
+    st.hasGhost     = true;
+    st.ghostInv     = Invert(fwd);
+    st.ghostOpacity = 0.9f;
+
+    // Tinted towards the gizmo's own colour, so which end is being posed reads
+    // from the picture as well as from the outline -- and so the preview is
+    // never mistaken for the finished frame. Mixed halfway rather than applied
+    // straight: a full multiply drowns the image, and the point is to see the
+    // picture with a cast over it. Values mirror colours::kGizmo / kGizmoTo /
+    // kStage[3] in the overlay, which cannot be included here.
+    const float kFrom[3] = { 0.20f, 0.85f, 1.00f };   // cyan
+    const float kTo  [3] = { 1.00f, 0.55f, 0.20f };   // orange
+    const float kBase[3] = { 0.85f, 0.55f, 1.00f };   // violet
+
+    const float* hue = (target == 2) ? kBase : (target == 1 ? kTo : kFrom);
+
+    constexpr float kMix = 0.5f;
+    for (int ch = 0; ch < 3; ++ch)
+        st.ghostTint[ch] = 1.0f + (hue[ch] - 1.0f) * kMix;
+}
+
 void MultiTransformPlugin::syncPeakToPlayhead(int stageIndex, double absoluteTime)
 {
     StageParamHandles& h = _stage[stageIndex];
@@ -1021,40 +1091,20 @@ void MultiTransformPlugin::syncPeakByEasing(int stageIndex, double absoluteTime)
                                       static_cast<float>(h.bounceDamping->getValue()),
                                       static_cast<float>(h.bounceStart->getValue()));
 
+    // Both amounts are free to go anywhere, including changing how much easing
+    // there is overall. Matching the playhead is the only thing this button is
+    // for, so it is not held back by preserving the curve's original softness --
+    // and a linear stage is reshaped rather than refused, since "no easing yet"
+    // is a starting point and not an obstacle.
     float easeIn = 0.0f, easeOut = 0.0f, achieved = 0.0f;
-    if (!SolvePeakBalance(current, static_cast<float>(target), easeIn, easeOut, achieved))
-    {
-        sendMessage(OFX::Message::eMessageError, "",
-                    "This stage has no easing to redistribute -- a linear move accelerates "
-                    "nowhere in particular.\n\nRaise Ease In or Ease Out first, then press "
-                    "this again.");
-        return;
-    }
+    SolvePeakEasing(current, static_cast<float>(target), easeIn, easeOut, achieved);
 
-    {
-        // No _syncingEasing guard needed: writing these is exactly the case
-        // markEasingCustom exists for, and flipping the dropdown to Custom is
-        // the correct consequence of hand-shaping the curve.
-        mtx::EditBlock block(this, "Sync Acceleration by Easing");
-        h.easeIn->setValue(easeIn);
-        h.easeOut->setValue(easeOut);
-    }
-
-    // A curve with only a little easing to move around cannot put its peak just
-    // anywhere, so say when the result is not actually on the playhead rather
-    // than leaving it looking like the button half worked.
-    const double landedFrames = std::fabs(static_cast<double>(achieved) - target) * std::fabs(span);
-    if (landedFrames > 1.0)
-    {
-        char buf[320];
-        std::snprintf(buf, sizeof(buf),
-                      "Moved the acceleration as far as this curve allows -- it landed about "
-                      "%.0f frame(s) from the playhead.\n\nEase In and Ease Out keep their "
-                      "combined total, so there is only so far the peak can travel. Raise them "
-                      "both and press again, or use Sync Acceleration to Playhead to move the "
-                      "stage instead.", landedFrames);
-        sendMessage(OFX::Message::eMessageWarning, "", buf);
-    }
+    // No _syncingEasing guard needed: writing these is exactly the case
+    // markEasingCustom exists for, and flipping the dropdown to Custom is the
+    // correct consequence of hand-shaping the curve.
+    mtx::EditBlock block(this, "Sync Acceleration by Easing");
+    h.easeIn->setValue(easeIn);
+    h.easeOut->setValue(easeOut);
 }
 
 void MultiTransformPlugin::transferEnds(int stage, int mode)
@@ -1781,11 +1831,14 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         // changes.
         const double clipTime = mtx::ToClipTime(this, p_Args.time);
 
-        st = BuildSampleTransforms(fetchAnimParams(p_Args.time),
-                                   fetchBlurParams(p_Args.time),
-                                   static_cast<float>(clipTime),
-                                   static_cast<float>(sb.x2 - sb.x1),
-                                   static_cast<float>(sb.y2 - sb.y1));
+        const AnimParams anim = fetchAnimParams(p_Args.time);
+        const float      w    = static_cast<float>(sb.x2 - sb.x1);
+        const float      h    = static_cast<float>(sb.y2 - sb.y1);
+
+        st = BuildSampleTransforms(anim, fetchBlurParams(p_Args.time),
+                                   static_cast<float>(clipTime), w, h);
+
+        addPreviewGhost(st, anim, clipTime, w, h);
     }
 
     TransformProcessor processor(*this);
@@ -2419,9 +2472,60 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                        "sits over something you are trying to drag -- it covers the top-right "
                        "of the image and takes clicks before the motion path does. Also "
                        "toggled by the CURVE button in the overlay.");
-    showCurve->setDefault(true);
+    // Off by default now: the overlay opens as gizmo + timeline + toolbar, and
+    // every other panel is switched on when it is wanted.
+    showCurve->setDefault(false);
     showCurve->setParent(*gOverlay);
     page->addChild(*showCurve);
+
+    // Each panel switches independently, so the overlay can be pared back to
+    // what a given edit actually needs. All five have a button in the overlay's
+    // upper toolbar row; they are here so the state is visible and saved with
+    // the project.
+    BooleanParamDescriptor* dragPreview = p_Desc.defineBooleanParam(kParamDragPreview);
+    dragPreview->setLabels("Preview While Dragging", "Drag Preview", "Preview While Dragging");
+    dragPreview->setHint("While a gizmo is being dragged, show the picture at the pose being "
+                         "dragged instead of the frame under the playhead, tinted towards the "
+                         "gizmo's colour. Turn it off for moves where it says little -- a "
+                         "straight zoom, say, where the outline already tells you enough. Also "
+                         "toggled by the GHOST button in the overlay.");
+    dragPreview->setDefault(true);
+    dragPreview->setParent(*gOverlay);
+    page->addChild(*dragPreview);
+
+    // Momentary drag state, not a setting: hidden, and never written to the
+    // project so a ghost cannot reappear on reload or leak into a render.
+    BooleanParamDescriptor* ghost = p_Desc.defineBooleanParam(kParamPreviewGhost);
+    ghost->setDefault(false);
+    ghost->setIsSecret(true);
+    ghost->setIsPersistant(false);
+    ghost->setParent(*gOverlay);
+    InvalidatesCache(ghost);
+    page->addChild(*ghost);
+
+    BooleanParamDescriptor* showTimeline = p_Desc.defineBooleanParam(kParamShowTimeline);
+    showTimeline->setLabels("Show Timeline", "Timeline", "Show Timeline");
+    showTimeline->setHint("Draw the stage timing lanes along the bottom of the viewer. Also "
+                          "toggled by the TIME button in the overlay.");
+    showTimeline->setDefault(true);
+    showTimeline->setParent(*gOverlay);
+    page->addChild(*showTimeline);
+
+    BooleanParamDescriptor* showPath = p_Desc.defineBooleanParam(kParamShowPath);
+    showPath->setLabels("Show Motion Path", "Motion Path", "Show Motion Path");
+    showPath->setHint("Draw the route the active stage travels, with handles to bend it. Also "
+                      "toggled by the PATH button in the overlay.");
+    showPath->setDefault(false);
+    showPath->setParent(*gOverlay);
+    page->addChild(*showPath);
+
+    BooleanParamDescriptor* showOpacity = p_Desc.defineBooleanParam(kParamShowOpacity);
+    showOpacity->setLabels("Show Opacity Slider", "Opacity Slider", "Show Opacity Slider");
+    showOpacity->setHint("Draw the opacity slider down the left edge of the viewer. Also toggled "
+                         "by the OPAC button in the overlay.");
+    showOpacity->setDefault(false);
+    showOpacity->setParent(*gOverlay);
+    page->addChild(*showOpacity);
 
     BooleanParamDescriptor* showLib = p_Desc.defineBooleanParam(kParamShowLibrary);
     showLib->setLabels("Show Curve Library", "Curve Library", "Show Curve Library");

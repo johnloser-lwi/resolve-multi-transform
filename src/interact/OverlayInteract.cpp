@@ -15,8 +15,8 @@ constexpr double kTabWidthPx  = 26.0;
 constexpr double kTabHeightPx = 18.0;
 constexpr double kTabGapPx    = 4.0;
 constexpr double kToggleWPx   = 54.0;   // preferred width
-constexpr double kToggleMinPx = 32.0;   // floor before the labels stop reading
-constexpr int    kToggleCount = 6;      // TO FROM BASE CURVE LIB LOAD
+constexpr double kToggleMinPx = 42.0;   // floor: still fits CURVE, the longest label
+constexpr int    kToggleCount = 6;      // widest row: TIME PATH OPAC CURVE LIB LOAD
 } // namespace
 
 MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
@@ -90,6 +90,16 @@ void MultiTransformInteract::closeEditBlock()
     EndEdit(_effect);
 }
 
+void MultiTransformInteract::setPreviewGhost(bool on)
+{
+    // Written unconditionally rather than only on a change. This is the switch
+    // that keeps a preview out of a finished frame, and a redundant write costs
+    // one redraw where a missed clear would leave a ghost sitting in the render.
+    if (!_effect) return;
+    try   { _effect->fetchBooleanParam(kParamPreviewGhost)->setValue(on); }
+    catch (...) {}
+}
+
 void MultiTransformInteract::abandonDrag(const char* why)
 {
     // Recovery for a drag that was started and never finished, because the host
@@ -104,6 +114,7 @@ void MultiTransformInteract::abandonDrag(const char* why)
 
     _captured      = nullptr;
     _editBlockOpen = false;
+    setPreviewGhost(false);
     ForceCloseEdits(_effect);
 }
 
@@ -164,6 +175,10 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.editBase    = (editTarget == 2);
     out.showCurve   = GetBool(_effect, kParamShowCurve, time);
     out.showLibrary = GetBool(_effect, kParamShowLibrary, time);
+    out.dragPreview = GetBool(_effect, kParamDragPreview, time);
+    out.showTimeline= GetBool(_effect, kParamShowTimeline, time);
+    out.showPath    = GetBool(_effect, kParamShowPath, time);
+    out.showOpacity = GetBool(_effect, kParamShowOpacity, time);
     out.shiftHeld   = _shiftHeld;
     out.ctrlHeld    = _ctrlHeld;
 
@@ -283,8 +298,13 @@ double MultiTransformInteract::toggleWidth(const OverlayContext& c) const
     const double scale   = c.pixelScale.x > 1e-9 ? c.pixelScale.x : 1.0;
     const double totalPx = (tl.x2 - tl.x1) / scale;
 
-    // The left group: one tab per stage, then the enable toggle.
-    const double leftPx = static_cast<double>(c.stageCount) * (kTabWidthPx + kTabGapPx);
+    // The left group is a fixed width now: all four tab slots are always drawn
+    // (the unused ones as ghosts), then the remove button, then the enable
+    // toggle. Sizing it from the live stage count would make the right-hand run
+    // resize every time a stage was added, which is exactly the reflow the
+    // fixed slots exist to avoid.
+    const double leftPx = static_cast<double>(kMaxStages) * (kTabWidthPx + kTabGapPx)
+                        + (kTabWidthPx + kTabGapPx * 2.0);
 
     const double avail = totalPx - leftPx - kTabGapPx * (kToggleCount + 2);
     double w = avail / (kToggleCount + 1);          // +1 for the enable toggle
@@ -324,39 +344,78 @@ OfxRectD MultiTransformInteract::baseTargetRect(const OverlayContext& c) const
     return rightButtonRect(c, 2, kToggleWPx);
 }
 
+OfxRectD MultiTransformInteract::dragPreviewRect(const OverlayContext& c) const
+{
+    // On the gizmo's own row rather than with the panel toggles above: this is
+    // not a panel, it is how the gizmo behaves while being dragged.
+    return rightButtonRect(c, 3, kToggleWPx);
+}
+
 OfxRectD MultiTransformInteract::curveToggleRect(const OverlayContext& c) const
 {
-    return rightButtonRect(c, 3, kToggleWPx);
+    return rightButtonRect(c, 2, kToggleWPx, 1);
 }
 
 OfxRectD MultiTransformInteract::libraryToggleRect(const OverlayContext& c) const
 {
-    return rightButtonRect(c, 4, kToggleWPx);
+    return rightButtonRect(c, 1, kToggleWPx, 1);
 }
 
 OfxRectD MultiTransformInteract::loadPresetRect(const OverlayContext& c) const
 {
-    return rightButtonRect(c, 5, kToggleWPx);
+    return rightButtonRect(c, 0, kToggleWPx, 1);
 }
 
-OfxRectD MultiTransformInteract::enableStageRect(const OverlayContext& c) const
+OfxRectD MultiTransformInteract::timelineToggleRect(const OverlayContext& c) const
 {
-    // On the left, immediately after the stage tabs, rather than at the end of
-    // the right-hand run. It belongs with the stage selection, and a sixth
-    // right-hand button would have grown that row into the tabs: the buttons are
-    // a fixed size *on screen* while the timeline is a fraction of the image, so
-    // the further the viewer is zoomed out the more of the row they occupy.
+    return rightButtonRect(c, 5, kToggleWPx, 1);
+}
+
+OfxRectD MultiTransformInteract::pathToggleRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 4, kToggleWPx, 1);
+}
+
+OfxRectD MultiTransformInteract::opacityToggleRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 3, kToggleWPx, 1);
+}
+
+OfxRectD MultiTransformInteract::removeStageRect(const OverlayContext& c) const
+{
+    // Sits after *all four* tab slots, not after the ones currently in use.
+    //
+    // Every slot is drawn whatever the stage count is -- the unused ones as
+    // ghosts you click to add a stage -- so the row never reflows. A button that
+    // moved as the count changed would slide out from under the cursor exactly
+    // when it is being clicked repeatedly, which is the one thing it must not do.
     const OfxRectD& tl = _timeline.rect();
     const double g = c.sx(kTabGapPx);
 
     OfxRectD r;
-    r.x1 = tl.x1 + static_cast<double>(c.stageCount) * (c.sx(kTabWidthPx) + g) + g;
-    r.x2 = r.x1 + c.sx(toggleWidth(c));
+    r.x1 = tl.x1 + static_cast<double>(kMaxStages) * (c.sx(kTabWidthPx) + g);
+    r.x2 = r.x1 + c.sx(kTabWidthPx);
     r.y1 = tl.y2 + c.sy(6.0);
     r.y2 = r.y1 + c.sy(kTabHeightPx);
     return r;
 }
 
+OfxRectD MultiTransformInteract::enableStageRect(const OverlayContext& c) const
+{
+    // On the left, after the tabs and the remove button, rather than at the end
+    // of the right-hand run. It belongs with the stage selection, and another
+    // right-hand button would have grown that row into the tabs: the buttons are
+    // a fixed size *on screen* while the timeline is a fraction of the image, so
+    // the further the viewer is zoomed out the more of the row they occupy.
+    const OfxRectD& tl = _timeline.rect();
+
+    OfxRectD r;
+    r.x1 = removeStageRect(c).x2 + c.sx(kTabGapPx) * 2.0;
+    r.x2 = r.x1 + c.sx(toggleWidth(c));
+    r.y1 = tl.y2 + c.sy(6.0);
+    r.y2 = r.y1 + c.sy(kTabHeightPx);
+    return r;
+}
 void MultiTransformInteract::fireTrigger(const char* paramName)
 {
     // Flipping a hidden boolean is the press. Not wrapped in an edit block: the
@@ -371,19 +430,45 @@ void MultiTransformInteract::fireTrigger(const char* paramName)
 
 void MultiTransformInteract::drawToolbar(const OverlayContext& c)
 {
-    for (int i = 0; i < c.stageCount; ++i)
+    // All four slots, always. The ones past the stage count are ghosts: click
+    // one to raise the count to it, which is how stages are added without
+    // going to the Inspector for the Stage Count dropdown.
+    for (int i = 0; i < kMaxStages; ++i)
     {
+        const OfxRectD r = tabRect(c, i);
+
+        if (i >= c.stageCount)
+        {
+            // Hollow, so it reads as a slot waiting to be used rather than as a
+            // stage that happens to be switched off -- which is what a dimmed
+            // solid tab already means.
+            SetColour(c, { 1.0f, 1.0f, 1.0f, 0.05f });
+            FillRect(c, r.x1, r.y1, r.x2, r.y2);
+            SetColour(c, { 1.0f, 1.0f, 1.0f, 0.22f });
+            SetLineWidth(c, 1.0f);
+            StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
+
+            SetColour(c, colours::kTextDim);
+            const OfxPointD tp = { r.x1 + c.sx(6.0), (r.y1 + r.y2) * 0.5 - c.sy(4.0) };
+            OFX::Private::gDrawSuite->drawText(c.ctx, std::to_string(i + 1).c_str(), &tp,
+                                               kOfxDrawTextAlignmentLeft
+                                               | kOfxDrawTextAlignmentBaseline);
+            continue;
+        }
+
+        // A disabled stage reads as dimmed rather than bracketed. Brackets put
+        // three characters in a 26px box, which was one of the labels running
+        // outside its button -- and dimming says the same thing more quietly.
         const bool active = (i == c.activeStage);
+        const bool on     = c.anim.stages[i].enabled;
 
-        // A disabled stage is drawn in brackets, so the tabs say at a glance
-        // which stages are actually contributing without having to click each
-        // one to find out.
-        const std::string label = c.anim.stages[i].enabled
-                                ? std::to_string(i + 1)
-                                : "(" + std::to_string(i + 1) + ")";
-
-        Button(c, tabRect(c, i), label, active, colours::kStage[i % 4]);
+        Button(c, r, std::to_string(i + 1), active && on,
+               on ? colours::kStage[i % 4] : colours::kTextDim);
     }
+
+    // Drops the last stage. Dimmed rather than hidden at one stage, so the row
+    // stays the same shape whatever the count is.
+    Button(c, removeStageRect(c), "-", false, colours::kAccent);
 
     // Enable / disable the active stage. A new stage arrives switched off, and
     // digging into the Timing section to turn it on was a step every single
@@ -404,14 +489,21 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
     // Poses the resting pose instead of a stage end, so the base can be set by
     // dragging on the picture rather than by typing in the Inspector.
     Button(c, baseTargetRect(c), "BASE", c.editBase, colours::kStage[3]);
+    Button(c, dragPreviewRect(c), "GHOST", c.dragPreview, colours::kAccent);
 
-    // Curve editor toggle. Stays visible when the panel is hidden, or there
-    // would be no way to bring it back.
-    Button(c, curveToggleRect(c), "CURVE", c.showCurve, colours::kAccent);
-
-    // Saved-curve picker. Labelled LIB rather than CURVES: one letter apart from
-    // the button beside it was unreadable at a glance.
-    Button(c, libraryToggleRect(c), "LIB", c.showLibrary, colours::kAccent);
+    // Upper row: what is on screen. Every toggle stays visible while its panel
+    // is hidden, or there would be no way to bring it back.
+    //
+    // Split from the row below on purpose. That one is "what am I editing" --
+    // which stage, which end of it -- and this one is "what am I looking at".
+    // Nine buttons in a single run outgrew the timeline they sit above, and
+    // grouping them by kind reads better than sorting them by how often they
+    // are used.
+    Button(c, timelineToggleRect(c), "TIME",  c.showTimeline, colours::kAccent);
+    Button(c, pathToggleRect(c),     "PATH",  c.showPath,     colours::kAccent);
+    Button(c, opacityToggleRect(c),  "OPAC",  c.showOpacity,  colours::kAccent);
+    Button(c, curveToggleRect(c),    "CURVE", c.showCurve,    colours::kAccent);
+    Button(c, libraryToggleRect(c),  "LIB",   c.showLibrary,  colours::kAccent);
 
     // Load a preset. Momentary, so never lit.
     Button(c, loadPresetRect(c), "LOAD", false, colours::kAccent);
@@ -420,14 +512,40 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
 {
     // Each branch brackets its own write. A plugin-initiated paramSetValue that
     // is not inside an edit block leaves the host unaware the value changed.
-    for (int i = 0; i < c.stageCount; ++i)
+    for (int i = 0; i < kMaxStages; ++i)
     {
-        if (Contains(tabRect(c, i), p))
+        if (!Contains(tabRect(c, i), p)) continue;
+
+        if (i < c.stageCount)
         {
             EditBlock block(_effect, "Select Stage");
             _effect->fetchChoiceParam(kParamActiveStage)->setValue(i);
             return true;
         }
+
+        // A ghost slot: raise the count to include it, and select it, since
+        // clicking a slot is unambiguously "I want to work on this one".
+        //
+        // Deliberately not switched on as well. Stage Count and Enabled are
+        // separate gates and enabling changes what renders, so that stays an
+        // explicit press of ON -- which is right beside this.
+        EditBlock block(_effect, "Add Stage");
+        _effect->fetchChoiceParam(kParamStageCount)->setValue(i);   // 0-based: i == i+1 stages
+        _effect->fetchChoiceParam(kParamActiveStage)->setValue(i);
+        return true;
+    }
+
+    if (Contains(removeStageRect(c), p))
+    {
+        if (c.stageCount > 1)
+        {
+            // The dropped stage keeps its values: Stage Count only gates what
+            // renders, so raising the count again brings the work back rather
+            // than handing over a blank stage.
+            EditBlock block(_effect, "Remove Stage");
+            _effect->fetchChoiceParam(kParamStageCount)->setValue(c.stageCount - 2);
+        }
+        return true;
     }
     for (int k = 0; k < 2; ++k)
     {
@@ -473,6 +591,12 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
         _effect->fetchBooleanParam(kParamShowLibrary)->setValue(!c.showLibrary);
         return true;
     }
+    if (Contains(dragPreviewRect(c), p))
+    {
+        EditBlock block(_effect, "Drag Preview");
+        _effect->fetchBooleanParam(kParamDragPreview)->setValue(!c.dragPreview);
+        return true;
+    }
     if (Contains(baseTargetRect(c), p))
     {
         EditBlock block(_effect, "Gizmo Edits");
@@ -485,6 +609,33 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
         _effect->fetchBooleanParam(kParamShowCurve)->setValue(!c.showCurve);
         return true;
     }
+
+    // The remaining panel toggles, all the same shape.
+    struct PanelToggle
+    {
+        OfxRectD (MultiTransformInteract::*rect)(const OverlayContext&) const;
+        const char* param;
+        bool        current;
+        const char* undoName;
+    };
+    const PanelToggle panels[3] = {
+        { &MultiTransformInteract::timelineToggleRect, kParamShowTimeline,
+          c.showTimeline, "Show Timeline" },
+        { &MultiTransformInteract::pathToggleRect,     kParamShowPath,
+          c.showPath,     "Show Motion Path" },
+        { &MultiTransformInteract::opacityToggleRect,  kParamShowOpacity,
+          c.showOpacity,  "Show Opacity Slider" },
+    };
+
+    for (const PanelToggle& t : panels)
+    {
+        if (!Contains((this->*t.rect)(c), p)) continue;
+
+        EditBlock block(_effect, t.undoName);
+        _effect->fetchBooleanParam(t.param)->setValue(!t.current);
+        return true;
+    }
+
     return false;
 }
 
@@ -585,10 +736,10 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         // The path sits over the gizmo: its handles are small and must not be
         // buried under the gizmo's outline.
         _gizmo.draw(c);
-        _path.draw(c);
-        _opacity.draw(c);
-        _timeline.draw(c);
-        if (c.showCurve) _curve.draw(c);
+        if (c.showPath)     _path.draw(c);
+        if (c.showOpacity)  _opacity.draw(c);
+        if (c.showTimeline) _timeline.draw(c);
+        if (c.showCurve)    _curve.draw(c);
         drawToolbar(c);
 
         // Last, and therefore on top of everything: it is a modal picker.
@@ -632,9 +783,16 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         // clicks aimed at the motion path handles beneath it.
         // The library is first because it is modal: while it is up it takes
         // every click inside itself, and nothing beneath it should react.
-        Widget* order[6] = { c.showLibrary ? &_library : nullptr,
-                             c.showCurve   ? &_curve   : nullptr,
-                             &_opacity, &_timeline, &_path, &_gizmo };
+        // A hidden panel is skipped entirely rather than merely not drawn.
+        // Leaving one in the order would have it swallow clicks aimed at
+        // whatever is underneath -- which the curve editor did to the motion
+        // path handles once already.
+        Widget* order[6] = { c.showLibrary  ? &_library  : nullptr,
+                             c.showCurve    ? &_curve    : nullptr,
+                             c.showOpacity  ? &_opacity  : nullptr,
+                             c.showTimeline ? &_timeline : nullptr,
+                             c.showPath     ? &_path     : nullptr,
+                             &_gizmo };
         for (Widget* w : order)
         {
             if (!w) continue;
@@ -649,6 +807,13 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
             if (w->penDown(c, p))
             {
                 _captured = w;
+
+                // Ask the renderer for a faded copy of the source at the pose
+                // being dragged. Only for the gizmo: it is the only widget that
+                // poses the image, and the only one where the viewer is showing
+                // a different frame from the one being edited.
+                if (w == &_gizmo && c.dragPreview) setPreviewGhost(true);
+
                 requestRedraw();
                 return true;
             }
@@ -661,6 +826,7 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
     {
         mtx::ProbeOnce("overlay-pendown-failed", "overlay: penDown threw");
         closeEditBlock();
+        setPreviewGhost(false);
         _captured = nullptr;
         return false;
     }
@@ -696,6 +862,7 @@ bool MultiTransformInteract::penMotion(const OFX::PenArgs& args)
         // write a parameter would repeat the failure on every mouse move.
         mtx::ProbeOnce("overlay-penmotion-failed", "overlay: penMotion threw; drag cancelled");
         closeEditBlock();
+        setPreviewGhost(false);
         _captured = nullptr;
     }
     return false;
@@ -718,6 +885,7 @@ bool MultiTransformInteract::penUp(const OFX::PenArgs& args)
         mtx::ProbeOnce("overlay-penup-failed", "overlay: penUp threw");
     }
     _captured = nullptr;
+    setPreviewGhost(false);
 
     // Closing the block is what commits the drag as far as the host is
     // concerned, so it must happen however the drag ended.

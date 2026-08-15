@@ -174,7 +174,8 @@ void LibraryWidget::draw(const OverlayContext& c)
         // Left|Right and Resolve resolves that to a single edge, so a centred
         // label lands about half a word from where it belongs. See Button().
         SetColour(c, colours::kText);
-        Text(c, _entries[i].label, cell.x1 + c.sx(4.0), cell.y1 + c.sy(2.0),
+        const double labelPx = kCellWPx - 8.0;
+        Text(c, FitLabel(_entries[i].label, labelPx), cell.x1 + c.sx(4.0), cell.y1 + c.sy(2.0),
              kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBottom);
     }
 }

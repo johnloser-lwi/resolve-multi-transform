@@ -66,6 +66,21 @@ struct SampleTransforms
 {
     int   count;
     Mat3  inv[kMaxBlurSamples];
+
+    /// The source drawn at the pose currently being dragged, tinted, and shown
+    /// *instead of* the frame rather than over it -- the real frame is whatever
+    /// the playhead is parked on, which is a second unrelated copy of the object
+    /// competing with the one being posed.
+    ///
+    /// Off for every ordinary render: the plugin only switches it on while a
+    /// gizmo drag is in progress, and the parameter driving it is not saved with
+    /// the project, so it cannot survive into an export.
+    bool  hasGhost;
+    Mat3  ghostInv;
+    float ghostOpacity;
+    /// Per-channel multiplier pulling the preview towards the gizmo's colour,
+    /// precomputed so the pixel loop stays one multiply per channel.
+    float ghostTint[3];
     /// Opacity per shutter sample. Held alongside the matrices because a fade
     /// that happens mid-shutter must blur along with the movement, rather than
     /// snapping to whatever the value is at frame centre.
@@ -136,6 +151,14 @@ inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurPar
                                               float t, float width, float height)
 {
     SampleTransforms st;
+
+    // Off unless a caller deliberately turns it on afterwards. Left to the
+    // plugin rather than decided here, because whether a drag is in progress is
+    // interface state and has nothing to do with motion blur.
+    st.hasGhost     = false;
+    st.ghostInv     = Mat3::Identity();
+    st.ghostOpacity = 0.0f;
+    st.ghostTint[0] = st.ghostTint[1] = st.ghostTint[2] = 1.0f;
 
     // Disabled, or a closed shutter, must collapse to exactly the un-blurred
     // path -- not "one sample that happens to be close".

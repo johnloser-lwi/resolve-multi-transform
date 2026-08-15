@@ -16,6 +16,19 @@ constexpr const char* kParamActiveStage    = "activeStage";   ///< which stage t
 constexpr const char* kParamEditTarget     = "editTarget";    ///< 0 = From, 1 = To
 constexpr const char* kParamShowCurve      = "showCurveEditor";
 constexpr const char* kParamShowLibrary    = "showCurveLibrary";
+constexpr const char* kParamShowTimeline   = "showTimeline";
+constexpr const char* kParamShowPath       = "showMotionPath";
+constexpr const char* kParamShowOpacity    = "showOpacitySlider";
+
+/// Set while a gizmo drag is in progress, so the renderer draws a faded copy of
+/// the source at the pose being dragged. Hidden and **not persistent**: it is a
+/// momentary interface state, and one that must never survive into a project
+/// file or an export.
+constexpr const char* kParamPreviewGhost   = "previewGhost";
+
+/// Whether the drag preview happens at all. A real setting, saved with the
+/// project, unlike the momentary flag above.
+constexpr const char* kParamDragPreview    = "dragPreviewEnabled";
 
 // Note: there is deliberately no timing-version parameter. An earlier design
 // gated the absolute-to-clip-relative conversion on one, which failed badly --

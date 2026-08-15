@@ -54,9 +54,14 @@ private:
                              int row = 0) const;
     OfxRectD fromToRect(const OverlayContext& c, bool toButton) const;
     OfxRectD baseTargetRect(const OverlayContext& c) const;
+    OfxRectD dragPreviewRect(const OverlayContext& c) const;
     OfxRectD curveToggleRect(const OverlayContext& c) const;
     OfxRectD libraryToggleRect(const OverlayContext& c) const;
     OfxRectD loadPresetRect(const OverlayContext& c) const;
+    OfxRectD timelineToggleRect(const OverlayContext& c) const;
+    OfxRectD pathToggleRect(const OverlayContext& c) const;
+    OfxRectD opacityToggleRect(const OverlayContext& c) const;
+    OfxRectD removeStageRect(const OverlayContext& c) const;
     OfxRectD enableStageRect(const OverlayContext& c) const;
 
     /** Flip a hidden trigger parameter, which changedParam reads as a press. */
@@ -91,6 +96,9 @@ private:
     /** Recover from a drag whose mouse-up never arrived: drop the capture and
      *  force every open edit block shut. Safe to call when nothing is open. */
     void abandonDrag(const char* why);
+
+    /** Ask the renderer to composite a faded copy at the dragged pose. */
+    void setPreviewGhost(bool on);
 };
 
 /** @brief Descriptor that registers the overlay with the effect. */

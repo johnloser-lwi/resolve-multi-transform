@@ -139,6 +139,31 @@ MTX_HD inline void RenderPixel(const ImageView& src, const SampleTransforms& st,
     // premultiplied RGBA, where fading means scaling the premultiplied colour
     // as well as the alpha. Touching alpha alone would leave the colour too
     // bright and the fade would look wrong over anything but black.
+    if (st.hasGhost)
+    {
+        // The drag preview *replaces* the frame rather than sitting over it.
+        //
+        // Compositing it over the real render meant the picture underneath was
+        // whatever frame the playhead happened to be parked on -- a second,
+        // unrelated copy of the object competing for attention with the one
+        // being dragged. Showing only the dragged pose leaves nothing to
+        // mistake it for.
+        //
+        // Tinted towards the gizmo's own colour so it stays obviously a
+        // preview and not the finished frame. The multiplier is precomputed by
+        // the caller, so this stays one multiply per channel.
+        float gx, gy;
+        st.ghostInv.Apply(dx, dy, gx, gy);
+        SampleImage(src, gx, gy, filter, edge, out);
+
+        const float a = st.ghostOpacity;
+        out[0] *= st.ghostTint[0] * a;
+        out[1] *= st.ghostTint[1] * a;
+        out[2] *= st.ghostTint[2] * a;
+        out[3] *= a;
+        return;
+    }
+
     if (st.count <= 1)
     {
         float sx, sy;
@@ -147,27 +172,29 @@ MTX_HD inline void RenderPixel(const ImageView& src, const SampleTransforms& st,
 
         const float o = st.opacity[0];
         out[0] *= o; out[1] *= o; out[2] *= o; out[3] *= o;
-        return;
     }
-
-    float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    for (int k = 0; k < st.count; ++k)
+    else
     {
-        float sx, sy;
-        st.inv[k].Apply(dx, dy, sx, sy);
+        float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for (int k = 0; k < st.count; ++k)
+        {
+            float sx, sy;
+            st.inv[k].Apply(dx, dy, sx, sy);
 
-        float s[4];
-        SampleImage(src, sx, sy, filter, edge, s);
+            float s[4];
+            SampleImage(src, sx, sy, filter, edge, s);
 
-        const float o = st.opacity[k];
-        acc[0] += s[0] * o; acc[1] += s[1] * o; acc[2] += s[2] * o; acc[3] += s[3] * o;
+            const float o = st.opacity[k];
+            acc[0] += s[0] * o; acc[1] += s[1] * o; acc[2] += s[2] * o; acc[3] += s[3] * o;
+        }
+
+        const float inv = 1.0f / static_cast<float>(st.count);
+        out[0] = acc[0] * inv;
+        out[1] = acc[1] * inv;
+        out[2] = acc[2] * inv;
+        out[3] = acc[3] * inv;
     }
 
-    const float inv = 1.0f / static_cast<float>(st.count);
-    out[0] = acc[0] * inv;
-    out[1] = acc[1] * inv;
-    out[2] = acc[2] * inv;
-    out[3] = acc[3] * inv;
 }
 
 } // namespace mtx

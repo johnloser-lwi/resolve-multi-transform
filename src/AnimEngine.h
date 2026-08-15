@@ -897,69 +897,101 @@ inline float PeakVelocityProgress(const Easing& e)
  * The companion to sliding a stage: same goal, but the stage stays exactly
  * where it is and the *curve* moves instead.
  *
- * The total amount of easing is preserved and only its **balance** is changed.
- * Ease In and Ease Out are what decide where the peak sits -- weight the curve
- * towards Ease In and it accelerates late, towards Ease Out and it peaks early
- * -- so redistributing between them moves the peak while leaving the curve
- * about as soft as it was. Anticipation, overshoot and any bounce are untouched,
- * which matters because those are the parts that give a move its character.
+ * **Hitting the target is the only objective.** Ease In and Ease Out are both
+ * free to go anywhere in 0..100, including changing how much easing there is
+ * overall -- the whole point of pressing this is that the acceleration should
+ * land on the playhead, and a curve that stayed politely as soft as it was but
+ * missed would be no use. Anticipation, overshoot and any bounce are still left
+ * alone: those carry the move's character and none of them decide where the
+ * peak sits.
  *
- * Solved by sampling rather than by bisection. The peak is *usually* monotonic
- * in the balance, but a bounce multiplies an oscillation into the curve and can
- * break that; a search that assumed monotonicity would then converge on the
- * wrong side. Sampling the whole range costs a few thousand evaluations once,
- * on a button press, and cannot be fooled that way.
+ * Among the settings that hit the target -- and there are usually many, since
+ * two amounts are being fitted to one number -- it picks the one **closest to
+ * the curve you already had**. So a curve that only needs nudging is nudged,
+ * and one that needs rebuilding is rebuilt.
  *
- * @param outPeak where the peak actually ended up, which is not always @p target
- *        -- a curve with little easing to redistribute simply cannot reach every
- *        position, and the caller should say so rather than pretend.
- * @return false when there is no easing at all to redistribute.
+ * Searched on a grid rather than solved. The peak is *usually* monotonic in the
+ * balance between the two amounts, but a bounce multiplies an oscillation into
+ * the curve and can break that; anything assuming monotonicity would then
+ * converge confidently on the wrong side. A coarse pass followed by a local
+ * refinement costs a few tens of thousands of evaluations once, on a button
+ * press, and cannot be fooled that way.
+ *
+ * @param outPeak where the peak ended up. Equal to @p target unless the curve
+ *        genuinely cannot reach it -- a heavy bounce pins the peak near its own
+ *        landing point whatever the easing does.
  */
-inline bool SolvePeakBalance(const Easing& current, float target,
-                             float& outEaseInPct, float& outEaseOutPct, float& outPeak)
+inline void SolvePeakEasing(const Easing& current, float target,
+                            float& outEaseInPct, float& outEaseOutPct, float& outPeak)
 {
-    // Recovered from the handles, which is where the two amounts live.
-    const float total = current.x1 * 100.0f + (1.0f - current.x2) * 100.0f;
-    if (total < 1e-3f) return false;      // linear: nothing to move around
+    const float curIn  = current.x1 * 100.0f;
+    const float curOut = (1.0f - current.x2) * 100.0f;
 
-    constexpr int kSteps = 200;
-
-    float bestBalance = 0.5f;
-    float bestErr     = 1e9f;
-    float bestPeak    = 0.5f;
-    bool  any         = false;
-
-    for (int k = 0; k <= kSteps; ++k)
+    const auto peakAt = [&current](float inPct, float outPct)
     {
-        const float b      = static_cast<float>(k) / static_cast<float>(kSteps);
-        const float inPct  = total * b;
-        const float outPct = total * (1.0f - b);
-
-        // Neither amount may exceed its own range, so a heavily eased curve can
-        // only be rebalanced within the band where both ends stay legal.
-        if (inPct > 100.0f || outPct > 100.0f) continue;
-
         Easing e = current;
         e.x1 = inPct * 0.01f;
         e.x2 = 1.0f - outPct * 0.01f;
+        return PeakVelocityProgress(e);
+    };
 
-        const float peak = PeakVelocityProgress(e);
-        const float err  = fabsf(peak - target);
-        if (!any || err < bestErr)
+    // Pass 1: coarse sweep of the whole space, keeping the best error seen.
+    constexpr float kCoarse = 2.5f;
+
+    float bestIn = curIn, bestOut = curOut;
+    float bestErr = 1e9f, bestPeak = 0.5f;
+
+    for (float in = 0.0f; in <= 100.0f; in += kCoarse)
+        for (float out = 0.0f; out <= 100.0f; out += kCoarse)
         {
-            any         = true;
-            bestErr     = err;
-            bestBalance = b;
-            bestPeak    = peak;
+            const float peak = peakAt(in, out);
+            const float err  = fabsf(peak - target);
+            if (err < bestErr) { bestErr = err; bestIn = in; bestOut = out; bestPeak = peak; }
+        }
+
+    // Pass 2: among everything that ties with the best error, prefer the
+    // setting nearest the current one. Two amounts fitted to one number leaves
+    // a whole family of answers, and the least disruptive member of it is the
+    // one worth having.
+    const float tol = bestErr + 0.004f;
+    float bestDist  = 1e9f;
+
+    for (float in = 0.0f; in <= 100.0f; in += kCoarse)
+        for (float out = 0.0f; out <= 100.0f; out += kCoarse)
+        {
+            const float peak = peakAt(in, out);
+            if (fabsf(peak - target) > tol) continue;
+
+            const float dx = in - curIn, dy = out - curOut;
+            const float dist = dx * dx + dy * dy;
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestIn = in; bestOut = out; bestPeak = peak;
+            }
+        }
+
+    // Pass 3: refine locally, so the answer is not quantised to the coarse grid.
+    constexpr float kFine = 0.25f;
+    for (float in = bestIn - kCoarse; in <= bestIn + kCoarse; in += kFine)
+    {
+        if (in < 0.0f || in > 100.0f) continue;
+        for (float out = bestOut - kCoarse; out <= bestOut + kCoarse; out += kFine)
+        {
+            if (out < 0.0f || out > 100.0f) continue;
+
+            const float peak = peakAt(in, out);
+            const float err  = fabsf(peak - target);
+            if (err < fabsf(bestPeak - target))
+            {
+                bestIn = in; bestOut = out; bestPeak = peak;
+            }
         }
     }
 
-    if (!any) return false;
-
-    outEaseInPct  = total * bestBalance;
-    outEaseOutPct = total * (1.0f - bestBalance);
+    outEaseInPct  = bestIn;
+    outEaseOutPct = bestOut;
     outPeak       = bestPeak;
-    return true;
 }
 
 /** @brief Whether a stage actually changes anything between its two ends.

@@ -25,6 +25,11 @@ void GizmoWidget::layout(const OverlayContext& /*c*/) { }
 
 GizmoWidget::Pose GizmoWidget::readPose(const OverlayContext& c) const
 {
+    return readPoseAt(c, c.editTo);
+}
+
+GizmoWidget::Pose GizmoWidget::readPoseAt(const OverlayContext& c, bool to) const
+{
     const int i = c.activeStage;
     const Stage& s = c.anim.stages[i];
 
@@ -47,16 +52,16 @@ GizmoWidget::Pose GizmoWidget::readPose(const OverlayContext& c) const
     }
 
     Pose p;
-    p.scale   = c.editTo ? s.scaleTo  : s.scaleFrom;
-    p.scaleY  = c.editTo ? s.scaleYTo : s.scaleYFrom;
-    p.rot     = c.editTo ? s.rotTo    : s.rotFrom;
-    p.posX    = c.editTo ? s.posXTo   : s.posXFrom;
-    p.posY    = c.editTo ? s.posYTo   : s.posYFrom;
+    p.scale   = to ? s.scaleTo  : s.scaleFrom;
+    p.scaleY  = to ? s.scaleYTo : s.scaleYFrom;
+    p.rot     = to ? s.rotTo    : s.rotFrom;
+    p.posX    = to ? s.posXTo   : s.posXFrom;
+    p.posY    = to ? s.posYTo   : s.posYFrom;
     p.anchorX = s.anchorX;
     p.anchorY = s.anchorY;
     p.linkScale = s.linkScale;
-    p.tiltX     = c.editTo ? s.tiltXTo   : s.tiltXFrom;
-    p.swivelY   = c.editTo ? s.swivelYTo : s.swivelYFrom;
+    p.tiltX     = to ? s.tiltXTo   : s.tiltXFrom;
+    p.swivelY   = to ? s.swivelYTo : s.swivelYFrom;
     return p;
 }
 
@@ -196,7 +201,12 @@ double GizmoWidget::refTime(const OverlayContext& c) const
 /** The transforms surrounding whatever this gizmo is posing. */
 StageContext GizmoWidget::context(const OverlayContext& c) const
 {
-    const float t = static_cast<float>(refTime(c));
+    return contextAt(c, refTime(c));
+}
+
+StageContext GizmoWidget::contextAt(const OverlayContext& c, double when) const
+{
+    const float t = static_cast<float>(when);
     const float w = static_cast<float>(c.rodWidth());
     const float h = static_cast<float>(c.rodHeight());
 
@@ -240,6 +250,66 @@ OfxPointD GizmoWidget::anchorScreen(const OverlayContext& c, const Pose& p) cons
     return { c.rod.x1 + ax, c.rod.y1 + ay };
 }
 
+void GizmoWidget::drawDragPreview(const OverlayContext& c, const OfxPointD* corner) const
+{
+    // Shade the pose being dragged, and outline the other end of the move.
+    //
+    // The problem this solves: the gizmo shows where the image *will* be, but
+    // the viewer is showing whatever frame the playhead is parked on -- usually
+    // the start of the clip. So dragging the TO handle moves an outline around
+    // a picture that is not going to look like that, and there is nothing to
+    // judge the result against.
+    //
+    // A filled quad reads as the object rather than as a wireframe, and the
+    // ghost of the opposite end gives the move something to be measured from.
+    // Only while dragging, so neither is permanent furniture over the picture.
+    const Colour tint = c.editBase ? colours::kStage[3]
+                                   : (c.editTo ? colours::kGizmoTo : colours::kGizmo);
+
+    // Filled, not stroked. kOfxDrawPrimitiveRectangle is axis-aligned and could
+    // not follow a rotated pose; Polygon can.
+    SetColour(c, { tint.r, tint.g, tint.b, 0.16f });
+    Polygon(c, corner, 4);
+
+    // The base has no opposite end -- it is a single resting pose -- so there is
+    // nothing to ghost against it.
+    if (c.editBase) return;
+
+    const Stage& s = c.anim.stages[c.activeStage];
+    const bool   other = !c.editTo;
+
+    const Pose  op   = readPoseAt(c, other);
+    const double ot  = ClipTimeFromStageFrame(c.anim, s, other ? s.endFrame : s.startFrame);
+    const StageContext octx = contextAt(c, ot);
+    const Mat3  om   = octx.outer * poseMatrix(c, op) * octx.inner;
+
+    const double W = c.rodWidth();
+    const double H = c.rodHeight();
+    const double cxs[4] = { 0.0, W,   W,   0.0 };
+    const double cys[4] = { 0.0, 0.0, H,   H   };
+
+    OfxPointD ghost[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        float ox, oy;
+        om.Apply(static_cast<float>(cxs[i]), static_cast<float>(cys[i]), ox, oy);
+        ghost[i].x = c.rod.x1 + ox;
+        ghost[i].y = c.rod.y1 + oy;
+    }
+
+    // The other end in its own colour, so which is which is never in doubt.
+    const Colour otherTint = other ? colours::kGizmoTo : colours::kGizmo;
+    SetColour(c, { otherTint.r, otherTint.g, otherTint.b, 0.55f });
+    SetLineWidth(c, 1.0f);
+    LineLoop(c, ghost, 4);
+
+    // Corner to corner, so the direction and amount of the move read at a
+    // glance rather than having to compare two outlines by eye.
+    SetColour(c, { 1.0f, 1.0f, 1.0f, 0.22f });
+    for (int i = 0; i < 4; ++i)
+        Line(c, ghost[i].x, ghost[i].y, corner[i].x, corner[i].y);
+}
+
 void GizmoWidget::draw(const OverlayContext& c)
 {
     const Pose pose = readPose(c);
@@ -264,6 +334,9 @@ void GizmoWidget::draw(const OverlayContext& c)
     // glance that a drag is moving the resting pose and not a keyframe.
     const Colour tint = c.editBase ? colours::kStage[3]
                                    : (c.editTo ? colours::kGizmoTo : colours::kGizmo);
+
+    // Under the outline, so the shading never obscures the edge being dragged.
+    if (dragging()) drawDragPreview(c, corner);
 
     SetColour(c, { 0.0f, 0.0f, 0.0f, 0.55f });
     SetLineWidth(c, 3.0f);

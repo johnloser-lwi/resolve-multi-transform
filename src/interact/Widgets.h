@@ -273,6 +273,10 @@ private:
     };
 
     Pose readPose(const OverlayContext& c) const;
+
+    /// Either end of the active stage, regardless of which one is being posed.
+    /// The drag preview needs the *other* one.
+    Pose readPoseAt(const OverlayContext& c, bool to) const;
     void writePose(const OverlayContext& c, const Pose& p) const;
 
     /// The stage's own matrix, in the space the stage's numbers are written in.
@@ -290,6 +294,11 @@ private:
     /// The transforms surrounding whatever this gizmo is posing -- a stage, or
     /// the base, which sits underneath every stage.
     StageContext context(const OverlayContext& c) const;
+    StageContext contextAt(const OverlayContext& c, double when) const;
+
+    /** While a drag is in progress, shade the pose being dragged and outline the
+     *  other end, so the move is visible even when the playhead is elsewhere. */
+    void drawDragPreview(const OverlayContext& c, const OfxPointD* corner) const;
 
     /// The same pose composed with the surrounding stages, which is where the
     /// image actually is. Everything drawn and hit-tested uses this.

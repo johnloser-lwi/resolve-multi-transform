@@ -1138,76 +1138,76 @@ static void TestSyncPeakShift()
           "Ease In peaks late, so the stage lands mostly before it");
 }
 
-static void TestSolvePeakBalance()
+static void TestSolvePeakEasing()
 {
-    std::printf("Rebalancing the easing moves the peak without changing how much easing there is\n");
+    std::printf("Reshaping the easing puts the peak on target, whatever it costs\n");
 
-    const Easing smooth = Easing::Smooth();       // 42 / 42, total 84
+    const Easing smooth = Easing::Smooth();       // 42 / 42
 
-    // The peak can be placed across a wide span, and the total easing survives
-    // every one of them -- that is the promise the button makes.
-    const float targets[5] = { 0.15f, 0.3f, 0.5f, 0.7f, 0.85f };
+    // Hitting the target is the only objective, so the tolerance here is tight.
+    // The old solver preserved the curve's total easing and could miss by a lot;
+    // this one may spend as much easing as it needs.
+    const float targets[7] = { 0.1f, 0.2f, 0.35f, 0.5f, 0.65f, 0.8f, 0.9f };
     for (float target : targets)
     {
         float easeIn = 0.0f, easeOut = 0.0f, peak = 0.0f;
-        Check(SolvePeakBalance(smooth, target, easeIn, easeOut, peak),
-              "a curve with easing can be rebalanced");
+        SolvePeakEasing(smooth, target, easeIn, easeOut, peak);
 
-        CheckNear(easeIn + easeOut, 84.0f, 0.5f,
-                  "the combined easing is preserved, so the move stays as soft as it was");
+        Check(easeIn  >= 0.0f && easeIn  <= 100.0f, "Ease In stays in range");
+        Check(easeOut >= 0.0f && easeOut <= 100.0f, "Ease Out stays in range");
 
-        // Verify against the real evaluator rather than trusting the returned
-        // value: rebuild the curve the way the plugin will and re-measure it.
+        // Verified against the real evaluator rather than the solver's own
+        // answer: rebuilt the way the plugin will build it, then re-measured.
         const Easing rebuilt = MakeEasing(easeIn, easeOut, 0.0f, 0.0f);
         CheckNear(PeakVelocityProgress(rebuilt), peak, 1e-3f,
                   "the reported peak is what the rebuilt curve actually does");
-        Check(std::fabs(PeakVelocityProgress(rebuilt) - target) < 0.1f,
-              "and it lands close to the requested position");
+        Check(std::fabs(PeakVelocityProgress(rebuilt) - target) < 0.05f,
+              "and it lands on the requested position");
     }
 
-    // The direction has to be right, or the button would move the peak the wrong
-    // way and still report success: weighting towards Ease In delays the
-    // acceleration, towards Ease Out brings it forward.
+    // A linear stage is reshaped, not refused. Under the old rule it had no
+    // easing to redistribute and was rejected; "no easing yet" is a starting
+    // point, not an obstacle.
+    float li = 0.0f, lo = 0.0f, lp = 0.0f;
+    SolvePeakEasing(Easing::Linear(), 0.75f, li, lo, lp);
+    Check(li + lo > 1.0f, "a linear curve is given easing rather than turned away");
+    Check(std::fabs(lp - 0.75f) < 0.05f, "and its peak lands on target");
+
+    // Among the many settings that hit the target -- two amounts fitted to one
+    // number -- the one nearest the current curve wins, so a curve needing only
+    // a nudge gets nudged.
+    const float already = PeakVelocityProgress(smooth);
+    float ni = 0.0f, no = 0.0f, np = 0.0f;
+    SolvePeakEasing(smooth, already, ni, no, np);
+    Check(std::fabs(ni - 42.0f) < 6.0f && std::fabs(no - 42.0f) < 6.0f,
+          "a curve already on target barely moves");
+
+    // Direction still has to be right, or the button could move the peak the
+    // wrong way and still report a hit.
     float lateIn = 0.0f, lateOut = 0.0f, latePeak = 0.0f;
     float earlyIn = 0.0f, earlyOut = 0.0f, earlyPeak = 0.0f;
-    SolvePeakBalance(smooth, 0.85f, lateIn,  lateOut,  latePeak);
-    SolvePeakBalance(smooth, 0.15f, earlyIn, earlyOut, earlyPeak);
+    SolvePeakEasing(smooth, 0.85f, lateIn,  lateOut,  latePeak);
+    SolvePeakEasing(smooth, 0.15f, earlyIn, earlyOut, earlyPeak);
 
-    Check(lateIn > earlyIn,   "a later peak takes more Ease In");
-    Check(earlyOut > lateOut, "an earlier peak takes more Ease Out");
-    Check(latePeak > earlyPeak, "and the peaks really do end up in that order");
+    Check(lateIn > earlyIn,     "a later peak takes more Ease In");
+    Check(earlyOut > lateOut,   "an earlier peak takes more Ease Out");
+    Check(latePeak > earlyPeak, "and the peaks end up in that order");
 
-    // Linear has no easing to redistribute, and must be refused rather than
-    // silently producing a curve out of nothing.
-    float a = 0.0f, b = 0.0f, c = 0.0f;
-    Check(!SolvePeakBalance(Easing::Linear(), 0.5f, a, b, c),
-          "a linear curve is refused, not invented");
-
-    // A heavily eased curve cannot be pushed all the way to one side, because
-    // neither amount may exceed 100. It must still return the closest legal
-    // answer rather than failing or producing an out-of-range value.
-    Easing heavy = MakeEasing(90.0f, 90.0f, 0.0f, 0.0f);   // total 180
-    float hIn = 0.0f, hOut = 0.0f, hPeak = 0.0f;
-    Check(SolvePeakBalance(heavy, 0.95f, hIn, hOut, hPeak),
-          "a heavily eased curve still solves");
-    Check(hIn <= 100.0f && hOut <= 100.0f && hIn >= 0.0f && hOut >= 0.0f,
-          "and stays inside the range both amounts are allowed");
-    CheckNear(hIn + hOut, 180.0f, 0.5f, "still preserving the total");
-
-    // Bounce curves are the reason this samples instead of bisecting: the
-    // oscillation can break monotonicity. It only has to return something legal
-    // and self-consistent.
+    // Bounce curves are why this searches a grid instead of converging: the
+    // oscillation can break monotonicity. It only has to stay legal and
+    // self-consistent.
     const Easing bouncy = MakeEasing(30.0f, 30.0f, 0.0f, 0.0f,
                                      kBounceSpring, 50.0f, 3.0f, 45.0f, 60.0f);
-    float bIn = 0.0f, bOut = 0.0f, bPeak = 0.0f;
-    Check(SolvePeakBalance(bouncy, 0.4f, bIn, bOut, bPeak), "a bounce curve solves");
-    CheckNear(bIn + bOut, 60.0f, 0.5f, "preserving its total too");
+    float bi = 0.0f, bo = 0.0f, bp = 0.0f;
+    SolvePeakEasing(bouncy, 0.4f, bi, bo, bp);
+    Check(bi >= 0.0f && bi <= 100.0f && bo >= 0.0f && bo <= 100.0f,
+          "a bounce curve stays in range");
 
     Easing bRebuilt = bouncy;
-    bRebuilt.x1 = bIn * 0.01f;
-    bRebuilt.x2 = 1.0f - bOut * 0.01f;
-    CheckNear(PeakVelocityProgress(bRebuilt), bPeak, 1e-3f,
-              "and the reported peak matches the rebuilt bounce curve");
+    bRebuilt.x1 = bi * 0.01f;
+    bRebuilt.x2 = 1.0f - bo * 0.01f;
+    CheckNear(PeakVelocityProgress(bRebuilt), bp, 1e-3f,
+              "and its reported peak matches the rebuilt curve");
 }
 
 static void TestFlattenReproducesTheTransform()
@@ -2207,7 +2207,7 @@ int main()
     TestEdgeOnRendersNothing();
     TestIsNoOpCoversNewChannels();
     TestSyncPeakShift();
-    TestSolvePeakBalance();
+    TestSolvePeakEasing();
     TestFlattenReproducesTheTransform();
     TestStageContextRebuildsTheWhole();
     TestEndpointsAreExact();
