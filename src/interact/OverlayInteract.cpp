@@ -451,17 +451,24 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
             // Hollow, so it reads as a slot waiting to be used rather than as a
             // stage that happens to be switched off -- which is what a dimmed
             // solid tab already means.
-            SetColour(c, { 1.0f, 1.0f, 1.0f, 0.05f });
+            //
+            // "Hollow" cannot mean a white wash on a transparent ground, which
+            // is what this was: at 5% fill and a 22% stroke it was invisible on
+            // pale footage, the one place on the toolbar with no dark backdrop
+            // of its own. It now sits on the same near-black ground as every
+            // other mark over the picture, and reads as hollow by being darker
+            // and thinner than a real tab rather than by being barely drawn.
+            SetColour(c, colours::kHalo);
             FillRect(c, r.x1, r.y1, r.x2, r.y2);
-            SetColour(c, { 1.0f, 1.0f, 1.0f, 0.22f });
-            SetLineWidth(c, 1.0f);
-            StrokeRect(c, r.x1, r.y1, r.x2, r.y2);
 
-            SetColour(c, colours::kTextDim);
-            const OfxPointD tp = { r.x1 + c.sx(6.0), (r.y1 + r.y2) * 0.5 - c.sy(4.0) };
-            OFX::Private::gDrawSuite->drawText(c.ctx, std::to_string(i + 1).c_str(), &tp,
-                                               kOfxDrawTextAlignmentLeft
-                                               | kOfxDrawTextAlignmentBaseline);
+            const OfxPointD outline[4] = { { r.x1, r.y1 }, { r.x2, r.y1 },
+                                           { r.x2, r.y2 }, { r.x1, r.y2 } };
+            HaloLineLoop(c, outline, 4, { 1.0f, 1.0f, 1.0f, 0.35f }, 1.0);
+
+            HaloText(c, std::to_string(i + 1),
+                     r.x1 + c.sx(6.0), (r.y1 + r.y2) * 0.5 - c.sy(4.0),
+                     colours::kTextDim,
+                     kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBaseline);
             continue;
         }
 
