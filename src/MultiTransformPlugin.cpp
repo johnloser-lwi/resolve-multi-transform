@@ -167,6 +167,17 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args,
                               const std::string& p_ParamName) override;
     virtual void getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences) override;
+
+    // kOfxActionBeginInstanceEdit / EndInstanceEdit -- the host sends these when
+    // the effect's interface is opened and closed, which is exactly what
+    // selecting and deselecting a clip does. Overridden only to time them: if
+    // selection costs anything inside this plugin, it is here, and if these are
+    // silent then the cost is entirely the host's own panel build.
+    virtual void beginEdit() override;
+    virtual void endEdit() override;
+
+    virtual void purgeCaches() override;
+    virtual void syncPrivateData() override;
     virtual void changedClip(const OFX::InstanceChangedArgs& p_Args,
                              const std::string& p_ClipName) override;
 
@@ -472,6 +483,26 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
                 + " identity=" + std::to_string(g_identityCalls.load())
                 + " render="   + std::to_string(g_renderCalls.load())
                 + " clipPref=" + std::to_string(g_clipPrefCalls.load()));
+}
+
+void MultiTransformPlugin::beginEdit()
+{
+    mtx::ProbeLog("beginEdit (interface opened -- clip selected)");
+}
+
+void MultiTransformPlugin::endEdit()
+{
+    mtx::ProbeLog("endEdit (interface closed -- clip deselected)");
+}
+
+void MultiTransformPlugin::purgeCaches()
+{
+    mtx::ProbeLog("purgeCaches");
+}
+
+void MultiTransformPlugin::syncPrivateData()
+{
+    mtx::ProbeLog("syncPrivateData");
 }
 
 MultiTransformPlugin::~MultiTransformPlugin()
