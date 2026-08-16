@@ -377,7 +377,7 @@ void GizmoWidget::draw(const OverlayContext& c)
     // Label: which stage, and which end of it, is being posed.
     HaloText(c, c.editBase ? std::string("BASE TRANSFORM")
                            : std::string("Stage ") + std::to_string(c.activeStage + 1)
-                             + (c.editTo ? "  -  TO" : "  -  FROM"),
+                             + (c.editTo ? "  -  B" : "  -  A"),
              anchorX, anchorY + c.sy(22.0), tint,
              kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentBottom);
 }

@@ -170,9 +170,9 @@ inline const char* QuickActionLabel(int action)
 {
     switch (action)
     {
-        case kQuickCopyFromTo:  return "Copy FROM to TO";
-        case kQuickCopyToFrom:  return "Copy TO to FROM";
-        case kQuickSwapEnds:    return "Swap FROM and TO";
+        case kQuickCopyFromTo:  return "Copy A to B";
+        case kQuickCopyToFrom:  return "Copy B to A";
+        case kQuickSwapEnds:    return "Swap A and B";
         case kQuickCopyStage:   return "Copy Stage";
         case kQuickPasteStage:  return "Paste Stage";
         case kQuickFlatten:     return "Flatten to Stage 1";

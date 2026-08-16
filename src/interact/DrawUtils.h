@@ -88,7 +88,11 @@ struct OverlayContext
     OfxRectD             rod{ 0.0, 0.0, 0.0, 0.0 };   ///< image bounds, canonical
 
     int  activeStage = 0;      ///< which stage the gizmo and curve editor act on
-    bool editTo      = true;   ///< gizmo edits the "To" state rather than "From"
+    /// Gizmo edits the "To" state rather than "From" -- shown as B and A in the
+    /// interface. The internal names stayed as From/To when the labels changed,
+    /// so that saved projects and presets kept working; see the EndSpec table in
+    /// describeInContext.
+    bool editTo      = true;
 
     /// The gizmo poses the Base Transform instead of a stage end. A third
     /// setting of the same Gizmo Edits parameter, so the three are exclusive.

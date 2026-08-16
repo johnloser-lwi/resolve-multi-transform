@@ -86,6 +86,11 @@ A **stage** is a complete transform (scale, position, rotation, anchor) with **i
 and end frame** and its own easing curve. Duration is derived from the two and shown greyed
 out — you never set it directly.
 
+Each stage animates between two poses, **A** (start) and **B** (end). They were called From and
+To until the labels proved awkward to say and to read — "copy from to to" — and lopsided as a
+pair. The rename is **cosmetic only**: parameter names, preset files and project data still say
+`From` and `To` underneath, so nothing saved before the change had to be migrated.
+
 Stages **combine** — they are multiplied together, not chained. Two stages each animating scale
 1.0 → 1.5 produce 2.25x overall, not 1.5x. Because of that, keeping one property per stage is
 usually the clearest way to work.
@@ -110,8 +115,8 @@ Stage Count, Active Stage        ← always visible
 ▸ Viewer Overlay
 ▸ Base Transform
 ▸ Stage 2 — Timing               ← only the active stage's five sections appear
-▸ Stage 2 — From (start)
-▸ Stage 2 — To (end)
+▸ Stage 2 — A (start)
+▸ Stage 2 — B (end)
 ▸ Stage 2 — Motion Path
 ▸ Stage 2 — Easing
 ▸ Presets
@@ -120,7 +125,7 @@ Stage Count, Active Stage        ← always visible
 ```
 
 Reading a pose is still one block top to bottom, rather than picking every other row out of an
-interleaved `Scale From / Scale To / Position From / Position To` list.
+interleaved `A Scale / B Scale / A Position / B Position` list.
 
 An earlier version used plain text headings instead of groups, to avoid a wall of disclosure
 arrows. Two things ended that. The panel roughly tripled as base transforms, presets, motion
@@ -185,10 +190,10 @@ break that — anything assuming monotonicity would then settle confidently on t
 Three of the [Quick Control](#quick-control) actions, because most moves are built by matching one
 end to the other and then changing only what should differ:
 
-- **Copy FROM to TO** — the stage holds still until you change something.
-- **Copy TO to FROM** — handy after posing the end state on screen: copy it back, then pull the
+- **Copy A to B** — the stage holds still until you change something.
+- **Copy B to A** — handy after posing the end state on screen: copy it back, then pull the
   start away from it.
-- **Swap FROM and TO** — reverse the move. Turns a fade-in into a fade-out, an intro into an
+- **Swap A and B** — reverse the move. Turns a fade-in into a fade-out, an intro into an
   outro.
 
 They act on the **active stage**, the one the gizmo and the timeline lane are already editing.
@@ -206,7 +211,7 @@ reversing *what* moves is a separate decision from reversing *how* it accelerate
 
 Above the stages sits a **— BASE TRANSFORM —** section: a static pose with the same channels a
 stage has, but no timing. It answers "this layer just *sits* here, at this size" without
-spending a whole stage on a From that equals its To.
+spending a whole stage on an A that equals its B.
 
 It composes **innermost**, underneath everything the stages do. That ordering matters: set a
 base scale of 50% and a stage that moves by `0.2` still moves by 0.2 of the *frame*, not 0.1.
@@ -267,9 +272,9 @@ Start Frame and End Frame can also be typed, and **Duration** updates automatica
 ### Worked example — a push-in where the scale leads the drift
 
 1. Stage Count `2`.
-2. **Stage 1** — Scale From `1.0`, Scale To `1.15`, Easing *Ease Out*. Park the playhead at the
+2. **Stage 1** — A Scale `1.0`, B Scale `1.15`, Easing *Ease Out*. Park the playhead at the
    start of the move, *Set Start*; move forward 20 frames, *Set End*.
-3. **Stage 2** — Position To `0.04, 0.0`, Easing *Smooth*. Park the playhead 6 frames after
+3. **Stage 2** — B Position `0.04, 0.0`, Easing *Smooth*. Park the playhead 6 frames after
    Stage 1's start, *Set Start*; then 20 frames further, *Set End*.
 
 The scale starts immediately and eases out; the sideways drift starts six frames later and
@@ -289,7 +294,7 @@ Each stage's curve is controlled by four amounts, all of which stay editable at 
 
 ### Motion path
 
-By default a stage moves in a straight line from its From position to its To position. The
+By default a stage moves in a straight line from its A position to its B position. The
 **Motion Path** handles bend that route into a curve.
 
 The practical way to use it is on screen: turn on **Open FX Overlay**, and the trajectory is
@@ -408,7 +413,7 @@ Eight one-shot actions behind a single dropdown and an **Apply** button at the t
 
 | Action | Acts on |
 |---|---|
-| Copy FROM to TO / Copy TO to FROM / Swap FROM and TO | the active stage's two ends |
+| Copy A to B / Copy B to A / Swap A and B | the active stage's two ends |
 | Copy Stage / Paste Stage | the active stage |
 | Flatten to Stage 1 | the whole animation |
 | Copy All Settings / Paste All Settings | the whole effect |
@@ -607,7 +612,7 @@ below:
 
 ```
 TIME  PATH  OPAC  CURVE  LIB               LOAD   ← panels
-[1][2]⟨3⟩⟨4⟩ [-] ON   QUICK GHOST BASE FROM TO    ← stage, target and actions
+[1][2]⟨3⟩⟨4⟩ [-] ON   QUICK GHOST BASE  A  B      ← stage, target and actions
 ```
 
 **QUICK** raises the [Quick Control](#quick-control) panel over the middle of the image: the same
@@ -641,7 +646,7 @@ swallowed clicks was a real bug once, when the curve editor ate the motion path'
 editor act on. A stage that is switched off is dimmed, so the tabs say which stages are actually
 contributing without clicking through them. **ON / OFF**, immediately right
 of the tabs, enables the selected stage — raising Stage Count alone leaves the new stage
-switched off, and this saves opening its Timing section every time. **FROM / TO / BASE** picks what the gizmo poses: either end of the active stage, or the Base Transform, so the resting pose can be dragged on the picture instead of typed in the Inspector. **CURVE** shows or
+switched off, and this saves opening its Timing section every time. **A / B / BASE** picks what the gizmo poses: either end of the active stage, or the Base Transform, so the resting pose can be dragged on the picture instead of typed in the Inspector. **CURVE** shows or
 hides the curve editor panel.
 
 Hide the curve editor when it is sitting over something you want to drag. It occupies the
@@ -652,7 +657,7 @@ with the project.
 
 **Transform gizmo** (on the image) — the outline shows the stage's pose. Drag inside it to
 move, drag a corner to scale, drag the arm above the top edge to rotate, drag the circled
-crosshair to move the anchor point. The gizmo is cyan for FROM and orange for TO.
+crosshair to move the anchor point. The gizmo is cyan for A and orange for B.
 
 The gizmo is drawn **where the image actually is**, not where the stage alone would put it.
 Stages compose, so stage 2's own numbers describe an offset from wherever stage 1 and the base
@@ -694,7 +699,7 @@ shading alone.
 
 The base gizmo is the one exception to the rule below: it follows the playhead, because it marks no place in any move and is most useful sitting on the picture as it looks right now. For a stage, the surrounding stages are sampled at **this stage's own start or end frame** — whichever end
 the gizmo is posing — and never at the playhead. That is what keeps the gizmo still while you
-scrub: it marks a fixed place in the move. It also means the TO gizmo sits exactly on the
+scrub: it marks a fixed place in the move. It also means the B gizmo sits exactly on the
 rendered image at that stage's end frame, without having to park the playhead there.
 
 **Motion path** (on the image) — the route the stage travels, in the stage's lane colour, with
@@ -739,7 +744,7 @@ Everything written by the overlay lands in the ordinary parameters, so the Inspe
 overlay always agree, and every edit is undoable in the normal way.
 
 **Opacity slider** (left edge) — the one animated channel with no other on-screen control.
-It follows the same FROM / TO / BASE target the gizmo is on and takes that target's colour, so
+It follows the same A / B / BASE target the gizmo is on and takes that target's colour, so
 the two always describe the same thing. Click anywhere on the track to jump to a value; the grab
 area is much wider than the drawn track, which is deliberately thin to stay out of the way.
 
@@ -760,7 +765,7 @@ position too.
 | A motion path handle | That half of the route, back to straight |
 | The opacity slider | Full opacity |
 
-Works on FROM, TO and BASE — it resets whichever target the gizmo is on.
+Works on A, B and BASE — it resets whichever target the gizmo is on.
 
 **In Resolve this takes three clicks, not two.** OFX has no double-click action and its pen
 events carry no click count, so the gesture is inferred from the interval and distance between
@@ -829,7 +834,7 @@ Choosing a colour only moves *which* shots the overlay vanishes on.
 Drawing each mark twice sidesteps that, because it stops depending on the background's **colour**
 and starts depending only on its **brightness**. On white footage the black rim carries the shape;
 on black footage the bright core does; on mid greys both edges read. The marks also keep their
-meanings — cyan is still FROM, orange still TO, violet still the base, and the four stage colours
+meanings — cyan is still A, orange still B, violet still the base, and the four stage colours
 still tell the lanes apart — which recolouring everything red would have thrown away.
 
 The rim is 72% black rather than opaque, so the picture is still readable through it instead of

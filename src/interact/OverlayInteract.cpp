@@ -491,7 +491,7 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
     for (int k = 0; k < 2; ++k)
     {
         const bool toButton = (k == 1);
-        Button(c, fromToRect(c, toButton), toButton ? "TO" : "FROM",
+        Button(c, fromToRect(c, toButton), toButton ? "B" : "A",
                toButton == c.editTo, toButton ? colours::kGizmoTo : colours::kGizmo);
     }
 

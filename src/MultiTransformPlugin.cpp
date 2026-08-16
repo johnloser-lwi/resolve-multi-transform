@@ -1228,9 +1228,9 @@ void MultiTransformPlugin::transferEnds(int stage, int mode)
         { h.opacityFrom, h.opacityTo },
     };
 
-    const char* label = (mode == 0) ? "Copy FROM to TO"
-                      : (mode == 1) ? "Copy TO to FROM"
-                                    : "Swap FROM and TO";
+    const char* label = (mode == 0) ? "Copy A to B"
+                      : (mode == 1) ? "Copy B to A"
+                                    : "Swap A and B";
     mtx::EditBlock block(this, label);
 
     for (auto& p : pairs)
@@ -2302,10 +2302,18 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // Split so a pose reads top to bottom in one block, instead of picking every
     // other row out of an interleaved "Scale From / Scale To / Position From..."
     // list.
+    // A and B rather than From and To, throughout the interface.
+    //
+    // Purely a change of wording: every parameter name, struct field and flag
+    // underneath still says From and To, because renaming those would break
+    // every saved project and preset for no gain. "From" and "To" read badly
+    // aloud and in a sentence -- "copy from to to" -- and as a pair of labels
+    // they are lopsided, one three letters and one two. A and B are symmetric,
+    // unambiguous and short enough for a 26px overlay button.
     struct EndSpec { const char* groupName; const char* heading; bool isTo; };
     const EndSpec ends[2] = {
-        { kParamGroupFrom, "From (start)", false },
-        { kParamGroupTo,   "To (end)",     true  }
+        { kParamGroupFrom, "A (start)", false },
+        { kParamGroupTo,   "B (end)",   true  }
     };
 
     for (const EndSpec& end : ends)
@@ -2353,7 +2361,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
 
         DefineDouble(desc, page, g,
                      StageParam(end.isTo ? kParamOpacityTo : kParamOpacityFrom, i), "Opacity",
-                     "Fade level as a percentage. Set From to 0 and To to 100 for a fade in, "
+                     "Fade level as a percentage. Set A to 0 and B to 100 for a fade in, "
                      "or the reverse for a fade out. Opacity animates on this stage's own "
                      "timing and easing, so a fade can be staggered against the movement.",
                      100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
@@ -2568,7 +2576,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     PushButtonParamDescriptor* quickApply = p_Desc.definePushButtonParam(kParamQuickApply);
     quickApply->setLabels("Apply", "Apply", "Apply");
     quickApply->setHint("Run the chosen Quick Control action.\n\n"
-                        "Copy/Swap FROM and TO move poses between the two ends of the active "
+                        "Copy/Swap A and B move poses between the two ends of the active "
                         "stage. Copy/Paste Stage move a whole stage -- pose, timing, easing and "
                         "path -- through a clipboard shared by every instance of this effect. "
                         "Copy/Paste All Settings move the entire effect, which is otherwise "
@@ -2634,9 +2642,9 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     ChoiceParamDescriptor* target = p_Desc.defineChoiceParam(kParamEditTarget);
     target->setLabels("Gizmo Edits", "Gizmo Edits", "Gizmo Edits");
     target->setHint("What the on-screen gizmo poses: the start or the end of the active stage, or "
-                    "the Base Transform. Also set by the FROM / TO / BASE buttons in the overlay.");
-    target->appendOption("From (start)");
-    target->appendOption("To (end)");
+                    "the Base Transform. Also set by the A / B / BASE buttons in the overlay.");
+    target->appendOption("A (start)");
+    target->appendOption("B (end)");
     target->appendOption("Base Transform");
     target->setDefault(1);
     target->setParent(*gOverlay);
