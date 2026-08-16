@@ -22,6 +22,10 @@ std::string CurveFolder();
 std::vector<std::string> ListJsonFiles(const std::string& folder);
 
 
+/** @brief Drop the cached preset folder, so the next PresetFolder() re-reads
+ *  preferences. Call after changing or resetting the configured folder. */
+void InvalidatePresetFolderCache();
+
 /** @brief Where the preset dialogs open.
  *
  *  The folder set in preferences if there is one and it still exists, otherwise

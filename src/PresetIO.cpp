@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -194,9 +195,11 @@ std::string SettingsFilePath()
 
 Settings LoadSettings()
 {
-    // Read on demand rather than cached. The file is a few dozen bytes, this is
-    // only touched when a dialog opens, and reading each time means a change
-    // made in one instance is picked up by the others without a restart.
+    // Read on demand rather than cached, so a change made in one instance is
+    // picked up by the others without a restart. That is affordable because the
+    // hot caller -- PresetFolder, which the effect constructor uses -- caches
+    // the resolved folder itself; everything left here happens when a dialog
+    // opens, where a few dozen bytes off disk is beneath notice.
     Settings s = Settings::Default();
 
     const std::string path = SettingsFilePath();
@@ -277,9 +280,39 @@ bool ChooseFolder(const std::string& current, std::string& outPath)
     return ok;
 }
 
+namespace {
+
+/// Resolved preset folder, cached for the life of the process.
+///
+/// It was recomputed on every call, and one of the callers is the effect
+/// constructor -- which Resolve runs every time a clip is *selected*. That put
+/// a settings-file open, a JSON parse, a directory stat and two CreateDirectory
+/// calls on the path of an ordinary mouse click, to answer a question whose
+/// answer changes only when the user changes it. InvalidatePresetFolderCache()
+/// is called from the two places that can.
+std::mutex      g_folderMutex;
+std::string     g_folderCache;
+bool            g_folderCached = false;
+
+} // namespace
+
+void InvalidatePresetFolderCache()
+{
+    std::lock_guard<std::mutex> lock(g_folderMutex);
+    g_folderCached = false;
+    g_folderCache.clear();
+}
+
 std::string PresetFolder()
 {
+    {
+        std::lock_guard<std::mutex> lock(g_folderMutex);
+        if (g_folderCached) return g_folderCache;
+    }
+
     const Settings s = LoadSettings();
+
+    std::string resolved;
 
     // A configured folder is honoured only while it is actually there. Sending
     // the dialog to a deleted folder or an unplugged drive would look exactly
@@ -288,10 +321,17 @@ std::string PresetFolder()
     {
         const DWORD attr = GetFileAttributesA(s.presetFolder.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
-            return s.presetFolder;
+            resolved = s.presetFolder;
     }
 
-    return DefaultPresetFolder();
+    if (resolved.empty()) resolved = DefaultPresetFolder();
+
+    {
+        std::lock_guard<std::mutex> lock(g_folderMutex);
+        g_folderCache  = resolved;
+        g_folderCached = true;
+    }
+    return resolved;
 }
 
 std::string DefaultPresetFolder()

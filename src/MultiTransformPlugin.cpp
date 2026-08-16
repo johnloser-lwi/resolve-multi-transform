@@ -159,6 +159,7 @@ class MultiTransformPlugin : public OFX::ImageEffect
 {
 public:
     explicit MultiTransformPlugin(OfxImageEffectHandle p_Handle);
+    ~MultiTransformPlugin() override;
 
     virtual void render(const OFX::RenderArguments& p_Args) override;
     virtual bool isIdentity(const OFX::IsIdentityArguments& p_Args,
@@ -224,7 +225,11 @@ private:
     /** Same target, reached by rebalancing Ease In against Ease Out instead of
      *  moving the stage. */
     void   syncPeakByEasing(int stageIndex, double absoluteTime);
-    void updateDuration(int stageIndex);
+    /** @brief Refresh a stage's derived Duration read-out.
+     *  @param editable true in an instance-changed or interact action, where a
+     *         parameter edit block is permitted and needed; false in the
+     *         constructor, which is neither. */
+    void updateDuration(int stageIndex, bool editable = true);
     void applyEasingPreset(int stageIndex);
     void markEasingCustom(int stageIndex);
 
@@ -314,6 +319,11 @@ private:
     /// preset writes the amounts, and writing an amount selects Custom.
     bool _syncingEasing = false;
 
+    /// The stage syncStageVisibility last made visible, or -1 before its first
+    /// pass. Lets that function skip stages whose state cannot have changed --
+    /// see the comment there.
+    int  _visibleStage = -1;
+
     /// Suppresses changedParam while a preset is being written in bulk.
     ///
     /// Applying a preset sets around a hundred parameters, and several of them
@@ -326,9 +336,17 @@ private:
 
 };
 
+/// Live instance count, so the log says whether the host builds one effect per
+/// selection or several. Selecting a clip in Resolve constructs the instance and
+/// deselecting destroys it, which is why this constructor is on the critical
+/// path for something as ordinary as clicking a clip.
+std::atomic<int> g_instances{ 0 };
+
 MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     : OFX::ImageEffect(p_Handle)
 {
+    mtx::ProbeTimer timer("instance-ctor");
+
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
     _srcClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
 
@@ -356,6 +374,8 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _blurSamples  = fetchIntParam    (kParamBlurSamples);
     _blurAdaptive = fetchBooleanParam(kParamBlurAdaptive);
 
+    timer.split("root-params");
+
     for (int i = 0; i < kMaxStages; ++i)
     {
         StageParamHandles& s = _stage[i];
@@ -370,7 +390,6 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.pathC2        = fetchDouble2DParam(StageParam(kParamPathC2,        i));
         s.pathReset     = fetchPushButtonParam(StageParam(kParamPathReset,   i));
         s.enabled       = fetchBooleanParam (StageParam(kParamEnabled,       i));
-        s.timingAnchor  = fetchChoiceParam  (StageParam(kParamAnchor2,       i));
         s.timingAnchor  = fetchChoiceParam  (StageParam(kParamAnchor2,       i));
         s.startFrame    = fetchDoubleParam  (StageParam(kParamStartFrame,    i));
         s.endFrame      = fetchDoubleParam  (StageParam(kParamEndFrame,      i));
@@ -407,6 +426,8 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.bounceStart   = fetchDoubleParam  (StageParam(kParamBounceStart,   i));
     }
 
+    timer.split("stage-params");
+
     mtx::ProbeHostOnce();
 
     // Deliberately not migrating here. At construction the clip is not
@@ -416,18 +437,33 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     // once the clip is attached, which is exactly when its extent is knowable.
 
     syncStageVisibility();
+    timer.split("visibility");
+
     for (int i = 0; i < kMaxStages; ++i)
     {
         // Duration is derived from start/end, never authored, so it is shown
-        // greyed out. Refresh it here so it is right when a saved project is
-        // reopened, not only after the next edit.
+        // greyed out.
         _stage[i].duration->setEnabled(false);
-        updateDuration(i);
+
+        // Refreshed, but *without* an edit block and only when it is actually
+        // wrong -- see updateDuration. Duration is persisted with the project,
+        // so on reopening it is already correct and this writes nothing at all;
+        // it is here for the case where start or end changed behind its back.
+        updateDuration(i, /*editable=*/false);
     }
+    timer.split("duration");
 
     // The folder read-out is not persisted with the project, so it starts blank
     // on every open and has to be filled in from preferences here.
     syncPresetFolderLabel();
+    timer.split("preset-folder");
+
+    timer.note("instances=" + std::to_string(g_instances.fetch_add(1) + 1));
+}
+
+MultiTransformPlugin::~MultiTransformPlugin()
+{
+    g_instances.fetch_sub(1);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1477,6 +1513,20 @@ void MultiTransformPlugin::syncStageVisibility()
         const bool hidden = (i != active);
         StageParamHandles& s = _stage[i];
 
+        // A stage that was already hidden and stays hidden is skipped outright.
+        //
+        // Each pass below is roughly forty setIsSecret calls, every one a round
+        // trip into the host, and this function runs whenever the link toggle,
+        // the bounce type, the timing anchor or the active stage changes. For a
+        // hidden stage every combined rule collapses to "hidden" regardless of
+        // what those values are, and its labels are not on screen to be read, so
+        // there is nothing a repeat pass could put right.
+        //
+        // _visibleStage is -1 until the first pass has run, which forces that
+        // one to cover all four -- the host's starting state comes from the
+        // descriptors, not from anything recorded here.
+        if (hidden && _visibleStage >= 0 && i != _visibleStage) continue;
+
         // The group headers as well as their contents. Hiding only the contents
         // would leave four empty section headers per inactive stage, which is
         // worse than the flat list this replaced.
@@ -1556,6 +1606,8 @@ void MultiTransformPlugin::syncStageVisibility()
         s.endFrame->setLabel  (pct ? "End (% of clip)"    : "End Frame");
         s.duration->setLabel  (pct ? "Duration (% of clip)" : "Duration (frames)");
     }
+
+    _visibleStage = active;
 }
 
 void MultiTransformPlugin::applyEasingPreset(int stageIndex)
@@ -1623,13 +1675,37 @@ double MultiTransformPlugin::playheadInStageFrames(int stageIndex, double absolu
     return StageLocalTime(a, a.stages[0], static_cast<float>(absoluteTime - clipStart));
 }
 
-void MultiTransformPlugin::updateDuration(int stageIndex)
+void MultiTransformPlugin::updateDuration(int stageIndex, bool editable)
 {
     const double start = _stage[stageIndex].startFrame->getValue();
     const double end   = _stage[stageIndex].endFrame->getValue();
+    const double want  = end - start;
+
+    // Nothing written unless the value is actually wrong.
+    //
+    // This matters far more than it looks. The constructor calls this for all
+    // four stages, and the constructor runs every time a clip is *selected* in
+    // Resolve -- so an unconditional write meant four parameter writes, each
+    // inside its own paramEditBegin/End, on every click. That is four undo
+    // entries the user never asked for, and four host round trips, for a value
+    // that is persisted with the project and therefore already correct.
+    //
+    if (std::fabs(_stage[stageIndex].duration->getValue() - want) < 1e-9) return;
+
+    // The edit block is conditional for the same reason. A plugin write outside
+    // one leaves the host unaware the value changed, so the interactive callers
+    // -- changedParam, the timing migration -- still need it. The constructor
+    // must not open one: the OFX spec restricts edit blocks to instance-changed
+    // and interact actions, and an undo entry created merely by selecting a clip
+    // is wrong however cheap it is.
+    if (!editable)
+    {
+        _stage[stageIndex].duration->setValue(want);
+        return;
+    }
 
     mtx::EditBlock block(this, "Duration");
-    _stage[stageIndex].duration->setValue(end - start);
+    _stage[stageIndex].duration->setValue(want);
 }
 
 void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
@@ -1654,6 +1730,10 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
                         "Could not save the preset folder preference:\n" + error);
             return;
         }
+
+        // The resolved folder is cached for the life of the process, so a
+        // preference that has just changed has to say so.
+        mtx::InvalidatePresetFolderCache();
         syncPresetFolderLabel();
         return;
     }
@@ -1670,6 +1750,10 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
                         "Could not save the preset folder preference:\n" + error);
             return;
         }
+
+        // The resolved folder is cached for the life of the process, so a
+        // preference that has just changed has to say so.
+        mtx::InvalidatePresetFolderCache();
         syncPresetFolderLabel();
         return;
     }

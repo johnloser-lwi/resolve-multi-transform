@@ -29,6 +29,10 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
     // instead of only after the next viewer refresh.
     if (!_effect) return;
 
+    // Timed because this runs when the overlay first appears -- that is, as part
+    // of selecting a clip -- and it is close to a hundred host calls.
+    mtx::ProbeTimer timer("interact-ctor");
+
     // Slaving is an optimisation, not a requirement: if any of it fails the
     // overlay still works, it just redraws less eagerly. Letting an exception
     // escape a constructor here would cost the overlay entirely.
