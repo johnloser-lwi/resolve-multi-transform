@@ -344,6 +344,14 @@ private:
 /// path for something as ordinary as clicking a clip.
 std::atomic<int> g_instances{ 0 };
 
+/// Cumulative host-action counts, reported on each instance-ctor line. The
+/// interesting number is the *difference* between consecutive lines: that says
+/// what the host asked for in the gap between building one instance and the
+/// next, which is where the time in a selection burst actually goes.
+std::atomic<int> g_identityCalls{ 0 };
+std::atomic<int> g_renderCalls{ 0 };
+std::atomic<int> g_clipPrefCalls{ 0 };
+
 MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     : OFX::ImageEffect(p_Handle)
 {
@@ -460,12 +468,20 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     syncPresetFolderLabel();
     timer.split("preset-folder");
 
-    timer.note("instances=" + std::to_string(g_instances.fetch_add(1) + 1));
+    timer.note("instances=" + std::to_string(g_instances.fetch_add(1) + 1)
+                + " identity=" + std::to_string(g_identityCalls.load())
+                + " render="   + std::to_string(g_renderCalls.load())
+                + " clipPref=" + std::to_string(g_clipPrefCalls.load()));
 }
 
 MultiTransformPlugin::~MultiTransformPlugin()
 {
-    g_instances.fetch_sub(1);
+    // Logged as well as counted. If instances are built and never torn down they
+    // accumulate across selections, and every host-side pass over them gets
+    // slower -- which would show up as a lag that worsens the longer Resolve
+    // has been open, rather than a constant one.
+    mtx::ProbeLog("instance destroyed, remaining="
+                  + std::to_string(g_instances.fetch_sub(1) - 1));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -605,6 +621,9 @@ BlurParams MultiTransformPlugin::fetchBlurParams(double p_Time) const
 
 void MultiTransformPlugin::getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences)
 {
+    g_clipPrefCalls.fetch_add(1);
+    mtx::ProbeTimer timer("getClipPreferences");
+
     // Declare that the output changes over time even though no parameter is
     // animated.
     //
@@ -1407,6 +1426,7 @@ void MultiTransformPlugin::changedClip(const OFX::InstanceChangedArgs& /*p_Args*
     // knowable and a legacy absolute timing can be rewritten. This is also an
     // instance-changed action, which is where the OFX spec permits parameter
     // edit blocks -- the constructor is not.
+    mtx::ProbeTimer timer("changedClip");
     migrateTimingIfNeeded();
 }
 
@@ -1943,6 +1963,7 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
 bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
                                       OFX::Clip*& p_IdentityClip, double& p_IdentityTime)
 {
+    g_identityCalls.fetch_add(1);
     if (!_srcClip) return false;
 
     // Answer for the whole clip, not for this frame.
@@ -1966,6 +1987,8 @@ bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
 
 void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
 {
+    g_renderCalls.fetch_add(1);
+
     std::unique_ptr<OFX::Image> dst(_dstClip ? _dstClip->fetchImage(p_Args.time) : nullptr);
     std::unique_ptr<OFX::Image> src(_srcClip ? _srcClip->fetchImage(p_Args.time) : nullptr);
 
@@ -2040,6 +2063,8 @@ MultiTransformPluginFactory::MultiTransformPluginFactory()
 
 void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 {
+    mtx::ProbeTimer timer("describe");
+
     p_Desc.setLabels(kPluginName, kPluginName, kPluginName);
     p_Desc.setPluginGrouping(kPluginGrouping);
     p_Desc.setPluginDescription(kPluginDescription);
@@ -2517,9 +2542,15 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
 
 } // namespace
 
+// Timed because it is the one call that touches all ~198 parameters. The OFX
+// spec has the host describe a context once and reuse it; if this shows up
+// repeatedly in the log then Resolve is re-describing per selection, which
+// would dwarf everything the instance constructor does.
 void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc,
                                                     OFX::ContextEnum /*p_Context*/)
 {
+    mtx::ProbeTimer timer("describeInContext");
+
     ClipDescriptor* srcClip = p_Desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
     srcClip->setTemporalClipAccess(false);
