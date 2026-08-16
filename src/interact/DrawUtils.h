@@ -227,6 +227,19 @@ inline void LockToAxis(double& dx, double& dy)
     else                                dx = 0.0;
 }
 
+/** @brief Round @p v to the nearest multiple of @p step.
+ *
+ * Shift means "coarser" throughout the overlay: 15-degree rotation on the
+ * gizmo, five-frame timing on the timeline. Keeping one implementation means
+ * those behave identically at the boundaries -- rounding to nearest, not
+ * truncating, so a value already on a step does not creep when Shift is pressed
+ * mid-drag. */
+inline double SnapTo(double v, double step)
+{
+    if (step <= 0.0) return v;
+    return std::floor(v / step + 0.5) * step;
+}
+
 // --- Primitive helpers -------------------------------------------------------
 
 inline void SetColour(const OverlayContext& c, const Colour& col)

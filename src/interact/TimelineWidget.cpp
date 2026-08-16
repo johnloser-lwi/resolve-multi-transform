@@ -16,6 +16,15 @@ constexpr double kPadPx         = 8.0;
 constexpr double kEdgeGrabPx    = 7.0;
 constexpr double kSyncWPx       = 78.0;   // fits "SYNC TIME" without trimming
 constexpr double kSyncHPx       = 14.0;
+
+/// The step a Shift-drag moves timing in. Five frames is a useful beat at both
+/// 24 and 30 fps -- roughly a fifth of a second either way -- and small enough
+/// that it is still a nudge rather than a jump.
+constexpr double kCoarseStepFrames = 5.0;
+
+/// Clearance either side of the duration label. Below this the label is dropped
+/// rather than drawn spilling out over the start and end numbers beside it.
+constexpr double kDurationPadPx = 5.0;
 } // namespace
 
 void TimelineWidget::layout(const OverlayContext& c)
@@ -312,6 +321,45 @@ void TimelineWidget::draw(const OverlayContext& c)
              kOfxDrawTextAlignmentRight | kOfxDrawTextAlignmentCenterV);
         Text(c, FrameLabel(s.endFrame), bx2 + c.sx(4.0), (lane.y1 + lane.y2) * 0.5,
              kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentCenterV);
+
+        // Duration, inside the bar.
+        //
+        // It is what you actually reason about when pacing a move -- "twelve
+        // frames" -- and it was the one number the lane made you work out by
+        // subtracting the two it already showed. Signed, because a stage whose
+        // end precedes its start plays backwards and that is worth seeing
+        // rather than hiding behind an absolute value.
+        //
+        // Dropped entirely on a bar too narrow to hold it: over-painting the
+        // start and end numbers either side would cost more than it gives, and
+        // there is no text-metrics call in OfxDrawSuite to fit it properly --
+        // see EstimateTextPx.
+        const double dur   = static_cast<double>(s.endFrame) - s.startFrame;
+        std::string  label = FrameLabel(dur);
+        if (dur > 0.0) label = "+" + label;   // sign both ways, so the two read alike
+
+        const double barPx  = (bx2 - bx1) / (c.pixelScale.x > 1e-9 ? c.pixelScale.x : 1.0);
+        const double textPx = EstimateTextPx(label);
+
+        if (barPx >= textPx + kDurationPadPx * 2.0)
+        {
+            // Centred by hand, with single-bit alignment flags only.
+            //
+            // kOfxDrawTextAlignmentCenterH is defined as Left|Right and CenterV
+            // as Top|Baseline, and Resolve reads those bit patterns as an edge
+            // -- which is what put the toolbar's labels half a word out of their
+            // buttons. Left|Baseline have no such ambiguity, so the position is
+            // computed here and the host is left nothing to interpret. See
+            // Button() in DrawUtils.h.
+            const double tx = (bx1 + bx2) * 0.5 - c.sx(textPx * 0.5);
+            const double ty = (lane.y1 + lane.y2) * 0.5 - c.sy(4.0);
+
+            // Dimmer than the end numbers: those are the values being dragged,
+            // this is derived from them and should not compete for attention.
+            SetColour(c, active ? colours::kText : colours::kTextDim);
+            Text(c, label, tx, ty,
+                 kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBaseline);
+        }
     }
 
     // Playhead last, so it reads on top of the lanes.
@@ -383,22 +431,38 @@ bool TimelineWidget::penMotion(const OverlayContext& c, const OfxPointD& p)
 
     // Snap to whole frames: sub-frame start/end values are meaningless to an
     // editor and make the numbers look broken.
-    const auto snap = [](double v) { return std::floor(v + 0.5); };
+    //
+    // Shift coarsens that to kCoarseStepFrames, matching what Shift already
+    // means on the gizmo's rotation handle. Decided per motion event rather than
+    // latched at pen-down, so pressing or releasing Shift part-way through a
+    // drag takes effect immediately -- the same rule the axis lock follows.
+    //
+    // Under a Stretch anchor the values are percentages rather than frames, so
+    // the step is five percent of the clip. That is the right analogue: it stays
+    // a coarse, round increment in whatever unit the stage is authored in.
+    const double step = c.shiftHeld ? kCoarseStepFrames : 1.0;
 
     if (_drag == kDragStart)
     {
+        // Snapping the resulting value, not the movement, so Shift lands on
+        // round frame numbers -- which is what makes stages line up with each
+        // other, and the reason to want a coarse step on a timing lane at all.
         // Never let start cross end; that would invert the stage.
-        const double v = std::min(snap(_grabStart + delta), _grabEnd);
+        const double v = std::min(SnapTo(_grabStart + delta, step), _grabEnd);
         SetDouble(c.effect, sName, v);
     }
     else if (_drag == kDragEnd)
     {
-        const double v = std::max(snap(_grabEnd + delta), _grabStart);
+        const double v = std::max(SnapTo(_grabEnd + delta, step), _grabStart);
         SetDouble(c.effect, eName, v);
     }
     else if (_drag == kDragWhole)
     {
-        const double shift = snap(delta);
+        // The whole bar snaps its *movement* instead, so a stage keeps whatever
+        // offset it was authored with and simply slides in five-frame jumps.
+        // Snapping both ends to the grid here would silently change the stage's
+        // duration whenever its length was not itself a multiple of the step.
+        const double shift = SnapTo(delta, step);
         SetDouble(c.effect, sName, _grabStart + shift);
         SetDouble(c.effect, eName, _grabEnd   + shift);
     }

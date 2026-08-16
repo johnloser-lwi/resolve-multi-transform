@@ -719,6 +719,13 @@ middle to slide the whole stage without changing its length. Clicking a lane als
 stage. This is where staggering becomes obvious: the offsets between stages are visible as
 offsets between bars.
 
+Each bar carries three numbers: its **start** and **end** frame just outside either edge, and its
+**duration** in the middle, signed (`+12`). Duration is the number you actually think in when
+pacing a move, and it was the one the lane made you work out by subtracting the two it was already
+showing. The sign is there because a stage whose end precedes its start plays backwards — worth
+seeing plainly rather than hiding behind an absolute value. On a bar too narrow to hold it the
+duration is dropped rather than drawn over its neighbours.
+
 **SYNC TIME** and **SYNC EASE** sit in the panel's header and act on the active stage — the same
 two operations as the Inspector's *Sync Acceleration to Playhead* and *Sync Acceleration by
 Easing*. They are here because both are about placing the red peak tick against the playhead, and
@@ -789,6 +796,18 @@ separate channels, not part of the size.
 | Anchor point | Locks to one axis |
 | Motion path handle | Locks to one axis |
 | Curve editor handle | Locks to timing *or* to overshoot, not both |
+| Timeline lane — either end | Snaps to 5-frame steps |
+| Timeline lane — whole bar | Slides in 5-frame steps, keeping its duration |
+
+On the timeline Shift means *coarser* rather than *constrained* — there is no second axis to lock
+— which is the same thing it already means on the rotate handle. Dragging an **end** snaps the
+resulting frame number to a multiple of five, so stages line up with each other and with a beat.
+Dragging the **whole bar** snaps the movement instead, so a stage keeps whatever length it was
+given: snapping both ends to the grid would quietly change the duration of any stage that was not
+already a multiple of five frames long.
+
+Under a **Stretch** anchor the values are percentages, not frames, so the step is five percent of
+the clip — the same coarse round increment in the unit that stage is authored in.
 
 **Hold Ctrl to drive both handles of a pair at once.** On the curve editor it
 mirrors the far handle, so one drag shapes a symmetric ease — Ease Out follows Ease In, and

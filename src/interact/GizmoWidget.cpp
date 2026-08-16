@@ -13,10 +13,8 @@ constexpr double kRotateArmPx = 34.0;
 double Clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 /// Nearest multiple of @p step. Used to snap rotation to tidy angles.
-double SnapTo(double v, double step)
-{
-    return std::floor(v / step + 0.5) * step;
-}
+// SnapTo lives in DrawUtils.h now: the timeline needs the same rounding for its
+// Shift-coarse frame stepping, and two copies would be free to drift apart.
 
 constexpr double kRotateSnapDegrees = 15.0;
 } // namespace
