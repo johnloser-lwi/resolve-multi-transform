@@ -319,10 +319,12 @@ private:
     /// preset writes the amounts, and writing an amount selects Custom.
     bool _syncingEasing = false;
 
-    /// The stage syncStageVisibility last made visible, or -1 before its first
-    /// pass. Lets that function skip stages whose state cannot have changed --
-    /// see the comment there.
-    int  _visibleStage = -1;
+    /// The stage syncStageVisibility last made visible. Starts at 0 because
+    /// that is what the *descriptors* say: DefineStage marks stages 2 to 4
+    /// secret, so a fresh instance already looks the way it should and the
+    /// first pass has only the active stage to deal with. Lets that function
+    /// skip stages whose state cannot have changed -- see the comment there.
+    int  _visibleStage = 0;
 
     /// Suppresses changedParam while a preset is being written in bulk.
     ///
@@ -1522,10 +1524,11 @@ void MultiTransformPlugin::syncStageVisibility()
         // what those values are, and its labels are not on screen to be read, so
         // there is nothing a repeat pass could put right.
         //
-        // _visibleStage is -1 until the first pass has run, which forces that
-        // one to cover all four -- the host's starting state comes from the
-        // descriptors, not from anything recorded here.
-        if (hidden && _visibleStage >= 0 && i != _visibleStage) continue;
+        // _visibleStage starts at 0 rather than at a "nothing known yet"
+        // sentinel, because the starting state *is* known: DefineStage marks
+        // stages 2 to 4 secret on the descriptor. A fresh instance whose active
+        // stage is 1 therefore does one pass here instead of four.
+        if (hidden && i != _visibleStage) continue;
 
         // The group headers as well as their contents. Hiding only the contents
         // would leave four empty section headers per inactive stage, which is
@@ -2093,6 +2096,41 @@ T* InvalidatesCache(T* p)
     return p;
 }
 
+/** @brief Describe-time secrecy, applied to everything created while it is set.
+ *
+ * Only the active stage's controls are ever shown, and until this existed the
+ * instance constructor did all of that hiding itself: roughly forty setIsSecret
+ * calls per stage, for all four stages, every time an instance was built. Since
+ * Resolve builds an instance whenever a clip is *selected*, that landed on the
+ * path of an ordinary mouse click -- and measured at 4.2 to 5.7 ms of a 4.5 to
+ * 6.0 ms constructor, or about 93% of it, because changing a parameter's
+ * secrecy makes the host redraw the Inspector.
+ *
+ * Stating it on the descriptor instead means the host starts out with the right
+ * answer for stages 2 to 4 and the constructor has nothing to correct. Switching
+ * stages still costs a redraw, which is fine: that is a redraw the user asked
+ * for, not one they get for clicking a clip.
+ *
+ * A flag rather than an argument threaded through a dozen helpers, because it
+ * has exactly one setter and its scope is one function -- see DefineStage.
+ */
+bool g_describeSecret = false;
+
+template <class T>
+T* Secret(T* p)
+{
+    if (g_describeSecret) p->setIsSecret(true);
+    return p;
+}
+
+/// Sets g_describeSecret for a scope and always clears it, so a return or a
+/// throw part-way through describing a stage cannot leak it onto the next one.
+struct DescribeSecretScope
+{
+    explicit DescribeSecretScope(bool secret) { g_describeSecret = secret; }
+    ~DescribeSecretScope() { g_describeSecret = false; }
+};
+
 DoubleParamDescriptor* DefineDouble(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page,
                                     GroupParamDescriptor* parent, const std::string& name,
                                     const std::string& label, const std::string& hint,
@@ -2108,7 +2146,7 @@ DoubleParamDescriptor* DefineDouble(OFX::ImageEffectDescriptor& desc, PageParamD
     p->setIncrement(inc);
     if (parent) p->setParent(*parent);
     page->addChild(*p);
-    return InvalidatesCache(p);
+    return Secret(InvalidatesCache(p));
 }
 
 Double2DParamDescriptor* DefineDouble2D(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page,
@@ -2125,7 +2163,7 @@ Double2DParamDescriptor* DefineDouble2D(OFX::ImageEffectDescriptor& desc, PagePa
     p->setIncrement(0.001);
     if (parent) p->setParent(*parent);
     page->addChild(*p);
-    return InvalidatesCache(p);
+    return Secret(InvalidatesCache(p));
 }
 
 /** @brief A section heading: a static label used purely as a visual divider.
@@ -2141,6 +2179,7 @@ GroupParamDescriptor* DefineSection(OFX::ImageEffectDescriptor& desc, PageParamD
     GroupParamDescriptor* g = desc.defineGroupParam(name);
     g->setLabels(label, label, label);
     if (!hint.empty()) g->setHint(hint);
+    Secret(g);
 
     // Collapsed by default. One active stage puts about seventy rows in the
     // Inspector, and the great majority of them are set once and then left --
@@ -2159,13 +2198,19 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // Only one stage is ever visible at a time: the other three stages have
     // every parameter AND every group hidden, so the Inspector shows one
     // stage's five sections rather than twenty.
+    //
+    // Stated here, on the descriptors, rather than left for the instance
+    // constructor to impose. Stage 1 is the one the host starts with showing,
+    // which is why the instance can begin from _visibleStage = 0 and correct
+    // nothing. See Secret() for what that measurement was.
+    DescribeSecretScope secrecy(i != 0);
 
     // --- Timing ---
     GroupParamDescriptor* gTiming = DefineSection(desc, page, StageParam(kParamGroupTiming, i),
         "Stage " + idx + " \xE2\x80\x94 Timing",
         "When this stage runs, and what its frame numbers are measured from.");
 
-    BooleanParamDescriptor* en = desc.defineBooleanParam(StageParam(kParamEnabled, i));
+    BooleanParamDescriptor* en = Secret(desc.defineBooleanParam(StageParam(kParamEnabled, i)));
     en->setLabels("Enabled", "Enabled", "Enabled");
     en->setHint("Include this stage in the combined transform. Stages COMBINE rather than "
                 "replace: two stages each scaling 1.0 to 1.5 give 2.25x overall.");
@@ -2174,7 +2219,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     page->addChild(*en);
     InvalidatesCache(en);
 
-    ChoiceParamDescriptor* anchor = desc.defineChoiceParam(StageParam(kParamAnchor2, i));
+    ChoiceParamDescriptor* anchor = Secret(desc.defineChoiceParam(StageParam(kParamAnchor2, i)));
     anchor->setLabels("Anchor", "Anchor", "Anchor");
     anchor->setHint("What this stage's Start and End are measured from. Clip Start puts 0 on "
                     "the clip's first frame -- use it for intros. Clip End puts 0 on the LAST "
@@ -2193,19 +2238,19 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     page->addChild(*anchor);
     InvalidatesCache(anchor);
 
-    PushButtonParamDescriptor* setStart = desc.definePushButtonParam(StageParam(kParamSetStart, i));
+    PushButtonParamDescriptor* setStart = Secret(desc.definePushButtonParam(StageParam(kParamSetStart, i)));
     setStart->setLabels("Set Start to Playhead", "Set Start", "Set Start to Playhead");
     setStart->setHint("Park the playhead where this stage should begin and click.");
     setStart->setParent(*gTiming);
     page->addChild(*setStart);
 
-    PushButtonParamDescriptor* setEnd = desc.definePushButtonParam(StageParam(kParamSetEnd, i));
+    PushButtonParamDescriptor* setEnd = Secret(desc.definePushButtonParam(StageParam(kParamSetEnd, i)));
     setEnd->setLabels("Set End to Playhead", "Set End", "Set End to Playhead");
     setEnd->setHint("Park the playhead where this stage should finish and click.");
     setEnd->setParent(*gTiming);
     page->addChild(*setEnd);
 
-    PushButtonParamDescriptor* syncPeak = desc.definePushButtonParam(StageParam(kParamSyncPeak, i));
+    PushButtonParamDescriptor* syncPeak = Secret(desc.definePushButtonParam(StageParam(kParamSyncPeak, i)));
     syncPeak->setLabels("Sync Acceleration to Playhead", "Sync Accel",
                         "Sync Acceleration to Playhead");
     syncPeak->setHint("Slide this stage so the fastest moment of its move lands on the playhead. "
@@ -2216,7 +2261,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     page->addChild(*syncPeak);
 
     PushButtonParamDescriptor* syncEase =
-        desc.definePushButtonParam(StageParam(kParamSyncPeakEase, i));
+        Secret(desc.definePushButtonParam(StageParam(kParamSyncPeakEase, i)));
     syncEase->setLabels("Sync Acceleration by Easing", "Sync Accel (Easing)",
                         "Sync Acceleration by Easing");
     syncEase->setHint("Same target as the button above, reached the other way: the stage stays "
@@ -2257,7 +2302,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
 
     // Shared by both ends, like the anchor: scale that were linked at one end and
     // split at the other would be two different kinds of animation in one stage.
-    BooleanParamDescriptor* link = desc.defineBooleanParam(StageParam(kParamLinkScale, i));
+    BooleanParamDescriptor* link = Secret(desc.defineBooleanParam(StageParam(kParamLinkScale, i)));
     link->setLabels("Link Scale X/Y", "Link Scale", "Link Scale X/Y");
     link->setHint("Scale both axes together. Turn this off to squash or stretch one axis -- "
                   "Scale Y then appears alongside Scale X at each end.");
@@ -2346,7 +2391,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                    "Bends the second part of the trajectory. 0,0 is a straight line.",
                    0.0, 0.0);
 
-    PushButtonParamDescriptor* pathReset = desc.definePushButtonParam(StageParam(kParamPathReset, i));
+    PushButtonParamDescriptor* pathReset = Secret(desc.definePushButtonParam(StageParam(kParamPathReset, i)));
     pathReset->setLabels("Straighten Path", "Straighten", "Straighten Path");
     pathReset->setHint("Reset both handles, returning the motion to a straight line.");
     pathReset->setParent(*gPath);
@@ -2357,7 +2402,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
         "Stage " + idx + " \xE2\x80\x94 Easing",
         "How the move accelerates. The curve editor in the viewer overlay edits the same values.");
 
-    ChoiceParamDescriptor* ease = desc.defineChoiceParam(StageParam(kParamEasingPreset, i));
+    ChoiceParamDescriptor* ease = Secret(desc.defineChoiceParam(StageParam(kParamEasingPreset, i)));
     ease->setLabels("Easing", "Easing", "Easing");
     ease->setHint("A starting point. Picking one fills in the four amounts below, which you "
                   "are then free to adjust -- doing so switches this to Custom.");
@@ -2409,7 +2454,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // Bounce. A bezier curve is a cubic, so it has at most one overshoot and one
     // undershoot in it -- repeated rebounds are mathematically out of reach for
     // any handle position, and need this separate oscillation instead.
-    ChoiceParamDescriptor* bounce = desc.defineChoiceParam(StageParam(kParamBounceType, i));
+    ChoiceParamDescriptor* bounce = Secret(desc.defineChoiceParam(StageParam(kParamBounceType, i)));
     bounce->setLabels("Bounce", "Bounce", "Bounce");
     bounce->setHint("Adds repeated rebounds after the move, which the Overshoot handle alone "
                     "cannot do. Spring settles through the target, above then below. Bounce "
@@ -2452,7 +2497,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // file dialog: the whole point of the library is that curves are picked
     // visually, and making the *saving* half go through Explorer would put the
     // friction straight back.
-    StringParamDescriptor* curveName = desc.defineStringParam(StageParam(kParamCurveName, i));
+    StringParamDescriptor* curveName = Secret(desc.defineStringParam(StageParam(kParamCurveName, i)));
     curveName->setLabels("Curve Name", "Curve Name", "Curve Name");
     curveName->setStringType(eStringTypeSingleLine);
     curveName->setHint("Name to save this stage's easing under. Saving with a name that already "
@@ -2462,7 +2507,7 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     curveName->setParent(*gEase);
     page->addChild(*curveName);
 
-    PushButtonParamDescriptor* saveCurve = desc.definePushButtonParam(StageParam(kParamSaveCurve, i));
+    PushButtonParamDescriptor* saveCurve = Secret(desc.definePushButtonParam(StageParam(kParamSaveCurve, i)));
     saveCurve->setLabels("Save Curve to Library", "Save Curve", "Save Curve to Library");
     saveCurve->setHint("Store this easing in the curve library, where it can be picked by its "
                        "shape from the LIBRARY panel in the viewer overlay.");
