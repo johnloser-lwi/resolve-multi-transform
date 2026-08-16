@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <shlobj.h>
 
-#include <chrono>
 #include <fstream>
 #include <mutex>
 #include <set>
@@ -63,54 +62,6 @@ void ProbeOnce(const std::string& key, const std::string& line)
         g_seen.insert(key);
     }
     ProbeLog(line);
-}
-
-namespace {
-
-/// Wall clock in milliseconds. steady_clock, so it cannot go backwards when the
-/// system clock is adjusted mid-measurement.
-double NowMs()
-{
-    using clock = std::chrono::steady_clock;
-    return std::chrono::duration<double, std::milli>(clock::now().time_since_epoch()).count();
-}
-
-/// Formatted to hundredths: below that is noise next to a host round trip, and
-/// full precision would make the line unreadable.
-std::string Ms(double v)
-{
-    char buf[32];
-    sprintf_s(buf, "%.2f", v);
-    return buf;
-}
-
-} // namespace
-
-ProbeTimer::ProbeTimer(std::string label)
-    : _label(std::move(label))
-    , _startMs(NowMs())
-    , _lastMs(_startMs)
-{
-}
-
-void ProbeTimer::split(const char* name)
-{
-    const double now = NowMs();
-    if (!_parts.empty()) _parts += "  ";
-    _parts += std::string(name) + "=" + Ms(now - _lastMs);
-    _lastMs = now;
-}
-
-void ProbeTimer::note(const std::string& text)
-{
-    if (!_parts.empty()) _parts += "  ";
-    _parts += text;
-}
-
-ProbeTimer::~ProbeTimer()
-{
-    ProbeLog("timing " + _label + " total=" + Ms(NowMs() - _startMs) + "ms"
-             + (_parts.empty() ? std::string() : "  [" + _parts + "]"));
 }
 
 void ProbeHostOnce()

@@ -29,10 +29,6 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
     // instead of only after the next viewer refresh.
     if (!_effect) return;
 
-    // Timed because this runs when the overlay first appears -- that is, as part
-    // of selecting a clip -- and it is close to a hundred host calls.
-    mtx::ProbeTimer timer("interact-ctor");
-
     // Slaving is an optimisation, not a requirement: if any of it fails the
     // overlay still works, it just redraws less eagerly. Letting an exception
     // escape a constructor here would cost the overlay entirely.
@@ -742,12 +738,6 @@ void MultiTransformInteract::loseFocus(const OFX::FocusArgs& /*args*/)
 
 bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
 {
-    // Timed, because the overlay appears exactly when a clip is selected and
-    // buildContext reads every parameter by name on every single draw -- around
-    // forty fetches plus their getValues. Cheap per call or not, it is on the
-    // selection path and had never been measured.
-    mtx::ProbeTimer timer("overlay-draw");
-
     OverlayContext c;
     c.ctx = args.context;
     if (!buildContext(c, args.time, args.pixelScale)) return false;

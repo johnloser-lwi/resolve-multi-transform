@@ -159,7 +159,6 @@ class MultiTransformPlugin : public OFX::ImageEffect
 {
 public:
     explicit MultiTransformPlugin(OfxImageEffectHandle p_Handle);
-    ~MultiTransformPlugin() override;
 
     virtual void render(const OFX::RenderArguments& p_Args) override;
     virtual bool isIdentity(const OFX::IsIdentityArguments& p_Args,
@@ -167,17 +166,6 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args,
                               const std::string& p_ParamName) override;
     virtual void getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences) override;
-
-    // kOfxActionBeginInstanceEdit / EndInstanceEdit -- the host sends these when
-    // the effect's interface is opened and closed, which is exactly what
-    // selecting and deselecting a clip does. Overridden only to time them: if
-    // selection costs anything inside this plugin, it is here, and if these are
-    // silent then the cost is entirely the host's own panel build.
-    virtual void beginEdit() override;
-    virtual void endEdit() override;
-
-    virtual void purgeCaches() override;
-    virtual void syncPrivateData() override;
     virtual void changedClip(const OFX::InstanceChangedArgs& p_Args,
                              const std::string& p_ClipName) override;
 
@@ -349,25 +337,9 @@ private:
 
 };
 
-/// Live instance count, so the log says whether the host builds one effect per
-/// selection or several. Selecting a clip in Resolve constructs the instance and
-/// deselecting destroys it, which is why this constructor is on the critical
-/// path for something as ordinary as clicking a clip.
-std::atomic<int> g_instances{ 0 };
-
-/// Cumulative host-action counts, reported on each instance-ctor line. The
-/// interesting number is the *difference* between consecutive lines: that says
-/// what the host asked for in the gap between building one instance and the
-/// next, which is where the time in a selection burst actually goes.
-std::atomic<int> g_identityCalls{ 0 };
-std::atomic<int> g_renderCalls{ 0 };
-std::atomic<int> g_clipPrefCalls{ 0 };
-
 MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     : OFX::ImageEffect(p_Handle)
 {
-    mtx::ProbeTimer timer("instance-ctor");
-
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
     _srcClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
 
@@ -395,7 +367,6 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _blurSamples  = fetchIntParam    (kParamBlurSamples);
     _blurAdaptive = fetchBooleanParam(kParamBlurAdaptive);
 
-    timer.split("root-params");
 
     for (int i = 0; i < kMaxStages; ++i)
     {
@@ -447,7 +418,6 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.bounceStart   = fetchDoubleParam  (StageParam(kParamBounceStart,   i));
     }
 
-    timer.split("stage-params");
 
     mtx::ProbeHostOnce();
 
@@ -458,7 +428,6 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     // once the clip is attached, which is exactly when its extent is knowable.
 
     syncStageVisibility();
-    timer.split("visibility");
 
     for (int i = 0; i < kMaxStages; ++i)
     {
@@ -472,47 +441,10 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         // it is here for the case where start or end changed behind its back.
         updateDuration(i, /*editable=*/false);
     }
-    timer.split("duration");
 
     // The folder read-out is not persisted with the project, so it starts blank
     // on every open and has to be filled in from preferences here.
     syncPresetFolderLabel();
-    timer.split("preset-folder");
-
-    timer.note("instances=" + std::to_string(g_instances.fetch_add(1) + 1)
-                + " identity=" + std::to_string(g_identityCalls.load())
-                + " render="   + std::to_string(g_renderCalls.load())
-                + " clipPref=" + std::to_string(g_clipPrefCalls.load()));
-}
-
-void MultiTransformPlugin::beginEdit()
-{
-    mtx::ProbeLog("beginEdit (interface opened -- clip selected)");
-}
-
-void MultiTransformPlugin::endEdit()
-{
-    mtx::ProbeLog("endEdit (interface closed -- clip deselected)");
-}
-
-void MultiTransformPlugin::purgeCaches()
-{
-    mtx::ProbeLog("purgeCaches");
-}
-
-void MultiTransformPlugin::syncPrivateData()
-{
-    mtx::ProbeLog("syncPrivateData");
-}
-
-MultiTransformPlugin::~MultiTransformPlugin()
-{
-    // Logged as well as counted. If instances are built and never torn down they
-    // accumulate across selections, and every host-side pass over them gets
-    // slower -- which would show up as a lag that worsens the longer Resolve
-    // has been open, rather than a constant one.
-    mtx::ProbeLog("instance destroyed, remaining="
-                  + std::to_string(g_instances.fetch_sub(1) - 1));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -652,8 +584,6 @@ BlurParams MultiTransformPlugin::fetchBlurParams(double p_Time) const
 
 void MultiTransformPlugin::getClipPreferences(OFX::ClipPreferencesSetter& p_ClipPreferences)
 {
-    g_clipPrefCalls.fetch_add(1);
-    mtx::ProbeTimer timer("getClipPreferences");
 
     // Declare that the output changes over time even though no parameter is
     // animated.
@@ -1457,7 +1387,6 @@ void MultiTransformPlugin::changedClip(const OFX::InstanceChangedArgs& /*p_Args*
     // knowable and a legacy absolute timing can be rewritten. This is also an
     // instance-changed action, which is where the OFX spec permits parameter
     // edit blocks -- the constructor is not.
-    mtx::ProbeTimer timer("changedClip");
     migrateTimingIfNeeded();
 }
 
@@ -1994,7 +1923,6 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
 bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
                                       OFX::Clip*& p_IdentityClip, double& p_IdentityTime)
 {
-    g_identityCalls.fetch_add(1);
     if (!_srcClip) return false;
 
     // Answer for the whole clip, not for this frame.
@@ -2018,7 +1946,6 @@ bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
 
 void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
 {
-    g_renderCalls.fetch_add(1);
 
     std::unique_ptr<OFX::Image> dst(_dstClip ? _dstClip->fetchImage(p_Args.time) : nullptr);
     std::unique_ptr<OFX::Image> src(_srcClip ? _srcClip->fetchImage(p_Args.time) : nullptr);
@@ -2094,7 +2021,6 @@ MultiTransformPluginFactory::MultiTransformPluginFactory()
 
 void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 {
-    mtx::ProbeTimer timer("describe");
 
     p_Desc.setLabels(kPluginName, kPluginName, kPluginName);
     p_Desc.setPluginGrouping(kPluginGrouping);
@@ -2156,16 +2082,21 @@ T* InvalidatesCache(T* p)
  *
  * Only the active stage's controls are ever shown, and until this existed the
  * instance constructor did all of that hiding itself: roughly forty setIsSecret
- * calls per stage, for all four stages, every time an instance was built. Since
- * Resolve builds an instance whenever a clip is *selected*, that landed on the
- * path of an ordinary mouse click -- and measured at 4.2 to 5.7 ms of a 4.5 to
- * 6.0 ms constructor, or about 93% of it, because changing a parameter's
- * secrecy makes the host redraw the Inspector.
+ * calls per stage, for all four stages, on every instance built. That measured
+ * at 4.2 to 5.7 ms of a 4.5 to 6.0 ms constructor -- about 93% of it -- because
+ * changing a parameter's secrecy makes the host redraw the Inspector.
  *
  * Stating it on the descriptor instead means the host starts out with the right
- * answer for stages 2 to 4 and the constructor has nothing to correct. Switching
- * stages still costs a redraw, which is fine: that is a redraw the user asked
- * for, not one they get for clicking a clip.
+ * answer for stages 2 to 4 and the constructor has nothing to correct. It took
+ * the constructor to ~1.8 ms. Switching stages still costs a redraw, which is
+ * fine: that is a redraw the user asked for.
+ *
+ * Worth knowing for whoever comes here next: this did *not* fix the lag on
+ * selecting a clip, because instances are built when the timeline loads, not
+ * when a clip is selected. Six separate hooks -- the constructor, beginEdit,
+ * endEdit, getClipPreferences, isIdentity, render and the overlay draw -- were
+ * all measured silent during selection. Whatever that cost is, it is inside the
+ * host and not in this file.
  *
  * A flag rather than an argument threaded through a dozen helpers, because it
  * has exactly one setter and its scope is one function -- see DefineStage.
@@ -2573,14 +2504,12 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
 
 } // namespace
 
-// Timed because it is the one call that touches all ~198 parameters. The OFX
-// spec has the host describe a context once and reuse it; if this shows up
-// repeatedly in the log then Resolve is re-describing per selection, which
-// would dwarf everything the instance constructor does.
+/** @brief Defines all ~198 parameters. Measured at 4.35 ms, and Resolve calls it
+ *  exactly once per plugin load rather than once per clip selection -- so the
+ *  size of this function is not what makes selecting a clip feel slow. */
 void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc,
                                                     OFX::ContextEnum /*p_Context*/)
 {
-    mtx::ProbeTimer timer("describeInContext");
 
     ClipDescriptor* srcClip = p_Desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
