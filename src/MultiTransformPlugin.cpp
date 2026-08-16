@@ -192,6 +192,8 @@ private:
     /// Write stage @p i's easing into the curve library.
     void             saveCurve(int stage);
 
+    void             copyEffect();    ///< every setting -> clipboard file
+    void             pasteEffect();   ///< clipboard file -> every setting
     void             copyStage();     ///< active stage -> clipboard
     void             pasteStage();    ///< clipboard -> active stage
     void             flattenToFirstStage();
@@ -199,6 +201,13 @@ private:
     /** @brief Move poses between a stage's two ends.
      *  @param mode 0 copies From onto To, 1 copies To onto From, 2 swaps them. */
     void             transferEnds(int stage, int mode);
+
+    /** @brief Run one QuickAction. Shared by the Inspector's Apply button and
+     *  the overlay's QUICK panel, so the two can never drift apart. */
+    void             runQuickAction(int action);
+
+    /** @brief The stage the overlay is editing, clamped to a valid index. */
+    int              activeStageIndex() const;
     void             savePreset(bool wholeEffect);
     void             loadPreset(bool fitToClip);
     /** The playhead expressed in the units a given stage's frames use. */
@@ -272,9 +281,6 @@ private:
         OFX::DoubleParam*   duration;
         OFX::PushButtonParam* syncPeak;
         OFX::PushButtonParam* syncPeakEase;
-        OFX::PushButtonParam* copyFromTo;
-        OFX::PushButtonParam* copyToFrom;
-        OFX::PushButtonParam* swapEnds;
         OFX::BooleanParam*  linkScale;
         OFX::DoubleParam*   scaleFrom;
         OFX::DoubleParam*   scaleTo;
@@ -373,9 +379,6 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.duration      = fetchDoubleParam  (StageParam(kParamDuration,      i));
         s.syncPeak      = fetchPushButtonParam(StageParam(kParamSyncPeak,    i));
         s.syncPeakEase  = fetchPushButtonParam(StageParam(kParamSyncPeakEase,i));
-        s.copyFromTo    = fetchPushButtonParam(StageParam(kParamCopyFromTo,  i));
-        s.copyToFrom    = fetchPushButtonParam(StageParam(kParamCopyToFrom,  i));
-        s.swapEnds      = fetchPushButtonParam(StageParam(kParamSwapEnds,    i));
         s.linkScale     = fetchBooleanParam (StageParam(kParamLinkScale,     i));
         s.scaleYFrom    = fetchDoubleParam  (StageParam(kParamScaleYFrom,    i));
         s.scaleYTo      = fetchDoubleParam  (StageParam(kParamScaleYTo,      i));
@@ -761,12 +764,99 @@ StageClipboard g_stageClipboard;
 
 } // namespace
 
-void MultiTransformPlugin::copyStage()
+void MultiTransformPlugin::copyEffect()
+{
+    // Exists because Resolve cannot copy a single OFX effect between clips --
+    // it is all of them or none. This is the whole node in one press: every
+    // stage, the base pose, motion blur and sampling.
+    const std::string path = mtx::EffectClipboardPath();
+    if (path.empty())
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "Could not locate the application data folder to copy into.");
+        return;
+    }
+
+    // The same serialisation a preset uses, so the payload is already covered
+    // by the preset tests and a copy is readable if it ever needs inspecting.
+    mtx::PresetData d = capturePreset(true);
+    d.name = "Clipboard";
+
+    std::string error;
+    if (!mtx::WriteTextFile(path, mtx::ToJson(d), error))
+    {
+        sendMessage(OFX::Message::eMessageError, "", "Could not copy the settings:\n" + error);
+        return;
+    }
+    mtx::ProbeLog("effect copied to clipboard");
+}
+
+void MultiTransformPlugin::pasteEffect()
+{
+    const std::string path = mtx::EffectClipboardPath();
+
+    std::string text, error;
+    if (path.empty() || !mtx::ReadTextFile(path, text, error))
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "Nothing has been copied yet.\n\nUse Copy All Settings on another "
+                    "Multi Transform first -- on any clip, in any project.");
+        return;
+    }
+
+    mtx::PresetData d;
+    if (!mtx::FromJson(text, d, error))
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "The copied settings could not be read:\n" + error);
+        return;
+    }
+
+    // Applied exactly as copied, with no rescaling to this clip's length. The
+    // anchors already do the right thing -- Clip Start and Clip End are
+    // relative, Stretch is proportional, and capturePreset converts a
+    // Timeline-anchored stage to clip-relative on the way out. Load from File
+    // (Fit to Clip) is there for when the pacing should be rescaled instead.
+    d.wholeEffect = true;
+    applyPreset(d);
+
+    mtx::ProbeLog("effect pasted from clipboard");
+}
+
+int MultiTransformPlugin::activeStageIndex() const
 {
     int active = 0;
     _activeStage->getValue(active);
-    if (active < 0) active = 0;
-    if (active >= kMaxStages) active = kMaxStages - 1;
+    if (active < 0) return 0;
+    if (active >= kMaxStages) return kMaxStages - 1;
+    return active;
+}
+
+/** Everything here acts on the *active* stage rather than taking a stage index.
+ *  That is the stage the gizmo, the timeline lane and the curve editor are
+ *  already editing, so "the stage" is never ambiguous while working -- and it is
+ *  what let eight buttons collapse into one dropdown, since the per-stage
+ *  variants of the end transfers were only ever needed because a push button
+ *  cannot ask which stage it means. */
+void MultiTransformPlugin::runQuickAction(int action)
+{
+    switch (action)
+    {
+        case kQuickCopyFromTo:  transferEnds(activeStageIndex(), 0); break;
+        case kQuickCopyToFrom:  transferEnds(activeStageIndex(), 1); break;
+        case kQuickSwapEnds:    transferEnds(activeStageIndex(), 2); break;
+        case kQuickCopyStage:   copyStage();          break;
+        case kQuickPasteStage:  pasteStage();         break;
+        case kQuickFlatten:     flattenToFirstStage(); break;
+        case kQuickCopyEffect:  copyEffect();         break;
+        case kQuickPasteEffect: pasteEffect();        break;
+        default: break;
+    }
+}
+
+void MultiTransformPlugin::copyStage()
+{
+    const int active = activeStageIndex();
 
     g_stageClipboard.stage = captureStage(active);
     g_stageClipboard.valid = true;
@@ -783,10 +873,7 @@ void MultiTransformPlugin::pasteStage()
         return;
     }
 
-    int active = 0;
-    _activeStage->getValue(active);
-    if (active < 0) active = 0;
-    if (active >= kMaxStages) active = kMaxStages - 1;
+    const int active = activeStageIndex();
 
     {
         // Suppressed exactly as a preset load is: applyStage writes the easing
@@ -1416,9 +1503,6 @@ void MultiTransformPlugin::syncStageVisibility()
 
         s.syncPeak->setIsSecret(hidden);
         s.syncPeakEase->setIsSecret(hidden);
-        s.copyFromTo->setIsSecret(hidden);
-        s.copyToFrom->setIsSecret(hidden);
-        s.swapEnds->setIsSecret(hidden);
         s.linkScale->setIsSecret(hidden);
         s.scaleFrom->setIsSecret(hidden);
         s.posFrom->setIsSecret(hidden);
@@ -1596,12 +1680,17 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
     if (p_ParamName == kParamLoadFromOverlay) { loadPreset(false); return; }
 
-    if (p_ParamName == kParamCopyStage  || p_ParamName == kParamCopyFromOverlay)
-    { copyStage();  return; }
-    if (p_ParamName == kParamPasteStage || p_ParamName == kParamPasteFromOverlay)
-    { pasteStage(); return; }
-    if (p_ParamName == kParamFlatten    || p_ParamName == kParamFlattenFromOverlay)
-    { flattenToFirstStage(); return; }
+    // Quick Control. The Inspector's Apply button and the overlay's QUICK panel
+    // both land here, and both read the action out of the same choice parameter
+    // -- the overlay sets it before flipping its trigger, so one trigger covers
+    // all eight actions rather than needing a hidden button each.
+    if (p_ParamName == kParamQuickApply || p_ParamName == kParamQuickFromOverlay)
+    {
+        int action = kQuickCopyFromTo;
+        fetchChoiceParam(kParamQuickAction)->getValue(action);
+        runQuickAction(action);
+        return;
+    }
 
     // The overlay's copies act on whichever stage is active, since that is the
     // stage its timeline lane and gizmo are already editing.
@@ -1711,9 +1800,6 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
             updateDuration(i);
             return;
         }
-        if (p_ParamName == StageParam(kParamCopyFromTo, i)) { transferEnds(i, 0); return; }
-        if (p_ParamName == StageParam(kParamCopyToFrom, i)) { transferEnds(i, 1); return; }
-        if (p_ParamName == StageParam(kParamSwapEnds,   i)) { transferEnds(i, 2); return; }
         if (p_ParamName == StageParam(kParamLinkScale, i))
         {
             bool linked = true;
@@ -1980,39 +2066,6 @@ GroupParamDescriptor* DefineSection(OFX::ImageEffectDescriptor& desc, PageParamD
 
     page->addChild(*g);
     return g;
-}
-
-/** @brief Stage buttons that live at the top of the panel, outside every group.
- *
- * These are reached constantly while building a move, so putting them behind a
- * disclosure arrow costs a click every time. They are defined separately from
- * the rest of the stage because *position in the Inspector is decided by
- * definition order*, and ungrouped parameters must all come before the first
- * group -- an ungrouped island between two groups gets scattered by Resolve,
- * which is how the preset buttons ended up split across the panel once before.
- */
-void DefineStageRootButtons(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, int i)
-{
-    // Moving poses between the two ends. Building a move usually starts by
-    // matching one end to the other and then changing only what should differ,
-    // which is otherwise seven fields retyped by hand.
-    PushButtonParamDescriptor* copyFwd = desc.definePushButtonParam(StageParam(kParamCopyFromTo, i));
-    copyFwd->setLabels("Copy FROM to TO", "From > To", "Copy FROM to TO");
-    copyFwd->setHint("Overwrite the TO pose with the FROM pose, leaving the stage holding still "
-                     "until you change one of them.");
-    page->addChild(*copyFwd);
-
-    PushButtonParamDescriptor* copyBack = desc.definePushButtonParam(StageParam(kParamCopyToFrom, i));
-    copyBack->setLabels("Copy TO to FROM", "To > From", "Copy TO to FROM");
-    copyBack->setHint("Overwrite the FROM pose with the TO pose. Useful after posing the end "
-                      "state on screen: copy it back, then pull the start away from it.");
-    page->addChild(*copyBack);
-
-    PushButtonParamDescriptor* swapEnds = desc.definePushButtonParam(StageParam(kParamSwapEnds, i));
-    swapEnds->setLabels("Swap FROM and TO", "Swap", "Swap FROM and TO");
-    swapEnds->setHint("Reverse the move. The motion path's two handles swap with it, so a bent "
-                      "route keeps its exact shape and simply runs the other way.");
-    page->addChild(*swapEnds);
 }
 
 void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, int i)
@@ -2380,31 +2433,34 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     // out in definition order, and ungrouped parameters that sit between two
     // groups get scattered -- that is how the preset buttons once ended up split
     // between the top and the bottom of the panel.
-    for (int i = 0; i < kMaxStages; ++i) DefineStageRootButtons(p_Desc, page, i);
+    // Quick Control: one dropdown and one Apply, in place of the eight push
+    // buttons these actions used to have. See kParamQuickAction for why they are
+    // collapsed rather than laid out, and why Apply is separate from the choice.
+    ChoiceParamDescriptor* quick = p_Desc.defineChoiceParam(kParamQuickAction);
+    quick->setLabels("Quick Control", "Quick", "Quick Control");
+    quick->setHint("One-shot actions on the active stage or the whole effect. Choose one, then "
+                   "press Apply. Nothing happens until Apply is pressed.");
+    for (int a = 0; a < kQuickActionCount; ++a) quick->appendOption(QuickActionLabel(a));
+    quick->setDefault(kQuickCopyFromTo);
+    quick->setAnimates(false);
+    page->addChild(*quick);
 
-    PushButtonParamDescriptor* copyStage = p_Desc.definePushButtonParam(kParamCopyStage);
-    copyStage->setLabels("Copy Stage", "Copy Stage", "Copy Stage");
-    copyStage->setHint("Copy the active stage -- pose, timing, easing and path -- to a "
-                       "clipboard shared by every instance of this effect, so it can be "
-                       "pasted into another stage or onto another clip.");
-    page->addChild(*copyStage);
-
-    PushButtonParamDescriptor* pasteStage = p_Desc.definePushButtonParam(kParamPasteStage);
-    pasteStage->setLabels("Paste Stage", "Paste Stage", "Paste Stage");
-    pasteStage->setHint("Overwrite the active stage with the copied one.");
-    page->addChild(*pasteStage);
-
-    PushButtonParamDescriptor* flatten = p_Desc.definePushButtonParam(kParamFlatten);
-    flatten->setLabels("Flatten to Stage 1", "Flatten", "Flatten to Stage 1");
-    flatten->setHint("Collapse the finished animation into a single held pose in Stage 1, and "
-                     "clear the rest. For continuing a move across a cut: copy this effect to "
-                     "the next clip, flatten it, and animate onward from where it left off.");
-    page->addChild(*flatten);
+    PushButtonParamDescriptor* quickApply = p_Desc.definePushButtonParam(kParamQuickApply);
+    quickApply->setLabels("Apply", "Apply", "Apply");
+    quickApply->setHint("Run the chosen Quick Control action.\n\n"
+                        "Copy/Swap FROM and TO move poses between the two ends of the active "
+                        "stage. Copy/Paste Stage move a whole stage -- pose, timing, easing and "
+                        "path -- through a clipboard shared by every instance of this effect. "
+                        "Copy/Paste All Settings move the entire effect, which is otherwise "
+                        "impossible because Resolve can only copy all of a clip's effects or "
+                        "none of them. Flatten collapses the finished animation into a single "
+                        "held pose in Stage 1 and clears the rest, for continuing a move across "
+                        "a cut.");
+    page->addChild(*quickApply);
 
     // Overlay triggers. Hidden and not persisted -- these are messages, not
     // settings. See kParamLoadFromOverlay for why a boolean and not a button.
-    const char* const kTriggers[5] = { kParamCopyFromOverlay, kParamPasteFromOverlay,
-                                       kParamFlattenFromOverlay,
+    const char* const kTriggers[3] = { kParamQuickFromOverlay,
                                        kParamSyncPeakFromOverlay, kParamSyncEaseFromOverlay };
     for (const char* name : kTriggers)
     {
@@ -2534,6 +2590,15 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     showLib->setDefault(false);
     showLib->setParent(*gOverlay);
     page->addChild(*showLib);
+
+    // Hidden and not persisted, unlike the panel toggles above. It has a button
+    // of its own on the overlay and no reason to be reachable from here, and an
+    // open panel is a momentary state rather than a setting worth saving.
+    BooleanParamDescriptor* showQuick = p_Desc.defineBooleanParam(kParamShowQuick);
+    showQuick->setDefault(false);
+    showQuick->setIsSecret(true);
+    showQuick->setIsPersistant(false);
+    page->addChild(*showQuick);
 
     // --- Base transform ---
     //

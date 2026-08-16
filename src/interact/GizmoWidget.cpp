@@ -299,15 +299,13 @@ void GizmoWidget::drawDragPreview(const OverlayContext& c, const OfxPointD* corn
 
     // The other end in its own colour, so which is which is never in doubt.
     const Colour otherTint = other ? colours::kGizmoTo : colours::kGizmo;
-    SetColour(c, { otherTint.r, otherTint.g, otherTint.b, 0.55f });
-    SetLineWidth(c, 1.0f);
-    LineLoop(c, ghost, 4);
+    HaloLineLoop(c, ghost, 4, { otherTint.r, otherTint.g, otherTint.b, 0.55f }, 1.0);
 
     // Corner to corner, so the direction and amount of the move read at a
     // glance rather than having to compare two outlines by eye.
-    SetColour(c, { 1.0f, 1.0f, 1.0f, 0.22f });
     for (int i = 0; i < 4; ++i)
-        Line(c, ghost[i].x, ghost[i].y, corner[i].x, corner[i].y);
+        HaloLine(c, ghost[i].x, ghost[i].y, corner[i].x, corner[i].y,
+                 { 1.0f, 1.0f, 1.0f, 0.30f }, 1.0);
 }
 
 void GizmoWidget::draw(const OverlayContext& c)
@@ -338,23 +336,22 @@ void GizmoWidget::draw(const OverlayContext& c)
     // Under the outline, so the shading never obscures the edge being dragged.
     if (dragging()) drawDragPreview(c, corner);
 
-    SetColour(c, { 0.0f, 0.0f, 0.0f, 0.55f });
-    SetLineWidth(c, 3.0f);
-    LineLoop(c, corner, 4);
-    SetColour(c, tint);
-    SetLineWidth(c, 1.5f);
-    LineLoop(c, corner, 4);
+    HaloLineLoop(c, corner, 4, tint, 1.5);
 
     // Anchor, which is where scale and rotation pivot.
     const OfxPointD anchorPt = anchorScreen(c, pose);
     const double anchorX = anchorPt.x;
     const double anchorY = anchorPt.y;
 
+    SetColour(c, colours::kHalo);
+    SetLineWidth(c, static_cast<float>(1.5 + kHaloExtraPx));
+    Ellipse(c, anchorX, anchorY, c.sx(9.0), c.sy(9.0));
     SetColour(c, tint);
     SetLineWidth(c, 1.5f);
     Ellipse(c, anchorX, anchorY, c.sx(9.0), c.sy(9.0));
-    Line(c, anchorX - c.sx(14.0), anchorY, anchorX + c.sx(14.0), anchorY);
-    Line(c, anchorX, anchorY - c.sy(14.0), anchorX, anchorY + c.sy(14.0));
+
+    HaloLine(c, anchorX - c.sx(14.0), anchorY, anchorX + c.sx(14.0), anchorY, tint, 1.5);
+    HaloLine(c, anchorX, anchorY - c.sy(14.0), anchorX, anchorY + c.sy(14.0), tint, 1.5);
 
     // Corner handles scale about the anchor.
     for (int i = 0; i < 4; ++i)
@@ -373,19 +370,16 @@ void GizmoWidget::draw(const OverlayContext& c)
         const double rx = midX + dirX * c.sx(kRotateArmPx);
         const double ry = midY + dirY * c.sy(kRotateArmPx);
 
-        SetColour(c, tint);
-        SetLineWidth(c, 1.5f);
-        Line(c, midX, midY, rx, ry);
+        HaloLine(c, midX, midY, rx, ry, tint, 1.5);
         Handle(c, rx, ry, colours::kHandle, 5.0);
     }
 
     // Label: which stage, and which end of it, is being posed.
-    SetColour(c, tint);
-    Text(c, c.editBase ? std::string("BASE TRANSFORM")
-                       : std::string("Stage ") + std::to_string(c.activeStage + 1)
-                         + (c.editTo ? "  -  TO" : "  -  FROM"),
-         anchorX, anchorY + c.sy(22.0),
-         kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentBottom);
+    HaloText(c, c.editBase ? std::string("BASE TRANSFORM")
+                           : std::string("Stage ") + std::to_string(c.activeStage + 1)
+                             + (c.editTo ? "  -  TO" : "  -  FROM"),
+             anchorX, anchorY + c.sy(22.0), tint,
+             kOfxDrawTextAlignmentCenterH | kOfxDrawTextAlignmentBottom);
 }
 
 bool GizmoWidget::penDown(const OverlayContext& c, const OfxPointD& p)

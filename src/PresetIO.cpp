@@ -172,6 +172,16 @@ std::vector<std::string> ListJsonFiles(const std::string& folder)
     return out;
 }
 
+std::string EffectClipboardPath()
+{
+    char path[MAX_PATH] = { 0 };
+    if (FAILED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) return "";
+
+    const std::string base = std::string(path) + "\\MultiTransform";
+    CreateDirectoryA(base.c_str(), nullptr);
+    return base + "\\clipboard.json";
+}
+
 std::string SettingsFilePath()
 {
     char path[MAX_PATH] = { 0 };

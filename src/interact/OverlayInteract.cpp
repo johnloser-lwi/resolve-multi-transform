@@ -175,6 +175,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.editBase    = (editTarget == 2);
     out.showCurve   = GetBool(_effect, kParamShowCurve, time);
     out.showLibrary = GetBool(_effect, kParamShowLibrary, time);
+    out.showQuick   = GetBool(_effect, kParamShowQuick, time);
     out.dragPreview = GetBool(_effect, kParamDragPreview, time);
     out.showTimeline= GetBool(_effect, kParamShowTimeline, time);
     out.showPath    = GetBool(_effect, kParamShowPath, time);
@@ -351,6 +352,14 @@ OfxRectD MultiTransformInteract::dragPreviewRect(const OverlayContext& c) const
     return rightButtonRect(c, 3, kToggleWPx);
 }
 
+OfxRectD MultiTransformInteract::quickToggleRect(const OverlayContext& c) const
+{
+    // On the lower row with the editing controls rather than the upper one with
+    // the panel toggles: what it raises are edits -- copies, swaps, a flatten --
+    // not another view of the animation.
+    return rightButtonRect(c, 4, kToggleWPx);
+}
+
 OfxRectD MultiTransformInteract::curveToggleRect(const OverlayContext& c) const
 {
     return rightButtonRect(c, 2, kToggleWPx, 1);
@@ -491,6 +500,10 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
     Button(c, baseTargetRect(c), "BASE", c.editBase, colours::kStage[3]);
     Button(c, dragPreviewRect(c), "GHOST", c.dragPreview, colours::kAccent);
 
+    // Raises the Quick Control panel. Lit while it is up, since that is a state
+    // -- unlike LOAD beside it, which is momentary.
+    Button(c, quickToggleRect(c), "QUICK", c.showQuick, colours::kAccent);
+
     // Upper row: what is on screen. Every toggle stays visible while its panel
     // is hidden, or there would be no way to bring it back.
     //
@@ -589,6 +602,12 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
 
         EditBlock block(_effect, "Show Curve Library");
         _effect->fetchBooleanParam(kParamShowLibrary)->setValue(!c.showLibrary);
+        return true;
+    }
+    if (Contains(quickToggleRect(c), p))
+    {
+        EditBlock block(_effect, "Quick Control");
+        _effect->fetchBooleanParam(kParamShowQuick)->setValue(!c.showQuick);
         return true;
     }
     if (Contains(dragPreviewRect(c), p))
@@ -731,6 +750,7 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         _gizmo.layout(c);
         _path.layout(c);
         _opacity.layout(c);
+        _quick.layout(c);
 
         // Back to front: the gizmo lives on the image, the HUD panels above it.
         // The path sits over the gizmo: its handles are small and must not be
@@ -742,7 +762,8 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         if (c.showCurve)    _curve.draw(c);
         drawToolbar(c);
 
-        // Last, and therefore on top of everything: it is a modal picker.
+        // Last, and therefore on top of everything: these are modal pickers.
+        if (c.showQuick)   _quick.draw(c);
         if (c.showLibrary) _library.draw(c);
     }
     catch (...)
@@ -772,10 +793,24 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         _gizmo.layout(c);
         _path.layout(c);
         _opacity.layout(c);
+        _quick.layout(c);
 
         const OfxPointD p = args.penPosition;
 
         if (toolbarHit(c, p)) { requestRedraw(); return true; }
+
+        // The Quick panel is handled here rather than in the widget order below,
+        // because that loop opens an edit block before offering the event and
+        // these actions must not run inside one: they open their own, and
+        // Flatten and Paste can raise a modal dialog, which pumps its own
+        // message loop. Same reasoning as the LOAD button in toolbarHit.
+        //
+        // Behind the library, which is modal in its own right and drawn on top.
+        if (c.showQuick && !c.showLibrary && _quick.penDown(c, p))
+        {
+            requestRedraw();
+            return true;
+        }
 
         // Front to back, the reverse of drawing order, so a click lands on
         // whatever is visually on top. A hidden curve panel is skipped entirely

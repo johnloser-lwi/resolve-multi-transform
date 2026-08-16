@@ -41,6 +41,18 @@ std::string DefaultPresetFolder();
  *  @param current folder the picker starts in; may be empty. */
 bool ChooseFolder(const std::string& current, std::string& outPath);
 
+/** @brief Where Copy All Settings puts the effect, and Paste reads it from.
+ *
+ *  `%LOCALAPPDATA%\MultiTransform\clipboard.json` -- beside the preferences
+ *  rather than with the presets, because it is scratch state and not something
+ *  to browse or keep.
+ *
+ *  A file rather than memory so it survives a restart, and so a copy taken
+ *  before Resolve was closed is still there afterwards. It also means the copy
+ *  outlives the plugin being unloaded and reloaded, which an in-process
+ *  clipboard would not. */
+std::string EffectClipboardPath();
+
 /** @brief Preferences file, `%LOCALAPPDATA%\MultiTransform\settings.json`.
  *
  *  Stays in LocalAppData even though presets moved to Documents: this one

@@ -63,6 +63,7 @@ private:
     OfxRectD opacityToggleRect(const OverlayContext& c) const;
     OfxRectD removeStageRect(const OverlayContext& c) const;
     OfxRectD enableStageRect(const OverlayContext& c) const;
+    OfxRectD quickToggleRect(const OverlayContext& c) const;
 
     /** Flip a hidden trigger parameter, which changedParam reads as a press. */
     void     fireTrigger(const char* paramName);
@@ -74,6 +75,7 @@ private:
     TimelineWidget _timeline;
     CurveWidget    _curve;
     LibraryWidget  _library;
+    QuickWidget    _quick;
     OpacityWidget  _opacity;
 
     /// Widget that claimed the current drag, so motion/up go to the same place.

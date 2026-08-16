@@ -89,13 +89,13 @@ void OpacityWidget::draw(const OverlayContext& c)
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%.0f%%", pct);
 
-    SetColour(c, colours::kText);
-    Text(c, buf, _track.x1, _track.y2 + c.sy(6.0),
-         kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBottom);
+    // Haloed: unlike the track, these sit straight on the picture with no dark
+    // backdrop of their own.
+    HaloText(c, buf, _track.x1, _track.y2 + c.sy(6.0), colours::kText,
+             kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentBottom);
 
-    SetColour(c, colours::kTextDim);
-    Text(c, "OPACITY", _track.x1, _track.y1 - c.sy(6.0),
-         kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentTop);
+    HaloText(c, "OPACITY", _track.x1, _track.y1 - c.sy(6.0), colours::kText,
+             kOfxDrawTextAlignmentLeft | kOfxDrawTextAlignmentTop);
 }
 
 bool OpacityWidget::penDown(const OverlayContext& c, const OfxPointD& p)

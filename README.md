@@ -182,14 +182,16 @@ break that — anything assuming monotonicity would then settle confidently on t
 
 ### Moving poses between the two ends
 
-Three buttons below the TO block, because most moves are built by matching one end to the other
-and then changing only what should differ:
+Three of the [Quick Control](#quick-control) actions, because most moves are built by matching one
+end to the other and then changing only what should differ:
 
 - **Copy FROM to TO** — the stage holds still until you change something.
 - **Copy TO to FROM** — handy after posing the end state on screen: copy it back, then pull the
   start away from it.
 - **Swap FROM and TO** — reverse the move. Turns a fade-in into a fade-out, an intro into an
   outro.
+
+They act on the **active stage**, the one the gizmo and the timeline lane are already editing.
 
 All seven animated channels move together: Scale, Scale Y, Position, Rotation, Tilt, Swivel and
 Opacity. Swap also trades the **motion path's two handles**, so a bent route keeps its exact
@@ -400,6 +402,53 @@ files. Four buttons under **— PRESETS —**:
 A stage preset loads into whichever stage is active. The files are readable and diffable, and
 they work in both Resolve and Fusion.
 
+### Quick Control
+
+Eight one-shot actions behind a single dropdown and an **Apply** button at the top of the panel:
+
+| Action | Acts on |
+|---|---|
+| Copy FROM to TO / Copy TO to FROM / Swap FROM and TO | the active stage's two ends |
+| Copy Stage / Paste Stage | the active stage |
+| Flatten to Stage 1 | the whole animation |
+| Copy All Settings / Paste All Settings | the whole effect |
+
+They were eight separate push buttons once, and that was eight full-width rows pushing the
+controls actually being adjusted most of a screen down the Inspector. **There is no two-column
+layout to spread them across**: the only column mechanism in OFX is page-based
+(`kOfxParamPageSkipColumn`), Resolve reports `maxPages = 0`, and OFX 1.4 has no
+`SameLine`/`NoNewLine` property at all. Every parameter is one full-width row, so the only way to
+take less height is to have fewer parameters.
+
+Apply is separate from the dropdown on purpose — several of these overwrite work, and picking
+Flatten by accident while scrolling a list should not destroy four stages.
+
+The same eight are on the overlay behind the **QUICK** button, so none of this needs the Inspector
+at all. See [the overlay](#viewer-overlay).
+
+### Copying a whole effect between clips
+
+**Copy All Settings** / **Paste All Settings**, under Quick Control, move the entire node in
+one press — every stage, the base transform, motion blur and sampling.
+
+This exists because Resolve cannot copy a *single* OFX effect between clips: it is all of a
+clip's effects or none of them. Without it the only route was saving a preset to a file and
+loading it on the other clip.
+
+The copy is written to `%LOCALAPPDATA%\MultiTransform\clipboard.json` rather than held in memory,
+so it survives closing Resolve, works across projects, and outlives the plugin being unloaded and
+reloaded. It uses the same serialisation as presets, so the payload is already covered by the
+preset tests and the file is readable if it ever needs inspecting.
+
+Paste applies the timing **exactly as copied**, without rescaling. The anchors already do the
+sensible thing on a different clip — Clip Start and Clip End are relative, Stretch is
+proportional, and a Timeline-anchored stage is converted to clip-relative on the way out. When
+the pacing *should* be rescaled to a different length, use **Load from File (Fit to Clip)**
+instead.
+
+`Copy Stage` / `Paste Stage` sit alongside and do the same for one stage rather than the whole
+effect.
+
 ### Where presets live
 
 `Documents\MultiTransform\Presets` by default — somewhere you can browse to, copy from and back
@@ -557,9 +606,17 @@ The toolbar is **two rows, grouped by kind** — *what am I looking at* above, *
 below:
 
 ```
-TIME  PATH  OPAC  CURVE  LIB          LOAD      ← panels
-[1][2]⟨3⟩⟨4⟩ [-] ON          TO  FROM  BASE      ← stage and target
+TIME  PATH  OPAC  CURVE  LIB               LOAD   ← panels
+[1][2]⟨3⟩⟨4⟩ [-] ON   QUICK GHOST BASE FROM TO    ← stage, target and actions
 ```
+
+**QUICK** raises the [Quick Control](#quick-control) panel over the middle of the image: the same
+eight actions as the Inspector's dropdown, one per row, grouped by what each overwrites — the two
+ends of a stage, a whole stage, the whole effect. Picking one runs it and closes the panel.
+
+Behind a button rather than laid out along the toolbar, because eight more boxes permanently over
+the picture is exactly the crowding the two-row toolbar exists to avoid — and it keeps Paste and
+Flatten from sitting one stray click away from the controls in constant use.
 
 **Stage count is set from the tabs.** All four slots are always drawn: the ones past the current
 count are hollow, and clicking one raises the count to it and selects it. `-` drops the last
@@ -757,6 +814,31 @@ Boxes are sized to their labels wherever the layout allows, so trimming stays a 
 place it can still bite is the toolbar at extreme zoom-out, where the buttons shrink to keep clear
 of the stage tabs and `CURVE` becomes `CURV`. That is the deliberate trade: a clipped character
 is a better failure than a row of buttons colliding with the tabs.
+
+### Staying visible on white footage
+
+Everything the overlay draws over the picture is drawn **twice**: a wide near-black pass first,
+then the real colour thinner on top. Outlines, the anchor cross, the rotation arm, the motion path
+and its ticks, and every label on the image.
+
+The obvious fix — pick a colour that always shows, red being the usual suggestion — does not
+actually work. Any single ink is a point in the same colour space as the footage, so some footage
+sits right on top of it: red disappears into skin tones, sunsets, tail lights and a Resolve scope.
+Choosing a colour only moves *which* shots the overlay vanishes on.
+
+Drawing each mark twice sidesteps that, because it stops depending on the background's **colour**
+and starts depending only on its **brightness**. On white footage the black rim carries the shape;
+on black footage the bright core does; on mid greys both edges read. The marks also keep their
+meanings — cyan is still FROM, orange still TO, violet still the base, and the four stage colours
+still tell the lanes apart — which recolouring everything red would have thrown away.
+
+The rim is 72% black rather than opaque, so the picture is still readable through it instead of
+being blocked out by a heavy outline. Panels do not use any of this: a panel is already a dark
+backdrop of known brightness, so it solves the problem for its own contents.
+
+Labels get the same treatment as four offset copies rather than a drop shadow — a shadow only
+protects the two edges it falls on, and a label over white footage needs all four. There is no
+outline or shadow call in `OfxDrawSuite` to do it properly.
 
 ### Known limitation
 

@@ -41,6 +41,28 @@ constexpr Colour kGizmo      = { 0.20f, 0.85f, 1.00f, 0.95f };
 constexpr Colour kGizmoTo    = { 1.00f, 0.55f, 0.20f, 0.95f };
 constexpr Colour kHandle     = { 1.00f, 1.00f, 1.00f, 1.00f };
 
+/** @brief The dark backing drawn under every bright mark on the picture.
+ *
+ *  ## Why not simply pick a colour that always shows
+ *
+ *  There isn't one. Any single ink -- red included -- is a point in the same
+ *  colour space as the footage, so some footage sits right on top of it: red
+ *  disappears into skin tones, sunsets, tail lights and a Resolve colour-page
+ *  scope. Choosing a colour only moves which shots the overlay is invisible on.
+ *
+ *  Drawing each mark twice does not have that problem, because it stops
+ *  depending on the *colour* of the background and starts depending only on its
+ *  *brightness*: a wide near-black pass first, then the real colour thinner on
+ *  top. On white footage the black rim carries the shape; on black footage the
+ *  bright core does; on mid greys both edges read. The mark also keeps its
+ *  meaning -- cyan still means FROM, orange still means TO -- which a uniform
+ *  red would have thrown away.
+ *
+ *  Not fully opaque, so the picture underneath is still readable through the
+ *  rim rather than being blocked out by a heavy outline.
+ */
+constexpr Colour kHalo       = { 0.00f, 0.00f, 0.00f, 0.72f };
+
 /// Per-stage lane colours, distinct enough to tell apart at a glance.
 constexpr Colour kStage[4] = {
     { 0.30f, 0.72f, 1.00f, 0.90f },   // blue
@@ -81,6 +103,11 @@ struct OverlayContext
     /// The saved-curve picker. Modal while it is up: it covers the middle of
     /// the image and takes every click inside itself.
     bool showLibrary = false;
+
+    /// The Quick Control panel, raised from the toolbar's QUICK button. Modal
+    /// on the same terms as the library, and dismissed as soon as an action is
+    /// picked.
+    bool showQuick   = false;
 
     /// Whether dragging a gizmo previews the picture at the dragged pose.
     /// Not always wanted: on a pure zoom the preview says little the outline
@@ -269,6 +296,91 @@ inline void Handle(const OverlayContext& c, double x, double y,
     FillRect(c, x - hx - c.sx(1), y - hy - c.sy(1), x + hx + c.sx(1), y + hy + c.sy(1));
     SetColour(c, fill);
     FillRect(c, x - hx, y - hy, x + hx, y + hy);
+}
+
+// --- Haloed primitives -------------------------------------------------------
+//
+// Use these for anything drawn *over the picture*. Marks that sit on a panel do
+// not need them: the panel is already a dark backdrop of known brightness, so
+// the contrast problem is solved there by the panel itself.
+//
+// The backing pass is `kHaloExtraPx` wider on each side, which is what makes the
+// rim visible either side of a thin line. See colours::kHalo for why this is
+// done instead of choosing a more visible colour.
+
+constexpr double kHaloExtraPx = 2.0;
+
+inline void HaloLine(const OverlayContext& c, double x1, double y1, double x2, double y2,
+                     const Colour& col, double widthPx = 1.5)
+{
+    SetColour(c, colours::kHalo);
+    SetLineWidth(c, static_cast<float>(widthPx + kHaloExtraPx));
+    Line(c, x1, y1, x2, y2);
+
+    SetColour(c, col);
+    SetLineWidth(c, static_cast<float>(widthPx));
+    Line(c, x1, y1, x2, y2);
+}
+
+inline void HaloLineLoop(const OverlayContext& c, const OfxPointD* pts, int n,
+                         const Colour& col, double widthPx = 1.5)
+{
+    SetColour(c, colours::kHalo);
+    SetLineWidth(c, static_cast<float>(widthPx + kHaloExtraPx));
+    LineLoop(c, pts, n);
+
+    SetColour(c, col);
+    SetLineWidth(c, static_cast<float>(widthPx));
+    LineLoop(c, pts, n);
+}
+
+inline void HaloPolyline(const OverlayContext& c, const OfxPointD* pts, int n,
+                         const Colour& col, double widthPx = 1.5)
+{
+    SetColour(c, colours::kHalo);
+    SetLineWidth(c, static_cast<float>(widthPx + kHaloExtraPx));
+    Polyline(c, pts, n);
+
+    SetColour(c, col);
+    SetLineWidth(c, static_cast<float>(widthPx));
+    Polyline(c, pts, n);
+}
+
+/** @brief A filled dot with a dark rim around it.
+ *
+ *  The rim is a *larger filled* ellipse rather than a stroked one, because a
+ *  stroke of the same radius would be centred on the edge and eat half its width
+ *  out of the dot itself, leaving these small markers noticeably thinner. */
+inline void HaloDot(const OverlayContext& c, double cx, double cy,
+                    double rx, double ry, const Colour& col)
+{
+    SetColour(c, colours::kHalo);
+    Ellipse(c, cx, cy, rx + c.sx(kHaloExtraPx * 0.5), ry + c.sy(kHaloExtraPx * 0.5));
+    SetColour(c, col);
+    Ellipse(c, cx, cy, rx, ry);
+}
+
+/** @brief Text with a dark outline, for labels that sit on the picture.
+ *
+ *  Drawn as four offset copies rather than one drop shadow: a shadow only
+ *  protects the two edges it falls on, and a label over white footage needs all
+ *  four. There is no text-metrics or outline call in OfxDrawSuite to do this
+ *  properly, so it is five draws of the same string -- cheap enough, since only
+ *  a handful of labels are ever over the image rather than on a panel. */
+inline void HaloText(const OverlayContext& c, const std::string& s, double x, double y,
+                     const Colour& col, int alignment = kOfxDrawTextAlignmentLeft)
+{
+    const double ox = c.sx(1.0);
+    const double oy = c.sy(1.0);
+
+    SetColour(c, colours::kHalo);
+    Text(c, s, x - ox, y - oy, alignment);
+    Text(c, s, x + ox, y - oy, alignment);
+    Text(c, s, x - ox, y + oy, alignment);
+    Text(c, s, x + ox, y + oy, alignment);
+
+    SetColour(c, col);
+    Text(c, s, x, y, alignment);
 }
 
 /** @brief Rough on-screen width of a string, in screen pixels.

@@ -123,19 +123,65 @@ constexpr const char* kParamRotFrom        = "rotFrom";
 constexpr const char* kParamRotTo          = "rotTo";
 constexpr const char* kParamOpacityFrom    = "opacityFrom";
 constexpr const char* kParamOpacityTo      = "opacityTo";
-// Stage clipboard and flatten. The triggers exist because OFX has no way to
-// fire a push button from code, so the overlay flips a hidden boolean and
-// changedParam treats the flip as the press.
-constexpr const char* kParamCopyStage       = "copyStage";
-constexpr const char* kParamPasteStage      = "pasteStage";
-constexpr const char* kParamFlatten         = "flattenToStage1";
-constexpr const char* kParamCopyFromOverlay  = "copyStageFromOverlay";
-constexpr const char* kParamPasteFromOverlay = "pasteStageFromOverlay";
-constexpr const char* kParamFlattenFromOverlay = "flattenFromOverlay";
+// --- Quick Control ---
+//
+// Eight one-shot actions behind a dropdown and a single Apply, instead of eight
+// push buttons stacked at the top of the Inspector.
+//
+// The panel has no columns to spread them across: the only column mechanism OFX
+// offers is page-based (kOfxParamPageSkipColumn), and Resolve reports
+// maxPages = 0, so every parameter is one full-width row. Eight rows of buttons
+// pushed the controls that are actually adjusted -- poses, timing, easing --
+// most of a screen down the panel. Two rows is the whole point.
+//
+// Choice-plus-Apply rather than a choice that fires on selection, because these
+// overwrite work: picking Flatten by mistake while scrolling a dropdown should
+// not destroy four stages.
+constexpr const char* kParamQuickAction     = "quickAction";
+constexpr const char* kParamQuickApply      = "quickApply";
 
-constexpr const char* kParamCopyFromTo     = "copyFromTo";   ///< From -> To
-constexpr const char* kParamCopyToFrom     = "copyToFrom";   ///< To -> From
-constexpr const char* kParamSwapEnds       = "swapEnds";
+/// Overlay's QUICK panel. The overlay writes kParamQuickAction and then flips
+/// this, so the choice parameter doubles as the argument and one trigger serves
+/// all eight actions. See kParamLoadFromOverlay for why a boolean, not a button.
+constexpr const char* kParamQuickFromOverlay = "quickFromOverlay";
+
+/// Whether the overlay's Quick Control panel is up. Hidden and not persisted:
+/// an open panel is a momentary state, and one left showing across a project
+/// reload would be sitting over the picture for no reason anybody remembers.
+constexpr const char* kParamShowQuick        = "showQuickPanel";
+
+/** Quick Control dropdown order, grouped by what a given action touches:
+ *  the two ends of a stage, then the stage, then the whole effect. */
+enum QuickAction
+{
+    kQuickCopyFromTo  = 0,   ///< FROM pose -> TO pose, active stage
+    kQuickCopyToFrom  = 1,
+    kQuickSwapEnds    = 2,
+    kQuickCopyStage   = 3,
+    kQuickPasteStage  = 4,
+    kQuickFlatten     = 5,
+    kQuickCopyEffect  = 6,
+    kQuickPasteEffect = 7,
+    kQuickActionCount = 8
+};
+
+/** @brief Dropdown label for a QuickAction, also used for the overlay's rows. */
+inline const char* QuickActionLabel(int action)
+{
+    switch (action)
+    {
+        case kQuickCopyFromTo:  return "Copy FROM to TO";
+        case kQuickCopyToFrom:  return "Copy TO to FROM";
+        case kQuickSwapEnds:    return "Swap FROM and TO";
+        case kQuickCopyStage:   return "Copy Stage";
+        case kQuickPasteStage:  return "Paste Stage";
+        case kQuickFlatten:     return "Flatten to Stage 1";
+        case kQuickCopyEffect:  return "Copy All Settings";
+        case kQuickPasteEffect: return "Paste All Settings";
+        default:                return "";
+    }
+}
+
 constexpr const char* kParamAnchor         = "anchor";
 constexpr const char* kParamPathC1         = "pathC1";      ///< offset of the first path handle
 constexpr const char* kParamPathC2         = "pathC2";      ///< offset of the second

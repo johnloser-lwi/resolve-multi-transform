@@ -121,24 +121,15 @@ void PathWidget::draw(const OverlayContext& c)
         pts[i] = toScreen(c, px, py, t);
     }
 
-    SetColour(c, { 0.0f, 0.0f, 0.0f, 0.55f });
-    SetLineWidth(c, 3.0f);
-    Polyline(c, pts, kPathSegments + 1);
-
-    SetColour(c, colours::kStage[c.activeStage % 4]);
-    SetLineWidth(c, 1.5f);
-    Polyline(c, pts, kPathSegments + 1);
+    HaloPolyline(c, pts, kPathSegments + 1, colours::kStage[c.activeStage % 4], 1.5);
 
     // Tethers from each end to its handle, so it is obvious which is which.
-    SetColour(c, { 0.85f, 0.88f, 0.95f, 0.5f });
-    SetLineWidth(c, 1.0f);
-    Line(c, p0.x, p0.y, h1.x, h1.y);
-    Line(c, p3.x, p3.y, h2.x, h2.y);
+    HaloLine(c, p0.x, p0.y, h1.x, h1.y, { 0.85f, 0.88f, 0.95f, 0.6f }, 1.0);
+    HaloLine(c, p3.x, p3.y, h2.x, h2.y, { 0.85f, 0.88f, 0.95f, 0.6f }, 1.0);
 
     // Ticks along the path show where the easing spends its time: bunched ticks
     // mean slow, spread ticks mean fast. Without them a curved path gives no
     // clue about pacing.
-    SetColour(c, { 1.0f, 1.0f, 1.0f, 0.45f });
     for (int i = 1; i < 10; ++i)
     {
         const double tt = tA + (tB - tA) * (static_cast<double>(i) / 10.0);
@@ -146,14 +137,12 @@ void PathWidget::draw(const OverlayContext& c)
         EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(tt))),
                      px, py);
         const OfxPointD d = toScreen(c, px, py, tt);
-        Ellipse(c, d.x, d.y, c.sx(2.0), c.sy(2.0));
+        HaloDot(c, d.x, d.y, c.sx(2.0), c.sy(2.0), { 1.0f, 1.0f, 1.0f, 0.55f });
     }
 
     // Endpoints, then handles on top.
-    SetColour(c, colours::kGizmo);
-    Ellipse(c, p0.x, p0.y, c.sx(5.0), c.sy(5.0));
-    SetColour(c, colours::kGizmoTo);
-    Ellipse(c, p3.x, p3.y, c.sx(5.0), c.sy(5.0));
+    HaloDot(c, p0.x, p0.y, c.sx(5.0), c.sy(5.0), colours::kGizmo);
+    HaloDot(c, p3.x, p3.y, c.sx(5.0), c.sy(5.0), colours::kGizmoTo);
 
     Handle(c, h1.x, h1.y, _drag == kDragC1 ? colours::kPlayhead : colours::kHandle, 4.5);
     Handle(c, h2.x, h2.y, _drag == kDragC2 ? colours::kPlayhead : colours::kHandle, 4.5);

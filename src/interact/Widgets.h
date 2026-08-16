@@ -207,6 +207,35 @@ private:
     int                  _rows    = 1;
 };
 
+/** @brief The Quick Control actions, as a panel raised from the toolbar.
+ *
+ * The same eight actions as the Inspector's Quick Control dropdown, reachable
+ * without leaving the viewer. Behind a button rather than laid out along the
+ * toolbar: they are one-shot commands used occasionally, and eight more boxes
+ * permanently over the picture is exactly the crowding the two-row toolbar was
+ * reorganised to fix. It also keeps destructive actions -- Paste, Flatten --
+ * from sitting one stray click away from the controls in constant use.
+ *
+ * Modal while up, like the curve library: it covers the middle of the image and
+ * takes every click inside itself, and it dismisses as soon as an action runs.
+ */
+class QuickWidget : public Widget
+{
+public:
+    void layout(const OverlayContext& c) override;
+    void draw(const OverlayContext& c) override;
+    bool penDown  (const OverlayContext& c, const OfxPointD& p) override;
+    bool penMotion(const OverlayContext& c, const OfxPointD& p) override;
+    bool penUp    (const OverlayContext& c, const OfxPointD& p) override;
+
+    const OfxRectD& rect() const { return _rect; }
+
+private:
+    OfxRectD rowRect(const OverlayContext& c, int action) const;
+
+    OfxRectD _rect{};
+};
+
 /** @brief The trajectory the active stage travels, drawn over the image.
  *
  * Position otherwise interpolates in a straight line; dragging these two
