@@ -1953,6 +1953,99 @@ static void TestOpacityFade()
     CheckNear(EvaluateOpacity(plain, 50.0f), 1.0f, 1e-5f, "default animation is fully opaque");
 }
 
+static void TestChannelOffsets()
+{
+    std::printf("Per-channel timing offsets\n");
+
+    const float W = 100.0f, H = 100.0f;
+
+    // Linear easing throughout, so expected values are plain fractions and a
+    // wrong offset shows up as a wrong number rather than a near-miss.
+    AnimParams a = AnimParams::Default();
+    Stage& s = a.stages[0];
+    s.enabled    = true;
+    s.easing     = Easing::Linear();
+    s.startFrame = 0.0f;
+    s.endFrame   = 10.0f;
+    s.posXFrom   = 0.0f;  s.posXTo  = 1.0f;
+    s.scaleFrom  = 1.0f;  s.scaleTo = 2.0f;
+
+    // The anchor is the fixed point of scale and rotation, so applying the
+    // matrix to it isolates the position channel.
+    const auto posAt = [&](float t)
+    {
+        float x, y;
+        EvaluateTransform(a, t, W, H).Apply(50.0f, 50.0f, x, y);
+        return (x - 50.0f) / W;
+    };
+    // A point one unit right of the anchor isolates scale (no rotation here).
+    const auto scaleAt = [&](float t)
+    {
+        float ax, ay, px, py;
+        const Mat3 m = EvaluateTransform(a, t, W, H);
+        m.Apply(50.0f, 50.0f, ax, ay);
+        m.Apply(51.0f, 50.0f, px, py);
+        return px - ax;
+    };
+
+    // Position trails by 5: scale finishes on the stage's own clock while the
+    // move is still half way, and the move completes 5 frames later.
+    s.offsetPos = 5.0f;
+    CheckNear(scaleAt(10.0f), 2.0f, 1e-4f, "unoffset scale is done at the stage end");
+    CheckNear(posAt(10.0f),   0.5f, 1e-4f, "offset position is half way at the stage end");
+    CheckNear(posAt(15.0f),   1.0f, 1e-4f, "offset position finishes offset frames later");
+    CheckNear(posAt(4.9f),    0.0f, 1e-3f, "offset position holds A until its window opens");
+
+    // Negative leads: the channel is finished before the stage's own end.
+    s.offsetPos = -5.0f;
+    CheckNear(posAt(5.0f), 1.0f, 1e-4f, "negative offset finishes early");
+    CheckNear(posAt(0.0f), 0.5f, 1e-4f, "negative offset is mid-move at the stage start");
+
+    // All offsets equal and zero must reproduce the old single-clock behaviour
+    // exactly -- this is every project saved before offsets existed.
+    s.offsetPos = 0.0f;
+    CheckNear(posAt(5.0f),   0.5f, 1e-5f, "zero offsets: position on the stage clock");
+    CheckNear(scaleAt(5.0f), 1.5f, 1e-5f, "zero offsets: scale on the stage clock");
+
+    // Opacity runs through its own evaluator, so its offset is checked there.
+    s.opacityFrom   = 0.0f;
+    s.opacityTo     = 1.0f;
+    s.offsetOpacity = 4.0f;
+    CheckNear(EvaluateOpacity(a, 5.0f),  0.1f, 1e-4f, "opacity offset delays the fade");
+    CheckNear(EvaluateOpacity(a, 14.0f), 1.0f, 1e-4f, "offset fade completes late");
+
+    // The settle time includes the latest channel, not just the stage end --
+    // flatten captures the pose there, and a still-fading channel would hand a
+    // non-final pose to the next clip.
+    CheckNear(AnimationEndTime(a, 0.0f), 14.0f, 1e-4f,
+              "animation end includes the positive opacity offset");
+
+    // A negative offset must not pull the end earlier: the stage's own clock
+    // still runs to its end frame.
+    s.offsetOpacity = -4.0f;
+    CheckNear(AnimationEndTime(a, 0.0f), 10.0f, 1e-4f,
+              "a leading channel does not shorten the animation");
+
+    // Offsets are stage-local units, so a Stretch-anchored stage (whose units
+    // are percentages) stretches its offsets with everything else.
+    //
+    // Stretch maps 100% to the clip's *last frame*, clipLength - 1 -- that is
+    // what makes an outro land exactly on the final frame -- so a length of 201
+    // gives the round scale of half a percent per frame.
+    s.offsetOpacity = 0.0f;
+    s.offsetPos     = 25.0f;         // a quarter of the clip, under Stretch
+    s.anchor        = kAnchorStretch;
+    s.startFrame    = 0.0f;
+    s.endFrame      = 50.0f;         // first half of the clip
+    a.clipStart     = 0.0f;
+    a.clipLength    = 201.0f;
+    // The stage spans clip frames 0..100; the offset shifts the position
+    // channel by a quarter of the clip = 50 frames, so it is half way at
+    // frame 100 and done at frame 150.
+    CheckNear(posAt(100.0f), 0.5f, 1e-3f, "stretch offset scales with the clip");
+    CheckNear(posAt(150.0f), 1.0f, 1e-3f, "stretch offset finishes at the scaled time");
+}
+
 static void TestOpacityComposition()
 {
     std::printf("Opacity composition and clamping\n");
@@ -2224,6 +2317,7 @@ int main()
     TestPathBends();
     TestEasingDrivesSpeedNotShape();
     TestOpacityFade();
+    TestChannelOffsets();
     TestOpacityComposition();
     TestOpacityBlursAcrossShutter();
     TestShutterSampleTimes();

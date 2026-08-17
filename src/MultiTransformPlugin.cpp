@@ -276,6 +276,12 @@ private:
         OFX::Double2DParam* pathC1;
         OFX::Double2DParam* pathC2;
         OFX::PushButtonParam* pathReset;
+        OFX::DoubleParam*   posOffset;
+        OFX::DoubleParam*   scaleOffset;
+        OFX::DoubleParam*   rotOffset;
+        OFX::DoubleParam*   tiltOffset;
+        OFX::DoubleParam*   swivelOffset;
+        OFX::DoubleParam*   opacityOffset;
         OFX::BooleanParam*  enabled;
         OFX::ChoiceParam*   timingAnchor;
         OFX::DoubleParam*   startFrame;
@@ -381,6 +387,12 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.pathC1        = fetchDouble2DParam(StageParam(kParamPathC1,        i));
         s.pathC2        = fetchDouble2DParam(StageParam(kParamPathC2,        i));
         s.pathReset     = fetchPushButtonParam(StageParam(kParamPathReset,   i));
+        s.posOffset     = fetchDoubleParam  (StageParam(kParamPosOffset,     i));
+        s.scaleOffset   = fetchDoubleParam  (StageParam(kParamScaleOffset,   i));
+        s.rotOffset     = fetchDoubleParam  (StageParam(kParamRotOffset,     i));
+        s.tiltOffset    = fetchDoubleParam  (StageParam(kParamTiltOffset,    i));
+        s.swivelOffset  = fetchDoubleParam  (StageParam(kParamSwivelOffset,  i));
+        s.opacityOffset = fetchDoubleParam  (StageParam(kParamOpacityOffset, i));
         s.enabled       = fetchBooleanParam (StageParam(kParamEnabled,       i));
         s.timingAnchor  = fetchChoiceParam  (StageParam(kParamAnchor2,       i));
         s.startFrame    = fetchDoubleParam  (StageParam(kParamStartFrame,    i));
@@ -552,6 +564,13 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         h.pathC2->getValueAtTime(p_Time, x, y);
         s.pathC2X  = static_cast<float>(x); s.pathC2Y  = static_cast<float>(y);
 
+        s.offsetPos     = static_cast<float>(h.posOffset->getValueAtTime(p_Time));
+        s.offsetScale   = static_cast<float>(h.scaleOffset->getValueAtTime(p_Time));
+        s.offsetRot     = static_cast<float>(h.rotOffset->getValueAtTime(p_Time));
+        s.offsetTilt    = static_cast<float>(h.tiltOffset->getValueAtTime(p_Time));
+        s.offsetSwivel  = static_cast<float>(h.swivelOffset->getValueAtTime(p_Time));
+        s.offsetOpacity = static_cast<float>(h.opacityOffset->getValueAtTime(p_Time));
+
         // The amounts are the single source of truth; the preset dropdown only
         // ever stamps values into them.
         int bounceType = kBounceNone;
@@ -647,6 +666,13 @@ mtx::PresetStage MultiTransformPlugin::captureStage(int i) const
     h.pathC1->getValue(x, y);  s.pathC1X  = static_cast<float>(x); s.pathC1Y  = static_cast<float>(y);
     h.pathC2->getValue(x, y);  s.pathC2X  = static_cast<float>(x); s.pathC2Y  = static_cast<float>(y);
 
+    s.offsetPos     = static_cast<float>(h.posOffset->getValue());
+    s.offsetScale   = static_cast<float>(h.scaleOffset->getValue());
+    s.offsetRot     = static_cast<float>(h.rotOffset->getValue());
+    s.offsetTilt    = static_cast<float>(h.tiltOffset->getValue());
+    s.offsetSwivel  = static_cast<float>(h.swivelOffset->getValue());
+    s.offsetOpacity = static_cast<float>(h.opacityOffset->getValue());
+
     h.easingPreset->getValue(s.easingPreset);
     s.easeIn        = static_cast<float>(h.easeIn->getValue());
     s.easeOut       = static_cast<float>(h.easeOut->getValue());
@@ -736,6 +762,12 @@ void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
     h.anchor->setValue(s.anchorX, s.anchorY);
     h.pathC1->setValue(s.pathC1X, s.pathC1Y);
     h.pathC2->setValue(s.pathC2X, s.pathC2Y);
+    h.posOffset->setValue(s.offsetPos);
+    h.scaleOffset->setValue(s.offsetScale);
+    h.rotOffset->setValue(s.offsetRot);
+    h.tiltOffset->setValue(s.offsetTilt);
+    h.swivelOffset->setValue(s.offsetSwivel);
+    h.opacityOffset->setValue(s.offsetOpacity);
 
     // The amounts are the source of truth for the curve; the dropdown is only a
     // label for them. Both are restored verbatim, which is safe only because
@@ -1522,6 +1554,12 @@ void MultiTransformPlugin::syncStageVisibility()
         s.saveCurve->setIsSecret(hidden);
         s.pathC1->setIsSecret(hidden);
         s.pathC2->setIsSecret(hidden);
+        s.posOffset->setIsSecret(hidden);
+        s.scaleOffset->setIsSecret(hidden);
+        s.rotOffset->setIsSecret(hidden);
+        s.tiltOffset->setIsSecret(hidden);
+        s.swivelOffset->setIsSecret(hidden);
+        s.opacityOffset->setIsSecret(hidden);
         s.pathReset->setIsSecret(hidden);
 
         s.enabled->setIsSecret(hidden);
@@ -2280,6 +2318,37 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                  "reference, not editable.",
                  24.0, -1e9, 1e9, 0.0, 240.0, 1.0)
         ->setCacheInvalidation(eCacheInvalidateValueChange);
+
+    // --- Per-channel timing offsets ---
+    //
+    // Every channel shares the stage's start, end and easing; an offset slides
+    // that one channel's copy of the window. Shift, not squeeze: the channel
+    // keeps its duration and curve and simply runs later (or earlier, when
+    // negative). This is the in-stage version of what stages themselves do for
+    // whole properties -- a fade trailing its move no longer costs a second
+    // stage of the four.
+    {
+        struct OffsetSpec { const char* param; const char* label; const char* what; };
+        const OffsetSpec offs[6] = {
+            { kParamPosOffset,     "Position Offset", "the move along the motion path" },
+            { kParamScaleOffset,   "Scale Offset",    "both scale axes"                },
+            { kParamRotOffset,     "Rotation Offset", "the in-plane rotation"          },
+            { kParamTiltOffset,    "Tilt Offset",     "the tilt about the X axis"      },
+            { kParamSwivelOffset,  "Swivel Offset",   "the swivel about the Y axis"    },
+            { kParamOpacityOffset, "Opacity Offset",  "the fade"                       },
+        };
+
+        for (const OffsetSpec& o : offs)
+        {
+            DefineDouble(desc, page, gTiming, StageParam(o.param, i), o.label,
+                         std::string("Delays ") + o.what + " by this many frames against the "
+                         "stage's own timing (negative leads). The channel keeps the stage's "
+                         "duration and easing -- it just runs shifted, holding its A value "
+                         "until its window opens. Under a Stretch anchor this is in percent "
+                         "of the clip, like Start and End.",
+                         0.0, -100000.0, 100000.0, -48.0, 48.0, 1.0);
+        }
+    }
 
     DefineDouble2D(desc, page, gTiming, StageParam(kParamAnchor, i), "Anchor",
                    "Point that scale and rotation pivot around. 0.5, 0.5 is the image centre. "

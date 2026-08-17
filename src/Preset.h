@@ -35,6 +35,12 @@ struct PresetStage
     float anchorX, anchorY;
     float pathC1X, pathC1Y, pathC2X, pathC2Y;
 
+    /// Per-channel timing offsets, in the stage's own frame units. Absent from
+    /// files written before they existed, in which case they default to zero --
+    /// every channel on the stage's own clock, exactly the old behaviour.
+    float offsetPos, offsetScale, offsetRot;
+    float offsetTilt, offsetSwivel, offsetOpacity;
+
     int   easingPreset;
     float easeIn, easeOut, anticipation, overshoot;
     int   bounceType;

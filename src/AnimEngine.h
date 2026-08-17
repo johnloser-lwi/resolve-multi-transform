@@ -310,6 +310,18 @@ struct Stage
     float pathC1X, pathC1Y;
     float pathC2X, pathC2Y;
 
+    // Per-channel timing offsets, in the stage's own frame units (frames
+    // normally, percentages under a Stretch anchor -- the same units start and
+    // end are written in).
+    //
+    // Shift semantics, not squeeze: an offset of +5 runs that channel over
+    // [start+5, end+5] -- same duration, same easing curve, just later -- so a
+    // fade can trail the move it belongs to without spending a second stage on
+    // it. Negative leads. The channel simply holds its A value until its own
+    // window opens, exactly as a stage holds before its start frame.
+    float offsetPos,  offsetScale, offsetRot;
+    float offsetTilt, offsetSwivel, offsetOpacity;
+
     Easing easing;
 
     MTX_HD static Stage Default()
@@ -331,6 +343,8 @@ struct Stage
         s.anchorX     = 0.5f; s.anchorY   = 0.5f;
         s.pathC1X     = 0.0f; s.pathC1Y   = 0.0f;
         s.pathC2X     = 0.0f; s.pathC2Y   = 0.0f;
+        s.offsetPos   = 0.0f; s.offsetScale  = 0.0f; s.offsetRot     = 0.0f;
+        s.offsetTilt  = 0.0f; s.offsetSwivel = 0.0f; s.offsetOpacity = 0.0f;
         s.easing      = Easing::Smooth();
         return s;
     }
@@ -544,25 +558,42 @@ MTX_HD inline void EvaluatePath(const Stage& s, float e, float& outX, float& out
     outY = w0 * s.posYFrom + w1 * c1y + w2 * c2y + w3 * s.posYTo;
 }
 
-/** @brief The transform contributed by a single stage, in pixel space. */
+/** @brief The transform contributed by a single stage, in pixel space.
+ *
+ * Each channel runs on its own clock: the stage's timing shifted by that
+ * channel's offset. The default offsets are all zero, so the common case is
+ * still a single easing solve -- StageProgress runs a Newton iteration, and
+ * evaluating it five times per shutter sample when every answer would be
+ * identical is the cost the equality checks below avoid. Each channel reuses
+ * the position channel's progress whenever its offset matches.
+ */
 MTX_HD inline Mat3 EvaluateStage(const Stage& s, float t, float width, float height)
 {
-    const float e = StageProgress(s, t);
+    const float ePos = StageProgress(s, t - s.offsetPos);
 
-    const float rot = Lerp(s.rotFrom, s.rotTo, e);
+    const float eRot = (s.offsetRot == s.offsetPos)
+                     ? ePos : StageProgress(s, t - s.offsetRot);
+    const float rot  = Lerp(s.rotFrom, s.rotTo, eRot);
 
     // Y follows X while linked, so the unused Y values can sit at whatever they
-    // were without leaking into the result.
-    const float scaleX = Lerp(s.scaleFrom, s.scaleTo, e);
-    const float scaleY = s.linkScale ? scaleX : Lerp(s.scaleYFrom, s.scaleYTo, e);
+    // were without leaking into the result. Both axes share one clock: the
+    // scale offset staggers scale against the other channels, not X against Y.
+    const float eScale = (s.offsetScale == s.offsetPos)
+                       ? ePos : StageProgress(s, t - s.offsetScale);
+    const float scaleX = Lerp(s.scaleFrom, s.scaleTo, eScale);
+    const float scaleY = s.linkScale ? scaleX : Lerp(s.scaleYFrom, s.scaleYTo, eScale);
 
     // Orthographic tilt and swivel are scale factors, so they simply multiply.
+    const float eTilt   = (s.offsetTilt == s.offsetPos)
+                        ? ePos : StageProgress(s, t - s.offsetTilt);
+    const float eSwivel = (s.offsetSwivel == s.offsetPos)
+                        ? ePos : StageProgress(s, t - s.offsetSwivel);
     float orthoX, orthoY;
-    OrthographicScale(Lerp(s.tiltXFrom,   s.tiltXTo,   e),
-                      Lerp(s.swivelYFrom, s.swivelYTo, e), orthoX, orthoY);
+    OrthographicScale(Lerp(s.tiltXFrom,   s.tiltXTo,   eTilt),
+                      Lerp(s.swivelYFrom, s.swivelYTo, eSwivel), orthoX, orthoY);
 
     float px, py;
-    EvaluatePath(s, e, px, py);
+    EvaluatePath(s, ePos, px, py);
     const float posX = px * width;
     const float posY = py * height;
 
@@ -706,7 +737,7 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
         const Stage& s = a.stages[i];
         if (!s.enabled) continue;
         opacity *= Lerp(s.opacityFrom, s.opacityTo,
-                        StageProgress(s, StageLocalTime(a, s, t)));
+                        StageProgress(s, StageLocalTime(a, s, t) - s.offsetOpacity));
     }
 
     opacity *= a.base.opacity;
@@ -815,6 +846,24 @@ inline FlatPose FlattenTransform(const AnimParams& a, float t, float width, floa
  * The latest end frame of any enabled stage, which is the moment the composed
  * pose stops changing and therefore the one worth carrying to the next clip.
  */
+/** @brief The largest of a stage's channel offsets, floored at zero.
+ *
+ * The moment a stage stops changing is its end frame plus this: a channel with
+ * a positive offset is still travelling after the stage's own end, and a
+ * negative offset only means that channel finished early, which moves nothing.
+ */
+MTX_HD inline float MaxChannelOffset(const Stage& s)
+{
+    float m = 0.0f;
+    if (s.offsetPos     > m) m = s.offsetPos;
+    if (s.offsetScale   > m) m = s.offsetScale;
+    if (s.offsetRot     > m) m = s.offsetRot;
+    if (s.offsetTilt    > m) m = s.offsetTilt;
+    if (s.offsetSwivel  > m) m = s.offsetSwivel;
+    if (s.offsetOpacity > m) m = s.offsetOpacity;
+    return m;
+}
+
 inline float AnimationEndTime(const AnimParams& a, float fallback)
 {
     const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
@@ -826,8 +875,12 @@ inline float AnimationEndTime(const AnimParams& a, float fallback)
         const Stage& s = a.stages[i];
         if (!s.enabled) continue;
 
-        const float e = ClipTimeFromStageFrame(a, s, s.endFrame > s.startFrame ? s.endFrame
-                                                                               : s.startFrame);
+        // Plus the largest positive channel offset: a staggered fade is still
+        // fading after the stage's own end frame, and flattening there would
+        // capture a pose that is not yet final.
+        const float e = ClipTimeFromStageFrame(a, s,
+                            (s.endFrame > s.startFrame ? s.endFrame : s.startFrame)
+                            + MaxChannelOffset(s));
         if (!any || e > last) { last = e; any = true; }
     }
     return any ? last : fallback;

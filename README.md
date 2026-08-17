@@ -100,6 +100,30 @@ stages different start frames.** Stage 1 running 100 → 120 alongside Stage 2 r
 *is* a six-frame stagger. Stages can also differ in length, so a short snap can overlap a long
 drift — something a single shared duration could never express.
 
+### Staggering channels inside one stage
+
+Each stage's Timing section also carries six **timing offsets** — Position, Scale, Rotation,
+Tilt, Swivel and Opacity. An offset slides that one channel's copy of the stage's window:
+**shift, not squeeze** — offset +5 runs the channel from start+5 to end+5, same duration, same
+easing curve, just later. Negative leads. The channel holds its A value until its own window
+opens, exactly as a stage holds before its start frame.
+
+This is the in-stage version of what stages do for whole properties. A move whose fade trails
+it by six frames used to cost a second stage of the four; now it is one stage with Opacity
+Offset 6. Stages stay for staggering *different curves and paths*; offsets stagger channels
+that share one.
+
+The units follow the stage: frames normally, percentages under a Stretch anchor — and Fit to
+Clip rescales offsets together with the start and end, so a fade that trailed its move by a
+tenth of the clip still trails by a tenth on the new clip. Presets saved before offsets
+existed load with all six at zero, which is exactly the old single-clock behaviour.
+
+Two derived things deliberately stay on the stage's own clock: the timeline lane's velocity
+shading and red peak tick, and the two Sync Acceleration buttons. With channels staggered
+there is no longer a single "fastest moment", so they read the stage's base timing. The
+motion path does follow the Position offset — the drawn route pins to the frames the image
+really travels.
+
 ### One stage at a time
 
 **Only the selected stage's controls appear in the Inspector.** Use the **Active Stage**

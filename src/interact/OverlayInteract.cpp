@@ -254,6 +254,13 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         GetDouble2D(_effect, StageParam(kParamPathC2, i), time, x, y);
         s.pathC2X  = static_cast<float>(x); s.pathC2Y  = static_cast<float>(y);
 
+        s.offsetPos     = static_cast<float>(GetDouble(_effect, StageParam(kParamPosOffset,     i), time));
+        s.offsetScale   = static_cast<float>(GetDouble(_effect, StageParam(kParamScaleOffset,   i), time));
+        s.offsetRot     = static_cast<float>(GetDouble(_effect, StageParam(kParamRotOffset,     i), time));
+        s.offsetTilt    = static_cast<float>(GetDouble(_effect, StageParam(kParamTiltOffset,    i), time));
+        s.offsetSwivel  = static_cast<float>(GetDouble(_effect, StageParam(kParamSwivelOffset,  i), time));
+        s.offsetOpacity = static_cast<float>(GetDouble(_effect, StageParam(kParamOpacityOffset, i), time));
+
         s.easing = MakeEasing(
             static_cast<float>(GetDouble(_effect, StageParam(kParamEaseIn,        i), time)),
             static_cast<float>(GetDouble(_effect, StageParam(kParamEaseOut,       i), time)),

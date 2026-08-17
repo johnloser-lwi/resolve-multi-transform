@@ -182,6 +182,15 @@ inline const char* QuickActionLabel(int action)
     }
 }
 
+// Per-channel timing offsets. Frames (or percentages under a Stretch anchor),
+// shift semantics: the channel keeps its duration and easing, just later.
+constexpr const char* kParamPosOffset      = "posOffset";
+constexpr const char* kParamScaleOffset    = "scaleOffset";
+constexpr const char* kParamRotOffset      = "rotOffset";
+constexpr const char* kParamTiltOffset     = "tiltOffset";
+constexpr const char* kParamSwivelOffset   = "swivelOffset";
+constexpr const char* kParamOpacityOffset  = "opacityOffset";
+
 constexpr const char* kParamAnchor         = "anchor";
 constexpr const char* kParamPathC1         = "pathC1";      ///< offset of the first path handle
 constexpr const char* kParamPathC2         = "pathC2";      ///< offset of the second

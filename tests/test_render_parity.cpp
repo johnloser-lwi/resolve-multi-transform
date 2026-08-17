@@ -289,6 +289,30 @@ int main()
                           kFilterBilinear, kEdgeBlack });
     }
 
+    // --- Per-channel timing offsets ---
+    // A frame where the staggered channels are at *different* points of their
+    // curves: scale done, position mid-move, fade barely started. Any host/device
+    // disagreement in the per-channel progress evaluation shows up as a real
+    // pixel difference here, and the blurred variant sweeps the offsets across
+    // every shutter sample.
+    {
+        AnimParams a = MakeAnim(1.6f, 20.0f, 0.2f, 0.1f);
+        a.stages[0].opacityFrom   = 0.2f;
+        a.stages[0].opacityTo     = 1.0f;
+        a.stages[0].offsetPos     = 6.0f;
+        a.stages[0].offsetRot     = -4.0f;
+        a.stages[0].offsetOpacity = 12.0f;
+        cases.push_back({ "channel offsets, mid-stagger", a, 14.0f,
+                          kFilterBilinear, kEdgeBlack });
+
+        BlurParams b = BlurParams::Default();
+        b.enabled  = true;
+        b.adaptive = false;
+        b.samples  = 16;
+        cases.push_back({ "channel offsets + motion blur", a, 14.0f,
+                          kFilterBilinear, kEdgeBlack, b });
+    }
+
     // --- Split scale, orthographic rotation, and the base pose ---
     {
         AnimParams split = MakeAnim(1.0f, 0.0f, 0.0f, 0.0f);

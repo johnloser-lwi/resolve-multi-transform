@@ -93,6 +93,12 @@ static PresetData BusyPreset()
         s.anchorY      = 0.75f;
         s.pathC1X      = 0.3f;  s.pathC1Y = -0.4f;
         s.pathC2X      = -0.15f; s.pathC2Y = 0.55f;
+        s.offsetPos    = 3.0f + i;
+        s.offsetScale  = -2.0f;
+        s.offsetRot    = 7.5f;
+        s.offsetTilt   = 1.0f;
+        s.offsetSwivel = -4.25f;
+        s.offsetOpacity = 6.0f + i;
         s.easingPreset = 7;      // Custom
         s.easeIn       = 33.0f;
         s.easeOut      = 66.0f;
@@ -136,6 +142,12 @@ static void CheckStagesEqual(const PresetStage& a, const PresetStage& b, const s
     CheckNear(a.pathC1Y,       b.pathC1Y,       1e-4, what + ": pathC1Y");
     CheckNear(a.pathC2X,       b.pathC2X,       1e-4, what + ": pathC2X");
     CheckNear(a.pathC2Y,       b.pathC2Y,       1e-4, what + ": pathC2Y");
+    CheckNear(a.offsetPos,     b.offsetPos,     1e-3, what + ": offsetPos");
+    CheckNear(a.offsetScale,   b.offsetScale,   1e-3, what + ": offsetScale");
+    CheckNear(a.offsetRot,     b.offsetRot,     1e-3, what + ": offsetRot");
+    CheckNear(a.offsetTilt,    b.offsetTilt,    1e-3, what + ": offsetTilt");
+    CheckNear(a.offsetSwivel,  b.offsetSwivel,  1e-3, what + ": offsetSwivel");
+    CheckNear(a.offsetOpacity, b.offsetOpacity, 1e-3, what + ": offsetOpacity");
     Check(a.easingPreset == b.easingPreset, what + ": easingPreset");
     CheckNear(a.easeIn,        b.easeIn,        1e-3, what + ": easeIn");
     CheckNear(a.easeOut,       b.easeOut,       1e-3, what + ": easeOut");
@@ -336,6 +348,12 @@ static void TestRescaleTiming()
     d.stages[2].anchor = kAnchorStretch;   d.stages[2].startFrame =   0.0f; d.stages[2].endFrame = 100.0f;
     d.stages[3].anchor = kAnchorTimeline;  d.stages[3].startFrame =  10.0f; d.stages[3].endFrame = 30.0f;
 
+    // Channel offsets share the stage's units, so they must scale with it on a
+    // frame anchor and stay untouched on Stretch, where they are percentages.
+    d.stages[0].offsetOpacity = 6.0f;
+    d.stages[0].offsetScale   = 0.0f;
+    d.stages[2].offsetOpacity = 10.0f;
+
     RescaleTiming(d, 310.0f);               // exactly double
 
     CheckNear(d.stages[0].startFrame,  0.0, 1e-3, "clip-start scales: start");
@@ -350,6 +368,10 @@ static void TestRescaleTiming()
 
     CheckNear(d.stages[3].endFrame,   60.0, 1e-3, "frame-based timeline stage scales");
     CheckNear(d.sourceClipLength,    310.0, 1e-3, "the recorded length is updated");
+
+    CheckNear(d.stages[0].offsetOpacity, 12.0, 1e-3, "channel offsets scale with the stage");
+    CheckNear(d.stages[0].offsetScale,    0.0, 1e-6, "a zero offset stays exactly zero");
+    CheckNear(d.stages[2].offsetOpacity, 10.0, 1e-3, "stretch offsets are untouched");
 }
 
 static void TestRescaleEdgeCases()

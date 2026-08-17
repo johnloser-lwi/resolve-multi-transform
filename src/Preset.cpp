@@ -39,6 +39,9 @@ PresetStage PresetStage::Default()
     p.anchorX      = s.anchorX;      p.anchorY    = s.anchorY;
     p.pathC1X      = s.pathC1X;      p.pathC1Y    = s.pathC1Y;
     p.pathC2X      = s.pathC2X;      p.pathC2Y    = s.pathC2Y;
+    p.offsetPos    = s.offsetPos;    p.offsetScale  = s.offsetScale;
+    p.offsetRot    = s.offsetRot;    p.offsetTilt   = s.offsetTilt;
+    p.offsetSwivel = s.offsetSwivel; p.offsetOpacity = s.offsetOpacity;
 
     // Easing is stored as the human-facing amounts, not the derived bezier
     // handles, so a preset stays readable and survives changes to the mapping.
@@ -119,6 +122,12 @@ void WriteStage(std::string& o, const PresetStage& s, const char* indent)
     kv("pathC1Y",      Num(s.pathC1Y));
     kv("pathC2X",      Num(s.pathC2X));
     kv("pathC2Y",      Num(s.pathC2Y));
+    kv("offsetPos",    Num(s.offsetPos));
+    kv("offsetScale",  Num(s.offsetScale));
+    kv("offsetRot",    Num(s.offsetRot));
+    kv("offsetTilt",   Num(s.offsetTilt));
+    kv("offsetSwivel", Num(s.offsetSwivel));
+    kv("offsetOpacity",Num(s.offsetOpacity));
     kv("easingPreset", Num(s.easingPreset));
     kv("easeIn",       Num(s.easeIn));
     kv("easeOut",      Num(s.easeOut));
@@ -226,6 +235,12 @@ PresetStage StageFromFields(const Fields& f)
     s.pathC1Y       = static_cast<float>(FieldNum(f, "pathC1Y", s.pathC1Y));
     s.pathC2X       = static_cast<float>(FieldNum(f, "pathC2X", s.pathC2X));
     s.pathC2Y       = static_cast<float>(FieldNum(f, "pathC2Y", s.pathC2Y));
+    s.offsetPos     = static_cast<float>(FieldNum(f, "offsetPos",     s.offsetPos));
+    s.offsetScale   = static_cast<float>(FieldNum(f, "offsetScale",   s.offsetScale));
+    s.offsetRot     = static_cast<float>(FieldNum(f, "offsetRot",     s.offsetRot));
+    s.offsetTilt    = static_cast<float>(FieldNum(f, "offsetTilt",    s.offsetTilt));
+    s.offsetSwivel  = static_cast<float>(FieldNum(f, "offsetSwivel",  s.offsetSwivel));
+    s.offsetOpacity = static_cast<float>(FieldNum(f, "offsetOpacity", s.offsetOpacity));
     s.easingPreset  = static_cast<int>(FieldNum(f, "easingPreset", s.easingPreset));
     s.easeIn        = static_cast<float>(FieldNum(f, "easeIn", s.easeIn));
     s.easeOut       = static_cast<float>(FieldNum(f, "easeOut", s.easeOut));
@@ -369,6 +384,19 @@ void RescaleTiming(PresetData& d, float targetClipLength)
 
         s.startFrame = start;
         s.endFrame   = end;
+
+        // Channel offsets are in the same frame units as start and end, so they
+        // scale by the same ratio -- a fade that trailed its move by a tenth of
+        // the clip goes on trailing it by a tenth of the new clip. Left alone
+        // they would become a different *proportion* of the move, which is
+        // exactly the mis-timing this function exists to avoid. No one-frame
+        // floor here: zero is the common value and must stay exactly zero.
+        s.offsetPos     *= k;
+        s.offsetScale   *= k;
+        s.offsetRot     *= k;
+        s.offsetTilt    *= k;
+        s.offsetSwivel  *= k;
+        s.offsetOpacity *= k;
     }
 
     d.sourceClipLength = targetClipLength;

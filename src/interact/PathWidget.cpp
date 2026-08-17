@@ -29,8 +29,14 @@ Mat3 OuterAt(const OverlayContext& c, double t)
 
 double PathWidget::endpointTime(const OverlayContext& c, bool end) const
 {
+    // Plus the position channel's own timing offset: with a staggered position
+    // the image genuinely starts and finishes travelling at the shifted frames,
+    // and the pinned endpoints have to sit where the image really is at those
+    // moments -- pinning to the stage's un-shifted frames would draw the route's
+    // ends where the image never was.
     const Stage& s = c.anim.stages[c.activeStage];
-    return ClipTimeFromStageFrame(c.anim, s, end ? s.endFrame : s.startFrame);
+    return ClipTimeFromStageFrame(c.anim, s,
+                                  (end ? s.endFrame : s.startFrame) + s.offsetPos);
 }
 
 OfxPointD PathWidget::toScreen(const OverlayContext& c, float nx, float ny, double t) const
@@ -116,7 +122,8 @@ void PathWidget::draw(const OverlayContext& c)
         // StageProgress already applies the easing, so this is the eased value
         // the renderer would use at that frame.
         float px, py;
-        EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(t))),
+        EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(t))
+                                        - s.offsetPos),
                      px, py);
         pts[i] = toScreen(c, px, py, t);
     }
@@ -134,7 +141,8 @@ void PathWidget::draw(const OverlayContext& c)
     {
         const double tt = tA + (tB - tA) * (static_cast<double>(i) / 10.0);
         float px, py;
-        EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(tt))),
+        EvaluatePath(s, StageProgress(s, StageLocalTime(c.anim, s, static_cast<float>(tt))
+                                        - s.offsetPos),
                      px, py);
         const OfxPointD d = toScreen(c, px, py, tt);
         HaloDot(c, d.x, d.y, c.sx(2.0), c.sy(2.0), { 1.0f, 1.0f, 1.0f, 0.55f });
