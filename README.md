@@ -995,6 +995,19 @@ Now:
 When a source's bounds differ from the destination's, `probe.log` records it once per session
 with both rectangles — so the next Fusion report can be read against facts.
 
+### Fusion builds Inspector controls only for parameters that start visible
+
+The three inactive stages are hidden at **runtime**, by the instance, never on the descriptor.
+A version that marked stages 2–4 secret at describe time — to spare the constructor some
+`setIsSecret` calls — worked on the Edit page and broke the Fusion page: selecting Stage 2
+there showed its group headers, and none of them would expand. Fusion had never built the
+controls, because the descriptors said they were secret; the runtime un-hide had nothing to
+act on. Resolve's Edit-page host builds every control and toggles visibility, which is why the
+same build looked fine there.
+
+The general rule this leaves behind: on Fusion, **a parameter that must ever be shown must be
+described visible**. Hide it afterwards if you like; do not describe it hidden.
+
 The animation is driven by the render time, not by host keyframes, so **no parameter is ever
 animated**. A host that assumes "no animated parameters means a static output" will render one
 frame and reuse it for the whole clip — playback freezes while the controls still update the
