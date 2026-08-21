@@ -949,6 +949,24 @@ skip on merely-neutral frames, worth about 0.3 ms each.
 
 ## A note for other OFX hosts
 
+### Pixel depth follows the comp
+
+The plugin accepts **8-bit, 16-bit integer, 16-bit float (half) and 32-bit float** images, and
+renders at whatever depth the host supplies. It used to declare float only, which made Fusion
+convert an 8-bit comp to 32-bit float from this node onward — four times the memory traffic for
+a transform that gains nothing from it. Resolve's Edit page always supplies float regardless;
+Fusion supplies the comp's own depth.
+
+The maths is float throughout. Depth exists only at the two edges: a texel is converted to
+float when loaded and the result converted back when stored, on the CPU and in the CUDA kernel
+alike. Half is converted at the bit level in the shared header rather than through the CUDA
+intrinsics, which exist only on the device — the CPU reference has to produce the *same bits*,
+or the parity test could not tell a rounding difference from a bug. Integer depths clamp to
+0..1 and round to nearest on store; float keeps overshoot exactly as before.
+
+If detail matters — a long motion blur averages many resamples, and 8-bit input can band in
+smooth gradients — keep the comp at 16-bit float. The plugin will follow it.
+
 ### Fusion hands out images the Edit page never does
 
 Fusion crops a node's input to its **domain of definition**. So while the Edit page always
