@@ -79,9 +79,21 @@ void ProbeHostOnce()
         return;
     }
 
+    // Every pixel depth the host is prepared to hand a plugin. This is the
+    // host's list, not ours: a plugin can only choose from it, so if it says
+    // "float" alone then no declaration on our side can make an image arrive
+    // as half or 8-bit.
+    std::string depths;
+    for (OFX::BitDepthEnum d : h->_supportedPixelDepths)
+        depths += std::string(OFX::mapBitDepthEnumToStr(d)) + " ";
+    if (depths.empty()) depths = "(none reported)";
+
     std::ostringstream o;
     o << "\n"
       << "================ MultiTransform host probe ================\n"
+      << "  supportedPixelDepths ....... " << depths << "\n"
+      << "  defaultPixelDepth .......... "
+      << OFX::mapBitDepthEnumToStr(h->getDefaultPixelDepth()) << "\n"
       << "  host name .................. " << h->hostName  << "\n"
       << "  host label ................. " << h->hostLabel << "\n"
       << "  host version ............... " << h->versionMajor << "." << h->versionMinor

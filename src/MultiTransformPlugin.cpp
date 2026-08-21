@@ -2119,6 +2119,9 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         std::ostringstream o;
         o << "render dispatch: " << dispatchKind
           << "  dst=" << (db.x2 - db.x1) << "x" << (db.y2 - db.y1)
+          << "  depth=" << OFX::mapBitDepthEnumToStr(dst->getPixelDepth())
+          << (src ? std::string(" (src ") + OFX::mapBitDepthEnumToStr(src->getPixelDepth()) + ")"
+                  : std::string(" (no src)"))
           << "  blur samples=" << st.count
           << "  first render " << std::fixed << std::setprecision(2) << ms << " ms"
           << "  host threads=" << OFX::MultiThread::getNumCPUs();
