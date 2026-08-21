@@ -28,6 +28,8 @@
 #include "render/CudaRender.h"
 
 #include <memory>
+#include <chrono>
+#include <iomanip>
 #include <sstream>
 
 #include "ofxDrawSuite.h"
@@ -2022,10 +2024,16 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         return;
     }
 
-    mtx::ProbeOnce("first-gpu-state",
-                   std::string("render dispatch: cuda=") +
-                   (p_Args.isEnabledCudaRender ? "yes" : "no") +
-                   " opencl=" + (p_Args.isEnabledOpenCLRender ? "yes" : "no"));
+    // Which path this render takes, logged once *per kind* rather than once per
+    // process. Keyed on a fixed string it fired for whichever page rendered
+    // first and never again -- so when the Fusion page and the Edit page host
+    // the same comp through different OFX hosts, the log had nothing to say
+    // about the second. Keying on the state means a CPU fallback after a CUDA
+    // render gets its own line, which is the difference being asked about.
+    const std::string dispatchKind =
+        std::string(p_Args.isEnabledCudaRender   ? "cuda" : "no-cuda") + "/" +
+        (p_Args.isEnabledOpenCLRender ? "opencl" : "no-opencl");
+    const auto renderStart = std::chrono::steady_clock::now();
 
     int filterIdx = kFilterBilinear;
     int edgeIdx   = kEdgeBlack;
@@ -2098,6 +2106,24 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
                         static_cast<EdgeMode>(edgeIdx));
 
     processor.process();
+
+    // One line per dispatch kind with what it cost. The first render of a kind
+    // is not representative -- it pays JIT and cache warm-up -- but the order of
+    // magnitude is, and an order of magnitude is what separates a CUDA frame
+    // from a CPU one. The thread count is the host's answer, since a CPU path
+    // that the host refuses to spread across cores is a different problem from
+    // a CPU path at all.
+    {
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - renderStart).count();
+        std::ostringstream o;
+        o << "render dispatch: " << dispatchKind
+          << "  dst=" << (db.x2 - db.x1) << "x" << (db.y2 - db.y1)
+          << "  blur samples=" << st.count
+          << "  first render " << std::fixed << std::setprecision(2) << ms << " ms"
+          << "  host threads=" << OFX::MultiThread::getNumCPUs();
+        mtx::ProbeOnce("render-dispatch-" + dispatchKind, o.str());
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
