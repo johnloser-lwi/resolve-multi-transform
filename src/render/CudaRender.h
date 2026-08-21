@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MotionBlur.h"
+#include "Sampler.h"     // PixelDepth, for the depth arguments and their defaults
 
 /** @brief Launch the transform kernel on the host-supplied stream.
  *
@@ -24,15 +25,19 @@
  * @return nullptr on success, or a static CUDA error string.
  */
 const char* RunMultiTransformCuda(void* pStream,
-                                  const float* src, int srcWidth, int srcHeight, int srcRowFloats,
-                                  float* dst, int dstWidth, int dstHeight, int dstRowFloats,
+                                  const void* src, int srcWidth, int srcHeight,
+                                  int srcRowBytes, int srcDepth,
+                                  void* dst, int dstWidth, int dstHeight,
+                                  int dstRowBytes, int dstDepth,
                                   const mtx::SampleTransforms& st,
                                   int filterMode, int edgeMode,
                                   int srcOriginX = 0, int srcOriginY = 0);
 
-/** @brief Host-memory, fully synchronous variant used by the parity test. */
-void RunMultiTransformCudaSync(const float* hostSrc, int srcWidth, int srcHeight,
-                               float* hostDst, int dstWidth, int dstHeight,
+/** @brief Host-memory, fully synchronous variant used by the parity test.
+ *  Rows are assumed tightly packed for the given depth. */
+void RunMultiTransformCudaSync(const void* hostSrc, int srcWidth, int srcHeight,
+                               void* hostDst, int dstWidth, int dstHeight,
                                const mtx::SampleTransforms& st,
                                int filterMode, int edgeMode,
-                               int srcOriginX = 0, int srcOriginY = 0);
+                               int srcOriginX = 0, int srcOriginY = 0,
+                               int srcDepth = mtx::kDepthFloat, int dstDepth = mtx::kDepthFloat);

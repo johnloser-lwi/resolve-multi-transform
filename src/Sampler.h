@@ -5,6 +5,8 @@
 
 #include "TransformMath.h"
 
+#include <cstring>
+
 namespace mtx {
 
 enum EdgeMode
@@ -14,13 +16,178 @@ enum EdgeMode
     kEdgeMirror = 2    ///< outside mirrors back into the image
 };
 
-/** @brief A non-owning view of an RGBA float image. */
+// --- Pixel depths ------------------------------------------------------------
+//
+// The maths is float throughout; depth only exists at the edges, where a texel
+// is loaded and where a result is stored. Supporting more than float matters
+// for one reason: the host converts to whatever the plugin declares, and a
+// plugin that declares float alone turns an 8-bit Fusion comp into 32-bit from
+// that node onward -- four times the memory traffic for a transform that gains
+// nothing from it. Declaring the depths the host actually uses keeps the comp
+// at its own depth.
+//
+// Plain ints rather than an enum class, because the values travel into the
+// CUDA kernel as arguments and the switch has to be identical on both sides.
+
+enum PixelDepth
+{
+    kDepthByte  = 0,   ///< 8-bit unsigned, 0..255 == 0..1
+    kDepthShort = 1,   ///< 16-bit unsigned, 0..65535 == 0..1
+    kDepthHalf  = 2,   ///< IEEE 754 binary16
+    kDepthFloat = 3    ///< IEEE 754 binary32
+};
+
+MTX_HD inline int BytesPerChannel(int depth)
+{
+    return depth == kDepthByte ? 1 : (depth == kDepthFloat ? 4 : 2);
+}
+
+// Bit-level half <-> float, written once and compiled for both targets.
+//
+// Deliberately not cuda_fp16's intrinsics: those exist only on the device, and
+// the CPU reference path has to produce the *same bits* or the parity test
+// could never tell a rounding difference from a bug. Round-to-nearest-even on
+// the way down, as every hardware implementation does.
+
+MTX_HD inline float BitsToFloat(unsigned int u)
+{
+#if defined(__CUDA_ARCH__)
+    return __uint_as_float(u);
+#else
+    float f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+#endif
+}
+
+MTX_HD inline unsigned int FloatToBits(float f)
+{
+#if defined(__CUDA_ARCH__)
+    return __float_as_uint(f);
+#else
+    unsigned int u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+#endif
+}
+
+MTX_HD inline float HalfToFloat(unsigned short h)
+{
+    const unsigned int sign = (static_cast<unsigned int>(h) & 0x8000u) << 16;
+    unsigned int       exp  = (h >> 10) & 0x1Fu;
+    unsigned int       mant =  h        & 0x3FFu;
+
+    if (exp == 0)
+    {
+        if (mant == 0) return BitsToFloat(sign);          // signed zero
+
+        // Subnormal: renormalise so the leading bit is implicit again.
+        exp = 1;
+        while ((mant & 0x400u) == 0) { mant <<= 1; --exp; }
+        mant &= 0x3FFu;
+        return BitsToFloat(sign | ((exp + 112u) << 23) | (mant << 13));
+    }
+    if (exp == 31) return BitsToFloat(sign | 0x7F800000u | (mant << 13));   // inf / nan
+
+    return BitsToFloat(sign | ((exp + 112u) << 23) | (mant << 13));
+}
+
+MTX_HD inline unsigned short FloatToHalf(float f)
+{
+    const unsigned int u    = FloatToBits(f);
+    const unsigned int sign = (u >> 16) & 0x8000u;
+    const unsigned int absu = u & 0x7FFFFFFFu;
+
+    if (absu > 0x7F800000u) return static_cast<unsigned short>(sign | 0x7E00u);   // nan
+    if (absu >= 0x7F800000u) return static_cast<unsigned short>(sign | 0x7C00u);  // inf
+
+    const int          exp  = static_cast<int>((absu >> 23) & 0xFFu) - 127 + 15;
+    unsigned int       mant = absu & 0x7FFFFFu;
+
+    if (exp >= 31) return static_cast<unsigned short>(sign | 0x7C00u);   // overflow -> inf
+
+    if (exp <= 0)
+    {
+        // Too small even for a subnormal half.
+        if (exp < -10) return static_cast<unsigned short>(sign);
+
+        // Subnormal half: shift the (now explicit) leading bit into place and
+        // round to nearest even on what falls off.
+        mant |= 0x800000u;
+        const unsigned int shift = static_cast<unsigned int>(14 - exp);
+        unsigned int       hm    = mant >> shift;
+        const unsigned int rem   = mant & ((1u << shift) - 1u);
+        const unsigned int half  = 1u << (shift - 1);
+        if (rem > half || (rem == half && (hm & 1u))) ++hm;
+        return static_cast<unsigned short>(sign | hm);
+    }
+
+    unsigned int       hv  = sign | (static_cast<unsigned int>(exp) << 10) | (mant >> 13);
+    const unsigned int rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (hv & 1u))) ++hv;   // a carry here rolls into inf, correctly
+    return static_cast<unsigned short>(hv);
+}
+
+/** @brief One channel at @p p, as float in the depth's natural 0..1 scale.
+ *
+ *  Integer depths divide rather than multiply by a reciprocal. The difference
+ *  is at the ends: 65535 * float(1/65535) is not exactly 1.0, and the maximum
+ *  code has to load as exactly 1.0 -- it is what "fully opaque" means. A
+ *  correctly rounded division gives that on the CPU and on CUDA alike (nvcc's
+ *  default float division is IEEE), so the two paths also stay bit-identical. */
+MTX_HD inline float LoadChannel(const unsigned char* p, int depth)
+{
+    switch (depth)
+    {
+        case kDepthByte:  return static_cast<float>(*p) / 255.0f;
+        case kDepthShort: return static_cast<float>(*reinterpret_cast<const unsigned short*>(p))
+                               / 65535.0f;
+        case kDepthHalf:  return HalfToFloat(*reinterpret_cast<const unsigned short*>(p));
+        default:          return *reinterpret_cast<const float*>(p);
+    }
+}
+
+/** @brief Store @p v into one channel at @p p. Integer depths clamp to 0..1 and
+ *  round to nearest; float depths keep whatever they are given, overshoot and
+ *  all, exactly as the float-only path always did. */
+MTX_HD inline void StoreChannel(unsigned char* p, int depth, float v)
+{
+    switch (depth)
+    {
+        case kDepthByte:
+            *p = static_cast<unsigned char>(Clamp01(v) * 255.0f + 0.5f);
+            break;
+        case kDepthShort:
+            *reinterpret_cast<unsigned short*>(p) =
+                static_cast<unsigned short>(Clamp01(v) * 65535.0f + 0.5f);
+            break;
+        case kDepthHalf:
+            *reinterpret_cast<unsigned short*>(p) = FloatToHalf(v);
+            break;
+        default:
+            *reinterpret_cast<float*>(p) = v;
+            break;
+    }
+}
+
+/** @brief Store four channels starting at @p p. */
+MTX_HD inline void StorePixel(unsigned char* p, int depth, const float* v)
+{
+    const int b = BytesPerChannel(depth);
+    StoreChannel(p,         depth, v[0]);
+    StoreChannel(p + b,     depth, v[1]);
+    StoreChannel(p + 2 * b, depth, v[2]);
+    StoreChannel(p + 3 * b, depth, v[3]);
+}
+
+/** @brief A non-owning view of an RGBA image at any supported depth. */
 struct ImageView
 {
-    const float* data;
+    const unsigned char* data;
     int   width;
     int   height;
-    int   rowStrideFloats;   ///< floats per row, not bytes and not always width*4
+    int   rowStrideBytes;    ///< bytes per row: the host's pitch, not width * pixel size
+    int   depth = kDepthFloat;   ///< a PixelDepth
 
     /// Where this image's pixel (0,0) sits in the *frame* the transform is
     /// evaluated in, i.e. the source bounds' origin minus the destination's.
@@ -39,9 +206,21 @@ struct ImageView
     /// arrive with a null data pointer as well.
     MTX_HD bool Empty() const { return data == nullptr || width <= 0 || height <= 0; }
 
-    MTX_HD const float* Pixel(int x, int y) const
+    MTX_HD const unsigned char* Pixel(int x, int y) const
     {
-        return data + static_cast<size_t>(y) * rowStrideFloats + static_cast<size_t>(x) * 4;
+        return data + static_cast<size_t>(y) * rowStrideBytes
+                    + static_cast<size_t>(x) * 4 * BytesPerChannel(depth);
+    }
+
+    /// Four channels at (x,y), converted to float. The one place depth is read.
+    MTX_HD void Load(int x, int y, float* out) const
+    {
+        const unsigned char* p = Pixel(x, y);
+        const int b = BytesPerChannel(depth);
+        out[0] = LoadChannel(p,         depth);
+        out[1] = LoadChannel(p + b,     depth);
+        out[2] = LoadChannel(p + 2 * b, depth);
+        out[3] = LoadChannel(p + 3 * b, depth);
     }
 };
 
@@ -94,8 +273,7 @@ MTX_HD inline void FetchTexel(const ImageView& img, int x, int y, EdgeMode mode,
         return;
     }
 
-    const float* p = img.Pixel(cx, cy);
-    out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; out[3] = p[3];
+    img.Load(cx, cy, out);
 }
 
 /** @brief Bilinear sample at continuous coordinates.

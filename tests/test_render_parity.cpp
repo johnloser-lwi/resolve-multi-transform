@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -28,10 +29,11 @@ static void RenderCpu(const std::vector<float>& src, int w, int h,
                       FilterMode filter, EdgeMode edge)
 {
     ImageView v;
-    v.data = src.data();
+    v.data = reinterpret_cast<const unsigned char*>(src.data());
     v.width = w;
     v.height = h;
-    v.rowStrideFloats = w * 4;
+    v.rowStrideBytes = w * 16;
+    v.depth = kDepthFloat;
 
     for (int y = 0; y < h; ++y)
     {
@@ -198,7 +200,7 @@ static void RunFusionShapeChecks(int W, int H)
     //    that matters -- no read through a null pointer or at index -1.
     {
         ImageView empty;
-        empty.data = nullptr; empty.width = 0; empty.height = 0; empty.rowStrideFloats = 0;
+        empty.data = nullptr; empty.width = 0; empty.height = 0; empty.rowStrideBytes = 0;
 
         bool ok = true;
         for (EdgeMode m : modes)
@@ -215,7 +217,8 @@ static void RunFusionShapeChecks(int W, int H)
         // rather than fault, so this checks the guard fires before any read.
         const std::vector<float> scratch(64, 0.75f);
         ImageView stale;
-        stale.data = scratch.data(); stale.width = 0; stale.height = 3; stale.rowStrideFloats = 8;
+        stale.data = reinterpret_cast<const unsigned char*>(scratch.data());
+        stale.width = 0; stale.height = 3; stale.rowStrideBytes = 32; stale.depth = kDepthFloat;
         float out[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
         RenderPixel(stale, st, 2.5f, 1.5f, kFilterBilinear, kEdgeClamp, out);
         Report("zero-width source ignores its data", out[3] == 0.0f && out[0] == 0.0f);
@@ -249,11 +252,13 @@ static void RunFusionShapeChecks(int W, int H)
                         = crop[(static_cast<size_t>(y) * cw + x) * 4 + c];
 
         ImageView cropped;
-        cropped.data = crop.data(); cropped.width = cw; cropped.height = ch;
-        cropped.rowStrideFloats = cw * 4; cropped.originX = ox; cropped.originY = oy;
+        cropped.data = reinterpret_cast<const unsigned char*>(crop.data());
+        cropped.width = cw; cropped.height = ch; cropped.rowStrideBytes = cw * 16;
+        cropped.depth = kDepthFloat; cropped.originX = ox; cropped.originY = oy;
 
         ImageView whole;
-        whole.data = full.data(); whole.width = W; whole.height = H; whole.rowStrideFloats = W * 4;
+        whole.data = reinterpret_cast<const unsigned char*>(full.data());
+        whole.width = W; whole.height = H; whole.rowStrideBytes = W * 16; whole.depth = kDepthFloat;
 
         std::vector<float> viaCrop(full.size(), 0.0f), viaFull(full.size(), 0.0f);
         RenderCpuView(cropped, W, H, viaCrop, st, kFilterBilinear, kEdgeBlack);
@@ -284,7 +289,8 @@ static void RunFusionShapeChecks(int W, int H)
     {
         const std::vector<float> px(16, 0.5f);
         ImageView one;
-        one.data = px.data(); one.width = 2; one.height = 2; one.rowStrideFloats = 8;
+        one.data = reinterpret_cast<const unsigned char*>(px.data());
+        one.width = 2; one.height = 2; one.rowStrideBytes = 32; one.depth = kDepthFloat;
 
         float out[4];
         SampleImage(one, 1.0e30f, -1.0e30f, kFilterBilinear, kEdgeClamp, out);
@@ -295,6 +301,151 @@ static void RunFusionShapeChecks(int W, int H)
     }
 }
 
+/** An image encoded at a given depth, tightly packed, from float RGBA. */
+static std::vector<unsigned char> Encode(const std::vector<float>& img, int depth)
+{
+    const int b = BytesPerChannel(depth);
+    std::vector<unsigned char> out(img.size() * b);
+    for (size_t i = 0; i < img.size(); ++i) StoreChannel(&out[i * b], depth, img[i]);
+    return out;
+}
+
+static std::vector<float> Decode(const std::vector<unsigned char>& buf, int depth)
+{
+    const int b = BytesPerChannel(depth);
+    std::vector<float> out(buf.size() / b);
+    for (size_t i = 0; i < out.size(); ++i) out[i] = LoadChannel(&buf[i * b], depth);
+    return out;
+}
+
+/** CPU reference render reading one depth and writing another, tightly packed. */
+static void RenderCpuDepth(const std::vector<unsigned char>& src, int w, int h, int srcDepth,
+                           std::vector<unsigned char>& dst, int dstDepth,
+                           const SampleTransforms& st, FilterMode filter, EdgeMode edge)
+{
+    ImageView v;
+    v.data = src.data(); v.width = w; v.height = h;
+    v.rowStrideBytes = w * 4 * BytesPerChannel(srcDepth); v.depth = srcDepth;
+
+    const int pixelBytes = 4 * BytesPerChannel(dstDepth);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+        {
+            float out[4];
+            RenderPixel(v, st, x + 0.5f, y + 0.5f, filter, edge, out);
+            StorePixel(&dst[(static_cast<size_t>(y) * w + x) * pixelBytes], dstDepth, out);
+        }
+}
+
+/** Pixel depths other than float.
+ *
+ * The maths is float throughout; depth exists only at the load and the store.
+ * Three things are pinned here: the half conversions are bit-correct, the
+ * integer depths round-trip exactly, and a render at every depth agrees
+ * between CPU and CUDA -- and with the float render of the same data, to
+ * within the depth's own quantum. That last one is what proves the conversions
+ * are in the right place and the right way round, not merely self-consistent.
+ */
+static void RunDepthChecks(int W, int H)
+{
+    std::printf("--- Pixel depths ---\n");
+
+    // Half: exact on representable values, round-to-nearest-even elsewhere,
+    // and the specials survive.
+    {
+        const float exact[] = { 0.0f, 1.0f, -1.0f, 0.5f, 0.25f, 2.0f, -2.0f, 65504.0f,
+                                1024.0f, 0.0009765625f /* 2^-10 */ };
+        bool ok = true;
+        for (float v : exact) ok = ok && HalfToFloat(FloatToHalf(v)) == v;
+        Report("half: representable values are exact", ok);
+
+        const float inexact[] = { 1.0f / 3.0f, 0.1f, 3.14159f, 123.456f, -0.7071f, 1e-6f };
+        bool close = true;
+        for (float v : inexact)
+        {
+            const float r   = HalfToFloat(FloatToHalf(v));
+            const float tol = std::max(std::fabs(v) * (1.0f / 2048.0f) * 1.01f, 6.0e-8f);
+            close = close && std::fabs(r - v) <= tol;
+        }
+        Report("half: others within half precision", close);
+
+        const float inf = std::numeric_limits<float>::infinity();
+        const bool specials =
+            HalfToFloat(FloatToHalf(inf))  ==  inf &&
+            HalfToFloat(FloatToHalf(-inf)) == -inf &&
+            HalfToFloat(FloatToHalf(std::nanf(""))) != HalfToFloat(FloatToHalf(std::nanf(""))) &&
+            HalfToFloat(FloatToHalf(1.0e6f)) == inf &&            // overflow -> inf
+            HalfToFloat(FloatToHalf(1.0e-9f)) == 0.0f &&          // underflow -> zero
+            FloatToHalf(-0.0f) == 0x8000u;                        // signed zero kept
+        Report("half: inf, nan, overflow, underflow, -0", specials);
+    }
+
+    // Integer depths: every 8-bit code round-trips, and 16-bit spot values do.
+    {
+        bool ok = true;
+        for (int i = 0; i < 256; ++i)
+        {
+            unsigned char c;
+            StoreChannel(&c, kDepthByte, static_cast<float>(i) / 255.0f);
+            ok = ok && c == i && LoadChannel(&c, kDepthByte) == static_cast<float>(i) / 255.0f;
+        }
+        unsigned char s[2];
+        StoreChannel(s, kDepthShort, 1.0f);   ok = ok && LoadChannel(s, kDepthShort) == 1.0f;
+        StoreChannel(s, kDepthShort, 0.0f);   ok = ok && LoadChannel(s, kDepthShort) == 0.0f;
+        StoreChannel(s, kDepthShort, 2.0f);   ok = ok && LoadChannel(s, kDepthShort) == 1.0f;   // clamped
+        StoreChannel(s, kDepthShort, -1.0f);  ok = ok && LoadChannel(s, kDepthShort) == 0.0f;
+        Report("byte and short round-trip and clamp", ok);
+    }
+
+    // Renders at every depth: CPU == CUDA, and both == the float render of
+    // the same (already quantised) source, within one output quantum.
+    {
+        const SampleTransforms st = BuildSampleTransforms(MakeAnim(1.4f, 17.0f, 0.08f, -0.04f),
+                                                          BlurParams::Default(), 11.0f,
+                                                          static_cast<float>(W),
+                                                          static_cast<float>(H));
+        const std::vector<float> srcF = MakeTestImage(W, H);
+
+        struct DepthCase { int depth; const char* name; double quantum; };
+        const DepthCase depths[3] = {
+            { kDepthByte,  "byte",  1.0 / 255.0   },
+            { kDepthShort, "short", 1.0 / 65535.0 },
+            { kDepthHalf,  "half",  1.0 / 1024.0  },   // worst case near 1.0
+        };
+
+        for (const DepthCase& d : depths)
+        {
+            const std::vector<unsigned char> src = Encode(srcF, d.depth);
+            const std::vector<float>         srcQ = Decode(src, d.depth);   // what the render sees
+
+            std::vector<unsigned char> cpu(src.size(), 0), gpu(src.size(), 0);
+            RenderCpuDepth(src, W, H, d.depth, cpu, d.depth, st, kFilterBilinear, kEdgeBlack);
+            RunMultiTransformCudaSync(src.data(), W, H, gpu.data(), W, H, st,
+                                      static_cast<int>(kFilterBilinear), static_cast<int>(kEdgeBlack),
+                                      0, 0, d.depth, d.depth);
+
+            // The two paths do not quantise the *same* float: the float render
+            // itself already differs between host and device by up to the
+            // parity tolerance (legal FMA reassociation), and at 16-bit that is
+            // two or three codes. So the bound is that float noise plus one
+            // code of rounding, not one code alone.
+            const double parity = MaxDiff(Decode(cpu, d.depth), Decode(gpu, d.depth));
+            char name[64];
+            std::snprintf(name, sizeof(name), "%s render, CPU == CUDA", d.name);
+            Report(name, parity <= 1e-4 + d.quantum, parity);
+
+            // Against the float render of the quantised source: the only
+            // difference allowed is the output rounding.
+            std::vector<float> ref(srcF.size(), 0.0f);
+            RenderCpu(srcQ, W, H, ref, st, kFilterBilinear, kEdgeBlack);
+            for (float& v : ref) v = Clamp01(v);              // integer depths clamp on store
+            const double vsFloat = MaxDiff(Decode(cpu, d.depth), ref);
+            std::snprintf(name, sizeof(name), "%s render == float render, quantised", d.name);
+            Report(name, vsFloat <= d.quantum * 0.51 + 1e-6, vsFloat);
+        }
+    }
+}
+
 int main()
 {
     std::printf("=== CPU vs CUDA parity ===\n");
@@ -302,6 +453,7 @@ int main()
     const int W = 256, H = 192;
 
     RunFusionShapeChecks(W, H);
+    RunDepthChecks(W, H);
 
     std::vector<Case> cases;
     cases.push_back({ "identity",              MakeAnim(1.0f, 0.0f, 0.0f, 0.0f),  0.0f,  kFilterBilinear, kEdgeBlack });

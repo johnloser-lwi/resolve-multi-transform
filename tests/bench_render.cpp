@@ -67,10 +67,11 @@ void BenchCpu(const char* name, const std::vector<float>& src,
     const SampleTransforms st = BuildSampleTransforms(a, b, time, kWidth, kHeight);
 
     ImageView v;
-    v.data = src.data();
+    v.data = reinterpret_cast<const unsigned char*>(src.data());
     v.width = kWidth;
     v.height = kHeight;
-    v.rowStrideFloats = kWidth * 4;
+    v.rowStrideBytes = kWidth * 16;
+    v.depth = kDepthFloat;
 
     std::vector<float> dst(static_cast<size_t>(kWidth) * kHeight * 4);
 

@@ -29,6 +29,7 @@
 
 #include <memory>
 #include <chrono>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 
@@ -43,6 +44,27 @@ using namespace mtx;
 #define kSupportsTiles              false
 #define kSupportsMultiResolution    false
 #define kSupportsMultipleClipPARs   false
+
+namespace {
+
+/** @brief The sampler's depth for an OFX image, or -1 for one it cannot read.
+ *
+ * The host may only hand over depths the plugin declared, so -1 is a host bug
+ * rather than a user state -- but a depth the sampler cannot read would walk
+ * off the end of the buffer, so it is refused rather than assumed. */
+int PixelDepthOf(OFX::BitDepthEnum d)
+{
+    switch (d)
+    {
+        case OFX::eBitDepthUByte:  return mtx::kDepthByte;
+        case OFX::eBitDepthUShort: return mtx::kDepthShort;
+        case OFX::eBitDepthHalf:   return mtx::kDepthHalf;
+        case OFX::eBitDepthFloat:  return mtx::kDepthFloat;
+        default:                   return -1;
+    }
+}
+
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // Processor
@@ -81,18 +103,29 @@ private:
     mtx::ImageView srcView() const
     {
         mtx::ImageView v;
-        v.data = nullptr; v.width = 0; v.height = 0; v.rowStrideFloats = 0;
+        v.data = nullptr; v.width = 0; v.height = 0; v.rowStrideBytes = 0;
+        v.depth = mtx::kDepthFloat;
         if (!_srcImg) return v;
 
+        // A depth the sampler cannot read is treated as no source at all,
+        // which renders transparent rather than reading past the buffer.
+        const int depth = PixelDepthOf(_srcImg->getPixelDepth());
+        if (depth < 0) return v;
+
         const OfxRectI b = _srcImg->getBounds();
-        v.data            = static_cast<const float*>(_srcImg->getPixelData());
-        v.width           = b.x2 - b.x1;
-        v.height          = b.y2 - b.y1;
-        v.rowStrideFloats = _srcImg->getRowBytes() / static_cast<int>(sizeof(float));
-        v.originX         = _srcOriginX;
-        v.originY         = _srcOriginY;
+        v.data           = static_cast<const unsigned char*>(_srcImg->getPixelData());
+        v.width          = b.x2 - b.x1;
+        v.height         = b.y2 - b.y1;
+        v.rowStrideBytes = _srcImg->getRowBytes();
+        v.depth          = depth;
+        v.originX        = _srcOriginX;
+        v.originY        = _srcOriginY;
         return v;
     }
+
+    /// The destination's depth, or -1. render() refuses the frame before this
+    /// can be -1, so the processor can assume it is valid.
+    int dstDepth() const { return PixelDepthOf(_dstImg->getPixelDepth()); }
 
     /// A source worth sampling: present, non-empty, with pixels behind it.
     /// Fusion fails all three in turn while scrubbing -- a null image, then a
@@ -118,13 +151,13 @@ void TransformProcessor::processImagesCUDA()
     const mtx::ImageView sv = srcView();
     const bool live = !sv.Empty();
 
-    float* dstData = static_cast<float*>(_dstImg->getPixelData());
+    void* dstData = _dstImg->getPixelData();
     if (!dstData) return;
 
     const OfxRectI db = _dstImg->getBounds();
-    const int dstWidth  = db.x2 - db.x1;
-    const int dstHeight = db.y2 - db.y1;
-    const int dstRowFloats = _dstImg->getRowBytes() / static_cast<int>(sizeof(float));
+    const int dstWidth    = db.x2 - db.x1;
+    const int dstHeight   = db.y2 - db.y1;
+    const int dstRowBytes = _dstImg->getRowBytes();
 
     // Whether the host supplies a stream decides who synchronises, so it is
     // worth knowing which world we are in when a render looks wrong.
@@ -135,8 +168,9 @@ void TransformProcessor::processImagesCUDA()
 
     const char* err =
         RunMultiTransformCuda(_pCudaStream,
-                              live ? sv.data : nullptr, sv.width, sv.height, sv.rowStrideFloats,
-                              dstData, dstWidth, dstHeight, dstRowFloats,
+                              live ? sv.data : nullptr, sv.width, sv.height,
+                              sv.rowStrideBytes, sv.depth,
+                              dstData, dstWidth, dstHeight, dstRowBytes, dstDepth(),
                               _transforms,
                               static_cast<int>(_filter), static_cast<int>(_edge),
                               sv.originX, sv.originY);
@@ -151,14 +185,17 @@ void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
     // No usable source -- absent, empty or data-less -- renders transparent.
     // The sampler would now return black texel by texel for an empty image as
     // well, but taking the branch here is both faster and skips the ghost.
+    const int depth      = dstDepth();
+    const int pixelBytes = 4 * mtx::BytesPerChannel(depth);
+
     if (!haveSrc())
     {
+        // All-zero bytes are zero in every depth, so one memset serves them all.
+        const size_t rowBytes = static_cast<size_t>(p_ProcWindow.x2 - p_ProcWindow.x1) * pixelBytes;
         for (int y = p_ProcWindow.y1; y < p_ProcWindow.y2; ++y)
         {
-            float* row = static_cast<float*>(_dstImg->getPixelAddress(p_ProcWindow.x1, y));
-            if (!row) continue;
-            for (int x = p_ProcWindow.x1; x < p_ProcWindow.x2; ++x, row += 4)
-                row[0] = row[1] = row[2] = row[3] = 0.0f;
+            void* row = _dstImg->getPixelAddress(p_ProcWindow.x1, y);
+            if (row) std::memset(row, 0, rowBytes);
         }
         return;
     }
@@ -169,15 +206,18 @@ void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
     {
         if (_effect.abort()) break;
 
-        float* dstPix = static_cast<float*>(_dstImg->getPixelAddress(p_ProcWindow.x1, y));
+        unsigned char* dstPix =
+            static_cast<unsigned char*>(_dstImg->getPixelAddress(p_ProcWindow.x1, y));
         if (!dstPix) continue;
 
-        for (int x = p_ProcWindow.x1; x < p_ProcWindow.x2; ++x, dstPix += 4)
+        for (int x = p_ProcWindow.x1; x < p_ProcWindow.x2; ++x, dstPix += pixelBytes)
         {
+            float out[4];
             mtx::RenderPixel(sv, _transforms,
                              static_cast<float>(x - db.x1) + 0.5f,
                              static_cast<float>(y - db.y1) + 0.5f,
-                             _filter, _edge, dstPix);
+                             _filter, _edge, out);
+            mtx::StorePixel(dstPix, depth, out);
         }
     }
 }
@@ -2024,6 +2064,18 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         return;
     }
 
+    // Only depths declared in describe() may arrive, so this cannot fail on a
+    // conforming host -- but writing through an unknown depth would overrun
+    // the buffer, so it is refused rather than assumed.
+    if (PixelDepthOf(dst->getPixelDepth()) < 0)
+    {
+        mtx::ProbeOnce("unsupported-depth",
+                       std::string("render: destination depth not supported: ")
+                       + OFX::mapBitDepthEnumToStr(dst->getPixelDepth()));
+        OFX::throwSuiteStatusException(kOfxStatErrImageFormat);
+        return;
+    }
+
     // Which path this render takes, logged once *per kind* rather than once per
     // process. Keyed on a fixed string it fired for whichever page rendered
     // first and never again -- so when the Fusion page and the Edit page host
@@ -2150,6 +2202,15 @@ void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 
     p_Desc.addSupportedContext(eContextFilter);
     p_Desc.addSupportedContext(eContextGeneral);
+    // Every depth the sampler can read and write, so the host keeps a comp at
+    // its own depth through this node. Declaring float alone made the host
+    // convert an 8-bit Fusion comp to 32-bit from this node onward -- four
+    // times the memory traffic for a transform that gains nothing from it. The
+    // maths is float internally regardless; depth only decides the load and
+    // the store. See PixelDepth in Sampler.h.
+    p_Desc.addSupportedBitDepth(eBitDepthUByte);
+    p_Desc.addSupportedBitDepth(eBitDepthUShort);
+    p_Desc.addSupportedBitDepth(eBitDepthHalf);
     p_Desc.addSupportedBitDepth(eBitDepthFloat);
 
     p_Desc.setSingleInstance(false);
