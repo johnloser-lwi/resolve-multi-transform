@@ -11,6 +11,7 @@
 #include "Sampler.h"
 #include "render/CudaRender.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -147,11 +148,160 @@ static AnimParams MakeAnim(float scaleTo, float rotTo, float posXTo, float posYT
     return a;
 }
 
+/** Reference CPU render through an arbitrary view into a destination of a
+ *  different size -- the shape Fusion produces and the Edit page never does. */
+static void RenderCpuView(const ImageView& v, int dstW, int dstH, std::vector<float>& dst,
+                          const SampleTransforms& st, FilterMode filter, EdgeMode edge)
+{
+    for (int y = 0; y < dstH; ++y)
+        for (int x = 0; x < dstW; ++x)
+            RenderPixel(v, st,
+                        static_cast<float>(x) + 0.5f,
+                        static_cast<float>(y) + 0.5f,
+                        filter, edge, &dst[(static_cast<size_t>(y) * dstW + x) * 4]);
+}
+
+static void Report(const char* name, bool ok, double maxDiff = 0.0)
+{
+    if (!ok) ++g_failures;
+    std::printf("  %-38s max=%.3e             %s\n", name, maxDiff, ok ? "OK" : "FAIL");
+}
+
+static double MaxDiff(const std::vector<float>& a, const std::vector<float>& b)
+{
+    double m = 0.0;
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i)
+        m = std::max(m, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
+    return m;
+}
+
+/** The image shapes Fusion hands a node and the Edit page never does.
+ *
+ * Fusion crops an input to its domain of definition, so a source can be a
+ * small rectangle offset inside the frame, or -- for an element with no DoD at
+ * the current frame, which is routine while scrubbing -- empty, with or
+ * without a data pointer. The empty case was an invalid read on the CPU and a
+ * device fault on CUDA: with width 0, Clamp and Mirror resolved to texel -1.
+ * These checks pin both the safety and the geometry of the fix.
+ */
+static void RunFusionShapeChecks(int W, int H)
+{
+    std::printf("--- Fusion image shapes ---\n");
+
+    const SampleTransforms st = BuildSampleTransforms(MakeAnim(1.3f, 12.0f, 0.1f, -0.05f),
+                                                      BlurParams::Default(), 10.0f,
+                                                      static_cast<float>(W),
+                                                      static_cast<float>(H));
+    const EdgeMode modes[3] = { kEdgeBlack, kEdgeClamp, kEdgeMirror };
+
+    // 1. Empty source, every edge mode and filter: transparent, and -- the part
+    //    that matters -- no read through a null pointer or at index -1.
+    {
+        ImageView empty;
+        empty.data = nullptr; empty.width = 0; empty.height = 0; empty.rowStrideFloats = 0;
+
+        bool ok = true;
+        for (EdgeMode m : modes)
+            for (int f = 0; f < 2; ++f)
+            {
+                float out[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                RenderPixel(empty, st, 37.5f, 21.5f, static_cast<FilterMode>(f), m, out);
+                ok = ok && out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f && out[3] == 0.0f;
+            }
+        Report("empty source samples transparent", ok);
+
+        // Zero-sized but with a (stale) data pointer, which Fusion can also do.
+        // Pointing it at a real buffer means a bad index would read garbage
+        // rather than fault, so this checks the guard fires before any read.
+        const std::vector<float> scratch(64, 0.75f);
+        ImageView stale;
+        stale.data = scratch.data(); stale.width = 0; stale.height = 3; stale.rowStrideFloats = 8;
+        float out[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        RenderPixel(stale, st, 2.5f, 1.5f, kFilterBilinear, kEdgeClamp, out);
+        Report("zero-width source ignores its data", out[3] == 0.0f && out[0] == 0.0f);
+    }
+
+    // 2. GPU: an empty source must *clear* the destination, not leave it. The
+    //    buffer is pre-filled so a skipped write is detected.
+    {
+        std::vector<float> gpu(static_cast<size_t>(W) * H * 4, 1.0f);
+        RunMultiTransformCudaSync(nullptr, 0, 0, gpu.data(), W, H, st,
+                                  static_cast<int>(kFilterBilinear), static_cast<int>(kEdgeClamp));
+        bool ok = true;
+        for (float v : gpu) ok = ok && v == 0.0f;
+        Report("GPU: empty source clears the destination", ok);
+    }
+
+    // 3. Cropped, offset source. A 96x64 element placed at (40,30) in the frame
+    //    must render *identically* to the same pixels embedded in a full-frame
+    //    image with transparency around them. That is the geometric claim of
+    //    the origin offset, and it holds exactly for Black edges, where "beyond
+    //    the crop" and "transparent frame" mean the same thing.
+    {
+        const int cw = 96, ch = 64, ox = 40, oy = 30;
+        const std::vector<float> crop = MakeTestImage(cw, ch);
+
+        std::vector<float> full(static_cast<size_t>(W) * H * 4, 0.0f);
+        for (int y = 0; y < ch; ++y)
+            for (int x = 0; x < cw; ++x)
+                for (int c = 0; c < 4; ++c)
+                    full[((static_cast<size_t>(y + oy) * W) + (x + ox)) * 4 + c]
+                        = crop[(static_cast<size_t>(y) * cw + x) * 4 + c];
+
+        ImageView cropped;
+        cropped.data = crop.data(); cropped.width = cw; cropped.height = ch;
+        cropped.rowStrideFloats = cw * 4; cropped.originX = ox; cropped.originY = oy;
+
+        ImageView whole;
+        whole.data = full.data(); whole.width = W; whole.height = H; whole.rowStrideFloats = W * 4;
+
+        std::vector<float> viaCrop(full.size(), 0.0f), viaFull(full.size(), 0.0f);
+        RenderCpuView(cropped, W, H, viaCrop, st, kFilterBilinear, kEdgeBlack);
+        RenderCpuView(whole,   W, H, viaFull, st, kFilterBilinear, kEdgeBlack);
+        const double d = MaxDiff(viaCrop, viaFull);
+        Report("cropped source == embedded source", d <= 1e-6, d);
+
+        // And the GPU agrees with the CPU on the cropped shape for every edge
+        // mode, including the two whose behaviour at the crop boundary differs
+        // from the embedded case.
+        for (EdgeMode m : modes)
+        {
+            std::vector<float> cpu(full.size(), 0.0f), gpu(full.size(), 0.0f);
+            RenderCpuView(cropped, W, H, cpu, st, kFilterBilinear, m);
+            RunMultiTransformCudaSync(crop.data(), cw, ch, gpu.data(), W, H, st,
+                                      static_cast<int>(kFilterBilinear), static_cast<int>(m),
+                                      ox, oy);
+            const double dd = MaxDiff(cpu, gpu);
+            const char* name = m == kEdgeBlack  ? "cropped source, GPU parity (black)"
+                             : m == kEdgeClamp  ? "cropped source, GPU parity (clamp)"
+                                                : "cropped source, GPU parity (mirror)";
+            Report(name, dd <= 1e-4, dd);
+        }
+    }
+
+    // 4. A coordinate far outside any image, and a NaN: both must resolve to a
+    //    defined texel rather than an undefined int conversion.
+    {
+        const std::vector<float> px(16, 0.5f);
+        ImageView one;
+        one.data = px.data(); one.width = 2; one.height = 2; one.rowStrideFloats = 8;
+
+        float out[4];
+        SampleImage(one, 1.0e30f, -1.0e30f, kFilterBilinear, kEdgeClamp, out);
+        const bool farOk = out[0] == 0.5f;
+        SampleImage(one, std::nanf(""), 0.5f, kFilterBilinear, kEdgeBlack, out);
+        const bool nanOk = out[3] == 0.0f;
+        Report("huge and NaN coordinates are defined", farOk && nanOk);
+    }
+}
+
 int main()
 {
     std::printf("=== CPU vs CUDA parity ===\n");
 
     const int W = 256, H = 192;
+
+    RunFusionShapeChecks(W, H);
 
     std::vector<Case> cases;
     cases.push_back({ "identity",              MakeAnim(1.0f, 0.0f, 0.0f, 0.0f),  0.0f,  kFilterBilinear, kEdgeBlack });

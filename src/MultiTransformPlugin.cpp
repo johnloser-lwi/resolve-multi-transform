@@ -58,6 +58,11 @@ public:
 
     void setSrcImg(OFX::Image* p_SrcImg) { _srcImg = p_SrcImg; }
 
+    /// Where the source's pixel (0,0) sits relative to the destination's.
+    /// Zero on the Edit page; non-zero in Fusion when the input is cropped to
+    /// its domain of definition. See ImageView::originX.
+    void setSrcOrigin(int x, int y) { _srcOriginX = x; _srcOriginY = y; }
+
     void setParams(const mtx::SampleTransforms& p_Transforms,
                    mtx::FilterMode p_Filter, mtx::EdgeMode p_Edge)
     {
@@ -73,26 +78,46 @@ private:
     /** @brief Describe the source image for the samplers. */
     mtx::ImageView srcView() const
     {
-        const OfxRectI b = _srcImg->getBounds();
         mtx::ImageView v;
+        v.data = nullptr; v.width = 0; v.height = 0; v.rowStrideFloats = 0;
+        if (!_srcImg) return v;
+
+        const OfxRectI b = _srcImg->getBounds();
         v.data            = static_cast<const float*>(_srcImg->getPixelData());
         v.width           = b.x2 - b.x1;
         v.height          = b.y2 - b.y1;
         v.rowStrideFloats = _srcImg->getRowBytes() / static_cast<int>(sizeof(float));
+        v.originX         = _srcOriginX;
+        v.originY         = _srcOriginY;
         return v;
     }
+
+    /// A source worth sampling: present, non-empty, with pixels behind it.
+    /// Fusion fails all three in turn while scrubbing -- a null image, then a
+    /// zero-sized one, then one with no data -- and each used to be a different
+    /// way to read memory that was not there.
+    bool haveSrc() const { return _srcImg && !srcView().Empty(); }
 
     OFX::Image*            _srcImg = nullptr;
     mtx::SampleTransforms  _transforms{};
     mtx::FilterMode        _filter = mtx::kFilterBilinear;
     mtx::EdgeMode          _edge   = mtx::kEdgeBlack;
+    int                    _srcOriginX = 0;
+    int                    _srcOriginY = 0;
 };
 
 void TransformProcessor::processImagesCUDA()
 {
-    if (!_srcImg) return;
-
+    // Deliberately no early return on a missing source. The launcher clears the
+    // destination in that case, and it must: returning here left the host's
+    // buffer holding its previous contents, which is a stale frame exactly when
+    // a node's input disappears mid-scrub. An empty view is passed as nulls so
+    // the launcher takes that path too.
     const mtx::ImageView sv = srcView();
+    const bool live = !sv.Empty();
+
+    float* dstData = static_cast<float*>(_dstImg->getPixelData());
+    if (!dstData) return;
 
     const OfxRectI db = _dstImg->getBounds();
     const int dstWidth  = db.x2 - db.x1;
@@ -108,11 +133,11 @@ void TransformProcessor::processImagesCUDA()
 
     const char* err =
         RunMultiTransformCuda(_pCudaStream,
-                              sv.data, sv.width, sv.height, sv.rowStrideFloats,
-                              static_cast<float*>(_dstImg->getPixelData()),
-                              dstWidth, dstHeight, dstRowFloats,
+                              live ? sv.data : nullptr, sv.width, sv.height, sv.rowStrideFloats,
+                              dstData, dstWidth, dstHeight, dstRowFloats,
                               _transforms,
-                              static_cast<int>(_filter), static_cast<int>(_edge));
+                              static_cast<int>(_filter), static_cast<int>(_edge),
+                              sv.originX, sv.originY);
 
     if (err) mtx::ProbeOnce("cuda-error", std::string("CUDA error: ") + err);
 }
@@ -121,7 +146,10 @@ void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
 {
     const OfxRectI db = _dstImg->getBounds();
 
-    if (!_srcImg)
+    // No usable source -- absent, empty or data-less -- renders transparent.
+    // The sampler would now return black texel by texel for an empty image as
+    // well, but taking the branch here is both faster and skips the ghost.
+    if (!haveSrc())
     {
         for (int y = p_ProcWindow.y1; y < p_ProcWindow.y2; ++y)
         {
@@ -2012,9 +2040,35 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     st.inv[0]     = Mat3::Identity();
     st.opacity[0] = 1.0f;
 
+    // The frame the transform is evaluated in is the *destination's* bounds.
+    //
+    // It used to be the source's, and on the Edit page that is the same thing.
+    // Fusion crops a node's input to its domain of definition, so there the
+    // source can be a small rectangle offset inside the frame -- and measured
+    // against that, "position 1.0 = one image width" and "anchor 0.5 = the
+    // centre" would mean the element's own little box rather than the canvas.
+    // The destination is the canvas; the source's origin within it is handed to
+    // the sampler so the pixels are still read from where they really are.
+    const OfxRectI db = dst->getBounds();
+    int srcOriginX = 0, srcOriginY = 0;
+
     if (src)
     {
         const OfxRectI sb = src->getBounds();
+        srcOriginX = sb.x1 - db.x1;
+        srcOriginY = sb.y1 - db.y1;
+
+        // One line per process about what this host actually hands over, so
+        // the next Fusion report can be read against facts rather than guesses.
+        if (sb.x1 != db.x1 || sb.y1 != db.y1 || sb.x2 != db.x2 || sb.y2 != db.y2)
+        {
+            std::ostringstream o;
+            o << "render: source bounds differ from destination -- src ["
+              << sb.x1 << "," << sb.y1 << " - " << sb.x2 << "," << sb.y2 << "] dst ["
+              << db.x1 << "," << db.y1 << " - " << db.x2 << "," << db.y2 << "]"
+              << (src->getPixelData() ? "" : " (source has no pixel data)");
+            mtx::ProbeOnce("src-dst-bounds-differ", o.str());
+        }
 
         // Evaluate in clip time, not timeline time. Stage start/end are frames
         // measured from the clip's first frame, so the animation stays put when
@@ -2024,8 +2078,8 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         const double clipTime = mtx::ToClipTime(this, p_Args.time);
 
         const AnimParams anim = fetchAnimParams(p_Args.time);
-        const float      w    = static_cast<float>(sb.x2 - sb.x1);
-        const float      h    = static_cast<float>(sb.y2 - sb.y1);
+        const float      w    = static_cast<float>(db.x2 - db.x1);
+        const float      h    = static_cast<float>(db.y2 - db.y1);
 
         st = BuildSampleTransforms(anim, fetchBlurParams(p_Args.time),
                                    static_cast<float>(clipTime), w, h);
@@ -2036,6 +2090,7 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     TransformProcessor processor(*this);
     processor.setDstImg(dst.get());
     processor.setSrcImg(src.get());
+    processor.setSrcOrigin(srcOriginX, srcOriginY);
     processor.setGPURenderArgs(p_Args);
     processor.setRenderWindow(p_Args.renderWindow);
     processor.setParams(st,

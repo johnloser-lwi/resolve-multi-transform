@@ -18,7 +18,8 @@ __global__ void MultiTransformKernel(const float* __restrict__ src,
                                      float* __restrict__ dst,
                                      int dstWidth, int dstHeight, int dstRowFloats,
                                      mtx::SampleTransforms st,
-                                     int filterMode, int edgeMode)
+                                     int filterMode, int edgeMode,
+                                     int srcOriginX, int srcOriginY)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -29,6 +30,8 @@ __global__ void MultiTransformKernel(const float* __restrict__ src,
     srcView.width           = srcWidth;
     srcView.height          = srcHeight;
     srcView.rowStrideFloats = srcRowFloats;
+    srcView.originX         = srcOriginX;
+    srcView.originY         = srcOriginY;
 
     float out[4];
     mtx::RenderPixel(srcView, st,
@@ -46,11 +49,32 @@ const char* RunMultiTransformCuda(void* pStream,
                                   const float* src, int srcWidth, int srcHeight, int srcRowFloats,
                                   float* dst, int dstWidth, int dstHeight, int dstRowFloats,
                                   const mtx::SampleTransforms& st,
-                                  int filterMode, int edgeMode)
+                                  int filterMode, int edgeMode,
+                                  int srcOriginX, int srcOriginY)
 {
-    if (dstWidth <= 0 || dstHeight <= 0) return nullptr;
+    if (!dst || dstWidth <= 0 || dstHeight <= 0) return nullptr;
 
     cudaStream_t stream = static_cast<cudaStream_t>(pStream);
+
+    // No source, or an empty one, renders as transparent -- and it has to be
+    // *written*, not skipped. Returning early leaves the destination holding
+    // whatever the host's buffer held last, which shows up as a stale or torn
+    // frame exactly when a node's input vanishes mid-scrub. Cleared by rows,
+    // since the pitch need not equal the width.
+    if (!src || srcWidth <= 0 || srcHeight <= 0)
+    {
+        const cudaError_t clr = cudaMemset2DAsync(
+            dst, static_cast<size_t>(dstRowFloats) * sizeof(float), 0,
+            static_cast<size_t>(dstWidth) * 4 * sizeof(float),
+            static_cast<size_t>(dstHeight), stream);
+        if (clr != cudaSuccess) return cudaGetErrorString(clr);
+        if (stream == nullptr)
+        {
+            const cudaError_t syncErr = cudaDeviceSynchronize();
+            if (syncErr != cudaSuccess) return cudaGetErrorString(syncErr);
+        }
+        return nullptr;
+    }
 
     const dim3 block(16, 16);
     const dim3 grid((dstWidth  + block.x - 1) / block.x,
@@ -59,7 +83,7 @@ const char* RunMultiTransformCuda(void* pStream,
     MultiTransformKernel<<<grid, block, 0, stream>>>(
         src, srcWidth, srcHeight, srcRowFloats,
         dst, dstWidth, dstHeight, dstRowFloats,
-        st, filterMode, edgeMode);
+        st, filterMode, edgeMode, srcOriginX, srcOriginY);
 
     // Synchronise ourselves when the host did not give us a stream.
     //
@@ -99,7 +123,7 @@ float BenchMultiTransformCuda(const float* hostSrc, int width, int height,
     // Warm up: the first launch pays JIT/context costs that would otherwise be
     // charged to the measurement.
     RunMultiTransformCuda(nullptr, dSrc, width, height, width * 4,
-                          dDst, width, height, width * 4, st, filterMode, edgeMode);
+                          dDst, width, height, width * 4, st, filterMode, edgeMode, 0, 0);
     cudaDeviceSynchronize();
 
     cudaEvent_t start, stop;
@@ -110,7 +134,7 @@ float BenchMultiTransformCuda(const float* hostSrc, int width, int height,
     for (int i = 0; i < iterations; ++i)
     {
         RunMultiTransformCuda(nullptr, dSrc, width, height, width * 4,
-                              dDst, width, height, width * 4, st, filterMode, edgeMode);
+                              dDst, width, height, width * 4, st, filterMode, edgeMode, 0, 0);
     }
 
     cudaEventRecord(stop);
@@ -132,22 +156,29 @@ float BenchMultiTransformCuda(const float* hostSrc, int width, int height,
 void RunMultiTransformCudaSync(const float* hostSrc, int srcWidth, int srcHeight,
                                float* hostDst, int dstWidth, int dstHeight,
                                const mtx::SampleTransforms& st,
-                               int filterMode, int edgeMode)
+                               int filterMode, int edgeMode,
+                               int srcOriginX, int srcOriginY)
 {
     const size_t srcBytes = static_cast<size_t>(srcWidth) * srcHeight * 4 * sizeof(float);
     const size_t dstBytes = static_cast<size_t>(dstWidth) * dstHeight * 4 * sizeof(float);
 
     float* dSrc = nullptr;
     float* dDst = nullptr;
-    if (cudaMalloc(&dSrc, srcBytes) != cudaSuccess) return;
-    if (cudaMalloc(&dDst, dstBytes) != cudaSuccess) { cudaFree(dSrc); return; }
 
-    cudaMemcpy(dSrc, hostSrc, srcBytes, cudaMemcpyHostToDevice);
+    // An empty source is a legitimate input now -- it is how the empty-image
+    // path is exercised -- and cudaMalloc of zero bytes is not something to
+    // lean on, so the source buffer is simply not made in that case.
+    if (srcBytes > 0)
+    {
+        if (cudaMalloc(&dSrc, srcBytes) != cudaSuccess) return;
+        cudaMemcpy(dSrc, hostSrc, srcBytes, cudaMemcpyHostToDevice);
+    }
+    if (cudaMalloc(&dDst, dstBytes) != cudaSuccess) { cudaFree(dSrc); return; }
 
     RunMultiTransformCuda(nullptr,
                           dSrc, srcWidth, srcHeight, srcWidth * 4,
                           dDst, dstWidth, dstHeight, dstWidth * 4,
-                          st, filterMode, edgeMode);
+                          st, filterMode, edgeMode, srcOriginX, srcOriginY);
 
     cudaDeviceSynchronize();
     cudaMemcpy(hostDst, dDst, dstBytes, cudaMemcpyDeviceToHost);

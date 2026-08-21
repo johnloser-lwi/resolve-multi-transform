@@ -949,6 +949,34 @@ skip on merely-neutral frames, worth about 0.3 ms each.
 
 ## A note for other OFX hosts
 
+### Fusion hands out images the Edit page never does
+
+Fusion crops a node's input to its **domain of definition**. So while the Edit page always
+supplies a source the same size as the frame, in Fusion the source can be a small rectangle
+offset inside the frame, or — for an element with nothing to show at the current frame, which
+is routine while scrubbing — **empty**, sometimes with a null data pointer.
+
+The empty case used to crash. With a zero-width image the sampler's edge handling had no valid
+texel to fall back on: Clamp and Mirror both resolved to index **−1**, and only Black happened
+to bail out before reading. That was an out-of-bounds read on the CPU path and a device fault
+on CUDA — and a composition with several Multi Transform nodes being scrubbed is the surest way
+to hit it, because at any given frame *some* node's input is likely to be empty.
+
+Now:
+
+- An empty or data-less source samples as transparent, in every edge mode, without touching
+  memory. On CUDA it also **clears** the output rather than leaving the host's buffer holding a
+  stale frame.
+- The transform is evaluated in the **destination's** frame, and a cropped source is sampled
+  at its real offset inside it — so `position 1.0` still means one frame width and `anchor 0.5`
+  still means the frame centre, not the element's own little box. The parity test renders a
+  cropped source and the same pixels embedded full-frame and requires them to match exactly.
+- Sampling coordinates are bounded before integer conversion, so a near-singular transform can
+  no longer produce the undefined float-to-int behaviour that `x0 + 1` then overflowed.
+
+When a source's bounds differ from the destination's, `probe.log` records it once per session
+with both rectangles — so the next Fusion report can be read against facts.
+
 The animation is driven by the render time, not by host keyframes, so **no parameter is ever
 animated**. A host that assumes "no animated parameters means a static output" will render one
 frame and reuse it for the whole clip — playback freezes while the controls still update the
