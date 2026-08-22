@@ -1024,6 +1024,29 @@ The constructor carries the list, and anything fetched by name anywhere — the 
 triggers, changedParam — must be on it. Render-side code goes further and reads through
 stored handles only.
 
+### Fusion can fault inside `clipGetRegionOfDefinition` — so the overlay never asks
+
+The overlay used to ask the host for the source clip's region of definition on every draw, to
+know the frame it was drawing on. On the Fusion page that query runs Fusion's graph evaluation,
+and at a frame where the node's input cannot be resolved — `cannot get Parameter for Source`
+in Fusion's own log, which is routine while scrubbing — the host returned an error on a good
+day and **faulted with a null write inside ntdll** on a bad one. A crash dump, read against a
+linker map of the crashed binary, showed exactly that chain on the UI thread: overlay draw →
+`Clip::getRegionOfDefinition` → Fusion's OFX host → ntdll. A status-checked call would still
+have made the call.
+
+So the overlay does not ask. `render()` sees the destination's bounds on every frame and
+publishes them (canonical coordinates, render scale divided out); the overlay reads the last
+published rectangle. Before the first render of a session it draws nothing — correct for a
+frame that has not been rendered either. The only host call left on the overlay's hot path is
+a raw, status-checked property read for "is the source connected", so nothing on the UI thread
+can start an exception at all.
+
+Two habits this left behind: the linker writes a `.map` beside the binary on every build (an
+address out of a Resolve crash dump becomes a function name with a grep), and `buildContext`'s
+catch now logs *what* was thrown and with which status, because "threw" alone was the last
+line before two crashes and said nothing about why.
+
 The animation is driven by the render time, not by host keyframes, so **no parameter is ever
 animated**. A host that assumes "no animated parameters means a static output" will render one
 frame and reuse it for the whole clip — playback freezes while the controls still update the

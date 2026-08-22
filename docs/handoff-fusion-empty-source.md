@@ -307,3 +307,40 @@ and `crash_archive.txt` gave the uptimes. Read Resolve's logs before the plugin'
 %APPDATA%\Blackmagic Design\DaVinci Resolve\Support\crash_archive.txt
 %APPDATA%\Blackmagic Design\DaVinci Resolve\Support\logs\LogArchive\*.dmp
 ```
+
+## 10. Addendum: Fusion faults inside `clipGetRegionOfDefinition` — do not call it from an overlay
+
+Third crash, same evening, on the build that had already fixed §9. This one was read from the
+dump with a **faithful linker map** (relink the crashed commit with `/MAP`; confirm the binary
+size matches the installed one), and the chain on the faulting UI thread was unambiguous:
+
+```
+overlayInteractMainEntry → interactMainEntry → draw → buildContextUnsafe
+  → OFX::Clip::getRegionOfDefinition          (+0x1d: the suite call's return address)
+  → openfx.plugin / fusionsystem.dll           (Fusion's OFX host)
+  → ntdll: ACCESS_VIOLATION, write at 0x24     (a null struct pointer)
+```
+
+It happened at a frame where Fusion could not resolve the node's input (`cannot get Parameter
+for Source`), which is routine while scrubbing. On other occasions the same query returned an
+error status and the SDK wrapper threw (`OFX::Exception::Suite`), which the overlay caught; on
+this one the host's failing path faulted instead. **A status-checked call still makes the
+call.** The only safe move is not to ask.
+
+**If TextAnimator's overlay (or anything on the UI thread) calls `getRegionOfDefinition`,
+`fetchImage`, or anything else that makes Fusion evaluate the graph, take it out.** Multi
+Transform's fix: `render()` publishes the destination's bounds every frame (canonical, render
+scale divided out, behind a mutex) and the overlay reads the last published rectangle; before
+the first render it draws nothing. The "is the source connected" check became a raw
+`propGetInt` with the status checked, so no exception can start on the UI thread at all.
+
+Reading the dump without a debugger, for next time:
+
+1. `pip install minidump`; parse the newest `LogArchive\*.dmp`; take the exception record
+   (thread, code, address, and for an access violation the read/write address).
+2. List modules; note your `.ofx` base and size.
+3. Read the faulting thread's stack bytes from the file (`Stack.StartOfMemoryRange`, and the
+   descriptor's Rva/DataSize), and print every 8-byte value that lands inside a module — a
+   poor man's stack walk, noisy but good enough to see the chain.
+4. Relink the crashed commit with `/MAP` (stash local changes, check the size matches), then
+   map each `your.ofx+offset` to the greatest map symbol ≤ it. Keep `/MAP` on permanently.
