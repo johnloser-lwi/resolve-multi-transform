@@ -326,6 +326,11 @@ private:
     OFX::StringParam*  _presetFolder = nullptr;
     OFX::BooleanParam* _previewGhost = nullptr;
 
+    /// Which end the gizmo poses. Read inside render() for the drag preview,
+    /// so it must be a handle: a by-name fetch there is the race described in
+    /// the constructor.
+    OFX::ChoiceParam*  _editTarget   = nullptr;
+
     OFX::BooleanParam* _blurEnabled  = nullptr;
     OFX::DoubleParam*  _shutterAngle = nullptr;
     OFX::DoubleParam*  _shutterPhase = nullptr;
@@ -426,6 +431,45 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
 
     _presetFolder = fetchStringParam(kParamPresetFolder);
     _previewGhost = fetchBooleanParam(kParamPreviewGhost);
+    _editTarget   = fetchChoiceParam(kParamEditTarget);
+
+    // --- Every remaining parameter the plugin ever fetches by name ----------
+    //
+    // Fetched here once so that no fetch after construction can *insert*.
+    //
+    // The support library caches parameter handles in a std::map with no
+    // lock: a fetch by name does a find and, on a miss, an insert. Fusion
+    // renders one instance on several threads at once, and the overlay and
+    // changedParam fetch by name on the UI thread while those renders run.
+    // After construction every one of those is a read-only find, which is
+    // safe; a first-time insert during a concurrent find is not. One such
+    // insert -- kParamEditTarget, fetched inside render() for the drag
+    // preview -- crashed Resolve twice in one evening, both times within
+    // seconds of a fresh session while a gizmo drag and a Fusion scrub
+    // overlapped. Nothing here is used directly; existing is the point.
+    //
+    // Rule for anything added later: if it is ever fetched by name, it must
+    // appear in this list.
+    (void)fetchBooleanParam(kParamShowCurve);
+    (void)fetchBooleanParam(kParamShowLibrary);
+    (void)fetchBooleanParam(kParamShowQuick);
+    (void)fetchBooleanParam(kParamShowTimeline);
+    (void)fetchBooleanParam(kParamShowPath);
+    (void)fetchBooleanParam(kParamShowOpacity);
+    (void)fetchBooleanParam(kParamDragPreview);
+    (void)fetchBooleanParam(kParamLoadFromOverlay);
+    (void)fetchBooleanParam(kParamQuickFromOverlay);
+    (void)fetchBooleanParam(kParamSyncPeakFromOverlay);
+    (void)fetchBooleanParam(kParamSyncEaseFromOverlay);
+    (void)fetchChoiceParam(kParamQuickAction);
+    (void)fetchPushButtonParam(kParamQuickApply);
+    (void)fetchPushButtonParam(kParamBaseReset);
+    (void)fetchPushButtonParam(kParamSaveEffect);
+    (void)fetchPushButtonParam(kParamSaveStage);
+    (void)fetchPushButtonParam(kParamLoadPreset);
+    (void)fetchPushButtonParam(kParamLoadPresetFit);
+    (void)fetchPushButtonParam(kParamSetFolder);
+    (void)fetchPushButtonParam(kParamResetFolder);
 
     _baseScale     = fetchDoubleParam  (kParamBaseScale);
     _baseScaleY    = fetchDoubleParam  (kParamBaseScaleY);
@@ -1158,7 +1202,7 @@ void MultiTransformPlugin::addPreviewGhost(SampleTransforms& st, const AnimParam
     if (active >= kMaxStages) active = kMaxStages - 1;
 
     int target = 1;
-    fetchChoiceParam(kParamEditTarget)->getValue(target);
+    _editTarget->getValue(target);   // a handle, never a by-name fetch: see the constructor
 
     float refTime = static_cast<float>(clipTime);          // 2 == the base pose
     if (target != 2)
@@ -2113,6 +2157,14 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     const OfxRectI db = dst->getBounds();
     int srcOriginX = 0, srcOriginY = 0;
 
+    // Logged once: Fusion's own log says "cannot get Parameter for Source" when
+    // an upstream tool has nothing at a frame, and this is what that looks like
+    // from inside the plugin -- a render with no source at all, which renders
+    // transparent. Having both sides of that conversation in the logs is what
+    // lets a Fusion crash be read against what the plugin was actually doing.
+    if (!src) mtx::ProbeOnce("render-no-source",
+                             "render: host supplied no source image; rendering transparent");
+
     if (src)
     {
         const OfxRectI sb = src->getBounds();
@@ -2178,7 +2230,12 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
           << "  blur samples=" << st.count
           << "  first render " << std::fixed << std::setprecision(2) << ms << " ms"
           << "  host threads=" << OFX::MultiThread::getNumCPUs();
-        mtx::ProbeOnce("render-dispatch-" + dispatchKind, o.str());
+        // Keyed on depth as well: now that the host may supply byte or short
+        // images, a render at a new depth is as worth one line as a render on
+        // a new path, and a key that ignored it would hide the first of each.
+        mtx::ProbeOnce("render-dispatch-" + dispatchKind + "-"
+                           + OFX::mapBitDepthEnumToStr(dst->getPixelDepth()),
+                       o.str());
     }
 }
 
