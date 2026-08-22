@@ -1037,10 +1037,13 @@ have made the call.
 
 So the overlay does not ask. `render()` sees the destination's bounds on every frame and
 publishes them (canonical coordinates, render scale divided out); the overlay reads the last
-published rectangle. Before the first render of a session it draws nothing — correct for a
-frame that has not been rendered either. The only host call left on the overlay's hot path is
-a raw, status-checked property read for "is the source connected", so nothing on the UI thread
-can start an exception at all.
+published rectangle. Before the first render it draws on the **project frame** (size and
+offset, read as plain properties of the instance) — and that fallback is not a corner case: a
+freshly added effect is the identity, `isIdentity` says so, and the host never calls `render()`
+until something changes, so an overlay that waited for a render would not appear until the
+user had already edited the thing they needed it to edit. The only host calls left on the
+overlay's hot path are raw, status-checked property reads, so nothing on the UI thread can
+start an exception at all.
 
 Two habits this left behind: the linker writes a `.map` beside the binary on every build (an
 address out of a Resolve crash dump becomes a function name with a grep), and `buildContext`'s

@@ -185,9 +185,40 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     OfxRectD rod{ 0.0, 0.0, 0.0, 0.0 };
     if (!bounds || !bounds->lastFrameBounds(rod))
     {
-        // Nothing rendered yet this session: nothing to draw the overlay on.
-        mtx::ProbeOnce("overlay-no-frame-yet", "overlay: no frame rendered yet; overlay waits");
-        return false;
+        // Nothing rendered yet: fall back to the project's frame.
+        //
+        // "Nothing rendered yet" is the normal state of a freshly added effect,
+        // not a corner case. With every parameter at its default the transform
+        // is the identity, isIdentity says so, and the host never calls
+        // render() at all -- so waiting for a render meant the overlay did not
+        // appear until the user changed something, which is exactly backwards
+        // for the control they would use to change it.
+        //
+        // The project size and offset are properties of this instance, read
+        // with a plain property get: no graph evaluation, no exception, none
+        // of what made the region-of-definition query unsafe on this thread.
+        // They describe the canvas, which is what the overlay wants anyway;
+        // the first real render replaces them with the frame's own bounds.
+        const OfxPropertySetHandle props = _effect->getPropertySet().propSetHandle();
+        double sizeX = 0.0, sizeY = 0.0, offX = 0.0, offY = 0.0;
+        const bool ok =
+            OFX::Private::gPropSuite->propGetDouble(props, kOfxImageEffectPropProjectSize,   0, &sizeX) == kOfxStatOK &&
+            OFX::Private::gPropSuite->propGetDouble(props, kOfxImageEffectPropProjectSize,   1, &sizeY) == kOfxStatOK &&
+            OFX::Private::gPropSuite->propGetDouble(props, kOfxImageEffectPropProjectOffset, 0, &offX)  == kOfxStatOK &&
+            OFX::Private::gPropSuite->propGetDouble(props, kOfxImageEffectPropProjectOffset, 1, &offY)  == kOfxStatOK;
+
+        if (!ok || sizeX <= 0.0 || sizeY <= 0.0)
+        {
+            mtx::ProbeOnce("overlay-no-frame", "overlay: no frame rendered and no project size; overlay waits");
+            return false;
+        }
+
+        rod.x1 = offX;          rod.y1 = offY;
+        rod.x2 = offX + sizeX;  rod.y2 = offY + sizeY;
+        mtx::ProbeOnce("overlay-project-frame",
+                       "overlay: drawing on the project frame until the first render ("
+                       + std::to_string(static_cast<int>(sizeX)) + "x"
+                       + std::to_string(static_cast<int>(sizeY)) + ")");
     }
 
     out.effect     = _effect;
