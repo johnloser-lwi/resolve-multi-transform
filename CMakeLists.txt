@@ -69,6 +69,11 @@ target_include_directories(MultiTransform PRIVATE src)
 target_link_libraries(MultiTransform PRIVATE ofxsupport mtxcuda comdlg32 ole32 shell32)
 
 # OFX plugins are DLLs with a .ofx extension and a single exported entry point.
+# A linker map alongside the binary, so an address out of a Resolve crash dump
+# can be turned into a function name without a debugger. It cost nothing until
+# the day it was needed, and that day came.
+target_link_options(MultiTransform PRIVATE /MAP)
+
 set_target_properties(MultiTransform PROPERTIES
     PREFIX ""
     SUFFIX ".ofx"

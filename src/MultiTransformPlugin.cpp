@@ -28,9 +28,12 @@
 #include "render/CudaRender.h"
 
 #include <memory>
+#include "FrameBounds.h"
+
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 
 #include "ofxDrawSuite.h"
@@ -225,10 +228,14 @@ void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
 ////////////////////////////////////////////////////////////////////////////////
 // Effect instance
 
-class MultiTransformPlugin : public OFX::ImageEffect
+class MultiTransformPlugin : public OFX::ImageEffect, public mtx::FrameBoundsProvider
 {
 public:
     explicit MultiTransformPlugin(OfxImageEffectHandle p_Handle);
+
+    // --- FrameBoundsProvider: the overlay reads the frame from here, never
+    // from the host's region-of-definition query. See FrameBounds.h.
+    bool lastFrameBounds(OfxRectD& out) const override;
 
     virtual void render(const OFX::RenderArguments& p_Args) override;
     virtual bool isIdentity(const OFX::IsIdentityArguments& p_Args,
@@ -330,6 +337,14 @@ private:
     /// so it must be a handle: a by-name fetch there is the race described in
     /// the constructor.
     OFX::ChoiceParam*  _editTarget   = nullptr;
+
+    /// The last rendered frame's canonical bounds, for the overlay. Written by
+    /// the render thread, read by the UI thread, hence the lock; it is four
+    /// doubles, so the lock is uncontended in practice.
+    void publishFrameBounds(const OfxRectI& bounds, const OfxPointD& renderScale);
+    mutable std::mutex _boundsMutex;
+    OfxRectD           _lastBounds{ 0.0, 0.0, 0.0, 0.0 };
+    bool               _haveBounds = false;
 
     OFX::BooleanParam* _blurEnabled  = nullptr;
     OFX::DoubleParam*  _shutterAngle = nullptr;
@@ -571,6 +586,41 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     // The folder read-out is not persisted with the project, so it starts blank
     // on every open and has to be filled in from preferences here.
     syncPresetFolderLabel();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Frame bounds for the overlay
+
+namespace mtx {
+
+FrameBoundsProvider* FrameBoundsOf(OFX::ImageEffect* effect)
+{
+    return dynamic_cast<MultiTransformPlugin*>(effect);
+}
+
+} // namespace mtx
+
+void MultiTransformPlugin::publishFrameBounds(const OfxRectI& b, const OfxPointD& renderScale)
+{
+    // Canonical coordinates, which is what the overlay draws in: a host that
+    // renders at a reduced scale (Fusion's proxy mode, Resolve's playback
+    // optimisations) hands over smaller bounds, and dividing the scale back
+    // out puts the gizmo on the picture rather than in its top-left quarter.
+    const double sx = renderScale.x > 1e-9 ? renderScale.x : 1.0;
+    const double sy = renderScale.y > 1e-9 ? renderScale.y : 1.0;
+
+    std::lock_guard<std::mutex> lock(_boundsMutex);
+    _lastBounds.x1 = b.x1 / sx;  _lastBounds.y1 = b.y1 / sy;
+    _lastBounds.x2 = b.x2 / sx;  _lastBounds.y2 = b.y2 / sy;
+    _haveBounds    = (b.x2 > b.x1) && (b.y2 > b.y1);
+}
+
+bool MultiTransformPlugin::lastFrameBounds(OfxRectD& out) const
+{
+    std::lock_guard<std::mutex> lock(_boundsMutex);
+    if (!_haveBounds) return false;
+    out = _lastBounds;
+    return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2156,6 +2206,10 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     // the sampler so the pixels are still read from where they really are.
     const OfxRectI db = dst->getBounds();
     int srcOriginX = 0, srcOriginY = 0;
+
+    // The overlay takes its frame from here rather than asking the host for a
+    // region of definition -- see FrameBounds.h for the crash that made it so.
+    publishFrameBounds(db, p_Args.renderScale);
 
     // Logged once: Fusion's own log says "cannot get Parameter for Source" when
     // an upstream tool has nothing at a frame, and this is what that looks like

@@ -3,6 +3,7 @@
 #include "AnimEngine.h"
 #include "ClipTime.h"
 #include "EditBlock.h"
+#include "FrameBounds.h"
 #include "HostProbe.h"
 #include "ParamNames.h"
 
@@ -125,11 +126,29 @@ bool MultiTransformInteract::buildContext(OverlayContext& out, double time,
     {
         return buildContextUnsafe(out, time, pixelScale);
     }
+    catch (const OFX::Exception::Suite& e)
+    {
+        // Logged with the status and once per distinct status, so the log says
+        // which host call refused and how -- "threw" alone turned out to be
+        // the last line before a crash, and said nothing about why.
+        mtx::ProbeOnce("overlay-build-suite-" + std::to_string(e.status()),
+                       std::string("overlay: buildContext: host call failed with ")
+                       + e.what() + " (" + std::to_string(e.status()) + "); frame skipped");
+        return false;
+    }
+    catch (const std::exception& e)
+    {
+        mtx::ProbeOnce(std::string("overlay-build-std-") + e.what(),
+                       std::string("overlay: buildContext threw std::exception: ") + e.what());
+        return false;
+    }
     catch (...)
     {
-        // An exception escaping into the host during a draw or pen action is a
-        // far worse outcome than simply not drawing this frame.
-        mtx::ProbeOnce("overlay-build-failed", "overlay: buildContext threw; overlay suppressed");
+        // Not ours and not the SDK's. A foreign exception unwinding through this
+        // module is itself worth knowing about, because the Fusion page has
+        // crashed inside the unwinder on this very thread.
+        mtx::ProbeOnce("overlay-build-foreign",
+                       "overlay: buildContext caught an exception of unknown type; frame skipped");
         return false;
     }
 }
@@ -140,11 +159,40 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     if (!_effect || !OFX::Private::gDrawSuite) return false;
 
     OFX::Clip* src = _effect->fetchClip(kOfxImageEffectSimpleSourceClipName);
-    if (!src || !src->isConnected()) return false;
+    if (!src) return false;
+
+    // A raw, status-checked property read rather than the support library's
+    // wrapper, which throws on any status but OK. Nothing on this thread
+    // should ever start an exception; see below for why.
+    int connected = 0;
+    if (OFX::Private::gPropSuite->propGetInt(src->getPropertySet().propSetHandle(),
+                                             kOfxImageClipPropConnected, 0, &connected)
+            != kOfxStatOK || !connected)
+        return false;
+
+    // The frame's bounds come from the last render, not from the host.
+    //
+    // This used to call Clip::getRegionOfDefinition on every draw. On the
+    // Fusion page that query goes through Fusion's graph evaluation, and at a
+    // frame where the node's input cannot be resolved -- "cannot get Parameter
+    // for Source" in Fusion's own log, routine while scrubbing -- the host's
+    // implementation returned an error on a good day and faulted on a bad one:
+    // a crash dump put a null write inside ntdll with this draw, that query,
+    // and Fusion's OFX host on the stack, in that order. A status-checked call
+    // would still have made the call. Not asking is the only safe answer, and
+    // render() already knows the frame every time it draws one.
+    mtx::FrameBoundsProvider* bounds = mtx::FrameBoundsOf(_effect);
+    OfxRectD rod{ 0.0, 0.0, 0.0, 0.0 };
+    if (!bounds || !bounds->lastFrameBounds(rod))
+    {
+        // Nothing rendered yet this session: nothing to draw the overlay on.
+        mtx::ProbeOnce("overlay-no-frame-yet", "overlay: no frame rendered yet; overlay waits");
+        return false;
+    }
 
     out.effect     = _effect;
     out.pixelScale = pixelScale;
-    out.rod        = src->getRegionOfDefinition(time);
+    out.rod        = rod;
 
     // Everything the overlay shows and edits is in clip time, so the timeline
     // lanes read 0..clip length rather than raw timeline frame numbers, and a
