@@ -1008,6 +1008,22 @@ same build looked fine there.
 The general rule this leaves behind: on Fusion, **a parameter that must ever be shown must be
 described visible**. Hide it afterwards if you like; do not describe it hidden.
 
+### Fusion renders one instance on several threads, and the SDK's handle cache has no lock
+
+`OFX::ParamSet::fetchParam(name)` in the support library caches handles in a `std::map`: a
+fetch finds, and on a miss **inserts**, unguarded. Fusion renders a single instance on three
+or more threads concurrently while scrubbing. Any parameter first fetched by name *from inside
+a render* is therefore a data race — two threads miss the map in the same moment, both insert,
+and the tree is corrupted. That crashed Resolve twice in an evening, each time seconds into a
+fresh session (cold map) while a gizmo drag overlapped a Fusion scrub. The Edit page has one
+render thread, so the same code worked there all day.
+
+The rule: **every parameter the plugin ever fetches by name is fetched once in the
+constructor.** After that every lookup is a read-only find, which concurrent threads may share.
+The constructor carries the list, and anything fetched by name anywhere — the overlay, the
+triggers, changedParam — must be on it. Render-side code goes further and reads through
+stored handles only.
+
 The animation is driven by the render time, not by host keyframes, so **no parameter is ever
 animated**. A host that assumes "no animated parameters means a static output" will render one
 frame and reuse it for the whole clip — playback freezes while the controls still update the

@@ -260,3 +260,50 @@ render dispatch: cuda/no-opencl  dst=3840x2160  blur samples=1  first render 1.0
 - **"GPU is idle" is the diagnostic.** The user noticed it before any log did. If the GPU is
   chilled on the page that plays badly and busy on the one that plays well, the code path
   differs — find why.
+
+## 9. Addendum: a second Fusion crash, from the OFX support library's handle cache
+
+Found after the above, same evening, and **directly applicable to TextAnimator** because it
+is in the support library both plugins share — not in Multi Transform's own code.
+
+**Symptom.** Resolve crashed twice within seconds of a fresh session (uptime 0:32 and 2:17),
+each time while a gizmo drag and a Fusion scrub overlapped. Worked all day on the Edit page.
+Resolve's `davinci_resolve.log` showed, in the second before each dump, Fusion rendering the
+one node on **three threads concurrently** at different frames.
+
+**Mechanism.** `OFX::ParamSet::fetchParam<T>(name)` (ofxsParams.cpp) keeps a
+`std::map<std::string, Param*>` of handles with **no lock**: a fetch finds, and on a miss
+*inserts*. Multi Transform's render path fetched one parameter by name (`fetchChoiceParam`
+inside the drag-preview code) that had never been fetched at construction. The first drag
+of a session therefore did the map's first insert *from a render thread*. One render thread
+(Edit page): harmless. Three concurrent render threads (Fusion), two missing the map in the
+same moment: two inserts race, the tree is corrupted, Resolve dies. Same for `fetchClip` and
+`_fetchedClips`.
+
+**Rule.** *Every parameter (and clip) the plugin ever fetches by name must be fetched once in
+the constructor.* After that, every later fetch is a read-only `find`, and concurrent reads
+of a `std::map` are safe. Keep a list in the constructor and treat "added a parameter that
+something fetches by name" as "add it to the list". A cheap audit:
+
+```bash
+# names defined vs names fetched in the constructor -- the diff is your exposure
+grep -oE "define[A-Za-z]+Param\((kParam[A-Za-z0-9]+)\)" src/*.cpp | grep -oE "kParam\w+" | sort -u > defined
+awk '/::TextAnimator\(/,/^}/' src/*.cpp | grep -oE "fetch[A-Za-z]+Param\((kParam[A-Za-z0-9]+)\)" | grep -oE "kParam\w+" | sort -u > fetched
+comm -23 defined fetched
+```
+
+**Especially check render-side code** — anything reached from `render()`, `isIdentity()` or
+`getClipPreferences()` — for `fetch*Param(` by name. Those should be handles stored at
+construction, full stop. UI-thread fetches (changedParam, the overlay) are only safe because
+the map no longer mutates; they are reads racing reads.
+
+**Why the log could not show it.** A corrupted `std::map` faults somewhere unrelated, later.
+Nothing the plugin logs precedes it. What *did* point at it was Resolve's own log: the thread
+IDs on the "cannot get Parameter for Source" lines proved concurrent renders of one instance,
+and `crash_archive.txt` gave the uptimes. Read Resolve's logs before the plugin's:
+
+```
+%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\logs\davinci_resolve.log
+%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\crash_archive.txt
+%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\logs\LogArchive\*.dmp
+```
