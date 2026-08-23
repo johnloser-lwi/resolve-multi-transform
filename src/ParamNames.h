@@ -56,6 +56,7 @@ constexpr const char* kParamBaseReset      = "baseReset";
 // --- Presets ---
 constexpr const char* kParamGroupPresets   = "grpPresets";
 constexpr const char* kParamSaveEffect     = "savePresetEffect";
+constexpr const char* kParamBakeFusion     = "bakeToFusion";
 constexpr const char* kParamSaveStage      = "savePresetStage";
 constexpr const char* kParamLoadPreset     = "loadPreset";
 constexpr const char* kParamLoadPresetFit  = "loadPresetFit";

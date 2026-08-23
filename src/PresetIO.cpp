@@ -53,7 +53,11 @@ std::string Narrow(const std::wstring& w)
  * hack, nothing for the MRU to override, and failures come back as an HRESULT
  * that can be logged instead of vanishing.
  */
-bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& outPath)
+bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& outPath,
+                   const wchar_t* ext = L"json",
+                   const wchar_t* filterName = L"Multi Transform preset (*.json)",
+                   const wchar_t* filterSpec = L"*.json",
+                   const wchar_t* title = nullptr)
 {
     const std::string folder = PresetFolder();
 
@@ -70,14 +74,15 @@ bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& o
                                   nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
     if (SUCCEEDED(hr))
     {
-        static const COMDLG_FILTERSPEC kFilter[] = {
-            { L"Multi Transform preset (*.json)", L"*.json" },
-            { L"All files (*.*)",                 L"*.*"    }
+        const COMDLG_FILTERSPEC kFilter[] = {
+            { filterName,         filterSpec },
+            { L"All files (*.*)", L"*.*"    }
         };
         dialog->SetFileTypes(2, kFilter);
-        dialog->SetDefaultExtension(L"json");
-        dialog->SetTitle(saving ? L"Save Multi Transform preset"
-                                : L"Load Multi Transform preset");
+        dialog->SetDefaultExtension(ext);
+        dialog->SetTitle(title ? title
+                               : (saving ? L"Save Multi Transform preset"
+                                         : L"Load Multi Transform preset"));
 
         DWORD flags = 0;
         if (SUCCEEDED(dialog->GetOptions(&flags)))
@@ -367,6 +372,13 @@ bool ChoosePresetToOpen(std::string& outPath)
 bool ChoosePresetToSave(const std::string& suggestedName, std::string& outPath)
 {
     return RunFileDialog(true, suggestedName, outPath);
+}
+
+bool ChooseFusionSettingToSave(const std::string& suggestedName, std::string& outPath)
+{
+    return RunFileDialog(true, suggestedName, outPath,
+                         L"setting", L"Fusion setting (*.setting)", L"*.setting",
+                         L"Bake to a Fusion .setting");
 }
 
 bool ReadTextFile(const std::string& path, std::string& outText, std::string& error)

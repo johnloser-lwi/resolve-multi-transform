@@ -29,6 +29,8 @@
 
 #include <memory>
 #include "FrameBounds.h"
+#include "FusionBake.h"
+#include "FusionSetting.h"
 
 #include <chrono>
 #include <cstring>
@@ -286,6 +288,7 @@ private:
     /** @brief The stage the overlay is editing, clamped to a valid index. */
     int              activeStageIndex() const;
     void             savePreset(bool wholeEffect);
+    void             bakeToFusion();
     void             loadPreset(bool fitToClip);
     /** The playhead expressed in the units a given stage's frames use. */
     double playheadInStageFrames(int stageIndex, double absoluteTime) const;
@@ -480,6 +483,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     (void)fetchPushButtonParam(kParamQuickApply);
     (void)fetchPushButtonParam(kParamBaseReset);
     (void)fetchPushButtonParam(kParamSaveEffect);
+    (void)fetchPushButtonParam(kParamBakeFusion);
     (void)fetchPushButtonParam(kParamSaveStage);
     (void)fetchPushButtonParam(kParamLoadPreset);
     (void)fetchPushButtonParam(kParamLoadPresetFit);
@@ -1516,6 +1520,66 @@ void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
     syncStageVisibility();
 }
 
+void MultiTransformPlugin::bakeToFusion()
+{
+    // Source dimensions -- the space the transform maths is expressed in, and
+    // what normalises the baked Centre and Size.
+    float w = 1920.0f, h = 1080.0f;
+    sourceSize(0.0, w, h);
+
+    // The clip length decides the bake range, which is why this lives in the
+    // plugin and not in a hand-made file: the animation is authored clip
+    // relative, so it bakes over frames 0..last, and "last" is the clip's end
+    // or the animation's, whichever is later.
+    double clipStart = 0.0, clipLength = 0.0;
+    mtx::GetClipRange(this, clipStart, clipLength);
+
+    const AnimParams a = fetchAnimParams(clipStart);
+    const float animEnd = AnimationEndTime(a, clipLength > 1.0 ? clipLength - 1.0f : 60.0f);
+    int endFrame = static_cast<int>(std::ceil(
+        std::max(clipLength > 1.0 ? clipLength - 1.0 : 0.0, static_cast<double>(animEnd))));
+    if (endFrame < 1) endFrame = 60;   // no clip range yet: a sensible span to bake
+
+    const mtx::BakedTransform baked = mtx::BakeToFusion(a, w, h, 0, endFrame);
+
+    // Warn before writing, not after: the file is still worth having, but the
+    // user should know a single Transform could not hold everything.
+    std::string caveats;
+    if (baked.hadShear)
+        caveats += "\n- Shear (a rotation combined with a non-uniform scale, tilt or swivel) "
+                   "cannot live in one Transform and was dropped. The pose is approximate.";
+    bool aspectVaries = false;
+    for (const mtx::BezierKey& k : baked.aspect)
+        if (std::fabs(k.value - 1.0f) > 1e-3f) { aspectVaries = true; break; }
+    if (aspectVaries)
+        caveats += "\n- Non-uniform scale (Scale X different from Scale Y) is not baked; the "
+                   "Transform uses the X scale for both axes.";
+    if (baked.hadMirror)
+        caveats += "\n- The pose mirrors (a swivel past 90 degrees); a Transform cannot, so "
+                   "the mirrored part is not represented.";
+
+    std::string path;
+    if (!mtx::ChooseFusionSettingToSave("MultiTransform", path)) return;   // cancelled
+
+    const std::string text = mtx::EmitFusionSetting(baked, "MTX");
+    std::string error;
+    if (!mtx::WriteTextFile(path, text, error))
+    {
+        sendMessage(OFX::Message::eMessageError, "", "Could not write the Fusion setting:\n" + error);
+        return;
+    }
+
+    mtx::ProbeLog("baked to Fusion: " + path + "  (frames 0.." + std::to_string(endFrame)
+                  + ", keys=" + std::to_string(mtx::TotalKeys(baked)) + ")");
+
+    std::string msg = "Baked to:\n" + path +
+        "\n\nPaste it into a Fusion comp and wire your clip into the Transform's input.";
+    if (!caveats.empty())
+        sendMessage(OFX::Message::eMessageWarning, "", msg + "\n\nWith caveats:" + caveats);
+    else
+        sendMessage(OFX::Message::eMessageMessage, "", msg);
+}
+
 void MultiTransformPlugin::savePreset(bool wholeEffect)
 {
     std::string path;
@@ -1945,6 +2009,7 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     }
 
     if (p_ParamName == kParamSaveEffect)    { savePreset(true);  return; }
+    if (p_ParamName == kParamBakeFusion)    { bakeToFusion();    return; }
     if (p_ParamName == kParamSaveStage)     { savePreset(false); return; }
     if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
@@ -2903,6 +2968,18 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     saveEffect->setLabels("Save Preset to File...", "Save Preset", "Save Preset to File...");
     saveEffect->setHint("Write every stage, plus motion blur and sampling, to a JSON file.");
     page->addChild(*saveEffect);
+
+    PushButtonParamDescriptor* bake = p_Desc.definePushButtonParam(kParamBakeFusion);
+    bake->setLabels("Bake to Fusion (.setting)...", "Bake to Fusion",
+                    "Bake to Fusion (.setting)...");
+    bake->setHint("Write the whole animation as a native Fusion Transform (plus a "
+                  "Brightness/Contrast when it fades), baked to keyframes over the clip's "
+                  "length. Paste the .setting into a Fusion comp and wire your clip into it. "
+                  "A Fusion Transform concatenates with other transforms and resamples the "
+                  "source once, so it stays sharp through further scaling. Non-uniform scale, "
+                  "tilt/swivel under a rotation, or a mirror are approximated and warned "
+                  "about -- a plain move bakes exactly.");
+    page->addChild(*bake);
 
     PushButtonParamDescriptor* saveStage = p_Desc.definePushButtonParam(kParamSaveStage);
     saveStage->setLabels("Save Active Stage to File...", "Save Stage",

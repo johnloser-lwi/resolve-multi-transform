@@ -8,6 +8,7 @@
 #include "MotionBlur.h"
 #include "TransformMath.h"
 #include "FusionBake.h"
+#include "FusionSetting.h"
 
 #include <algorithm>
 #include <cmath>
@@ -2505,6 +2506,70 @@ static void TestFusionBakeDecomposition()
     }
 }
 
+static bool Contains(const std::string& hay, const std::string& needle)
+{
+    return hay.find(needle) != std::string::npos;
+}
+
+static void TestFusionEmitter()
+{
+    std::printf("Fusion emitter: structure and the conditional fade node\n");
+
+    const float W = 1920.0f, H = 1080.0f;
+
+    // A plain slide+zoom, no opacity change: one Transform, no fade node.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled    = true;
+        a.stages[0].startFrame = 0.0f; a.stages[0].endFrame = 60.0f;
+        a.stages[0].posXFrom   = -0.3f; a.stages[0].posXTo = 0.3f;
+        a.stages[0].scaleFrom  = 1.0f;  a.stages[0].scaleTo = 1.6f;
+
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 60);
+        const std::string s = mtx::EmitFusionSetting(b, "MTX");
+
+        Check(Contains(s, "MTXTransform = Transform"),   "emits the Transform node");
+        Check(Contains(s, "MTXTransformCenter = XYPath"),         "emits the Center XYPath");
+        Check(Contains(s, "MTXTransformCenterX = BezierSpline"),  "emits the CenterX spline");
+        Check(Contains(s, "MTXTransformSize = BezierSpline"),     "emits the Size spline");
+        Check(Contains(s, "MTXTransformAngle = BezierSpline"),    "emits the Angle spline");
+        Check(Contains(s, "Tools = ordered()"),          "wraps in a Tools table");
+        Check(!Contains(s, "BrightnessContrast"),        "no fade node when opacity is constant");
+        // The prefix keeps two bakes from colliding.
+        Check(Contains(mtx::EmitFusionSetting(b, "A"),   "ATransform = Transform"),  "prefix A applied");
+        Check(Contains(mtx::EmitFusionSetting(b, "B"),   "BTransform = Transform"),  "prefix B applied");
+    }
+
+    // A fade: the Brightness/Contrast appears, wired after the Transform.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled     = true;
+        a.stages[0].startFrame  = 0.0f; a.stages[0].endFrame = 60.0f;
+        a.stages[0].opacityFrom = 0.0f; a.stages[0].opacityTo = 1.0f;
+
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 60);
+        const std::string s = mtx::EmitFusionSetting(b, "MTX");
+
+        Check(Contains(s, "MTXFade = BrightnessContrast"), "emits a fade node when opacity animates");
+        Check(Contains(s, "MTXFadeGain = BezierSpline"),   "the fade is driven by a Gain spline");
+        Check(Contains(s, "SourceOp = \"MTXTransform\""),  "the fade takes the Transform as input");
+    }
+
+    // The emitted key values are the fitted ones, so a spot value in the text
+    // matches EvalBezierChannel -- the emitter does not distort the bake.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled    = true;
+        a.stages[0].startFrame = 0.0f; a.stages[0].endFrame = 40.0f;
+        a.stages[0].scaleFrom  = 1.0f; a.stages[0].scaleTo = 2.0f;
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 40);
+
+        // The final Size key must read 2.0, the animation's end scale.
+        Check(std::fabs(b.size.back().value - 2.0f) < 1e-3f, "emitted size ends at the final scale");
+        Check(Contains(mtx::EmitFusionSetting(b, "MTX"), "MTXTransformSize = BezierSpline"), "size spline present");
+    }
+}
+
 int main()
 {
     std::printf("=== MultiTransform animation engine tests ===\n");
@@ -2573,6 +2638,7 @@ int main()
     TestFusionBakeBezier();
     TestFusionBakePreservesBounce();
     TestFusionBakeDecomposition();
+    TestFusionEmitter();
 
     std::printf("\n%d checks, %d failure(s)\n", g_checks, g_failures);
     if (g_failures == 0) std::printf("ALL TESTS PASSED\n");

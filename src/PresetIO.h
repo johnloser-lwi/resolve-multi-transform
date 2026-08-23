@@ -78,6 +78,10 @@ bool ChoosePresetToOpen(std::string& outPath);
  *  @return false if the dialog was cancelled. */
 bool ChoosePresetToSave(const std::string& suggestedName, std::string& outPath);
 
+/** @brief Ask the user where to write a Fusion .setting from a bake.
+ *  @return false if the dialog was cancelled. */
+bool ChooseFusionSettingToSave(const std::string& suggestedName, std::string& outPath);
+
 /** @brief Whole-file read. False with a message if the file cannot be read. */
 bool ReadTextFile(const std::string& path, std::string& outText, std::string& error);
 
