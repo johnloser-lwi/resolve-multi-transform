@@ -7,11 +7,14 @@
 #include "ClipRange.h"
 #include "MotionBlur.h"
 #include "TransformMath.h"
+#include "FusionBake.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace mtx;
 
@@ -2259,6 +2262,186 @@ static void TestBlurSampleCounts()
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// --- Fusion bake -------------------------------------------------------------
+
+/** Linear interpolation of a reduced key list at an integer frame, which is
+ *  exactly what a Fusion linear spline evaluates to. */
+static float SampleKeys(const std::vector<mtx::BakedKey>& keys, float frame)
+{
+    if (keys.empty()) return 0.0f;
+    if (frame <= keys.front().frame) return keys.front().value;
+    if (frame >= keys.back().frame)  return keys.back().value;
+    for (size_t i = 1; i < keys.size(); ++i)
+    {
+        if (frame <= keys[i].frame)
+        {
+            const float t = (frame - keys[i - 1].frame) / (keys[i].frame - keys[i - 1].frame);
+            return keys[i - 1].value + (keys[i].value - keys[i - 1].value) * t;
+        }
+    }
+    return keys.back().value;
+}
+
+static void TestFusionBakeReduction()
+{
+    std::printf("Fusion bake: reduction is faithful and minimal\n");
+
+    // A flat channel collapses to its two endpoints, never more.
+    {
+        std::vector<float> flat(50, 0.5f);
+        const auto k = mtx::ReduceChannel(flat, 0.0f, 0.001f);
+        Check(k.size() == 2, "a constant channel keeps two keys");
+        CheckNear(k.front().value, 0.5f, 1e-6f, "constant value preserved");
+    }
+
+    // A straight ramp is two keys: linear interpolation is exact.
+    {
+        std::vector<float> ramp(41);
+        for (int i = 0; i < 41; ++i) ramp[i] = i * 0.01f;
+        const auto k = mtx::ReduceChannel(ramp, 10.0f, 0.001f);
+        Check(k.size() == 2, "a linear ramp keeps two keys");
+        CheckNear(k.front().frame, 10.0f, 1e-6f, "first key at the start frame");
+        CheckNear(k.back().frame,  50.0f, 1e-6f, "last key at the end frame");
+    }
+
+    // One bend -> three keys, and the bend frame is the one kept.
+    {
+        std::vector<float> v(21);
+        for (int i = 0; i < 21; ++i) v[i] = i <= 10 ? i * 0.1f : (20 - i) * 0.1f;
+        const auto k = mtx::ReduceChannel(v, 0.0f, 0.001f);
+        Check(k.size() == 3, "a single bend keeps three keys");
+        Check(k[1].frame == 10.0f, "the bend frame is the kept middle key");
+    }
+
+    // The guarantee: an eased S-curve, reduced, reconstructs within tolerance
+    // at *every* frame -- and with far fewer keys than frames.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled   = true;
+        a.stages[0].startFrame = 0.0f;
+        a.stages[0].endFrame   = 60.0f;
+        a.stages[0].easing     = Easing::Smooth();
+        a.stages[0].posXFrom   = -0.3f; a.stages[0].posXTo = 0.3f;
+
+        std::vector<float> cx;
+        for (int f = 0; f <= 60; ++f)
+            cx.push_back(0.5f + FlattenTransform(a, (float)f, 1920.0f, 1080.0f).posX);
+
+        const float tol = 0.0008f;
+        const auto k = mtx::ReduceChannel(cx, 0.0f, tol);
+
+        float worst = 0.0f;
+        for (int f = 0; f <= 60; ++f)
+            worst = std::max(worst, std::fabs(SampleKeys(k, (float)f) - cx[(size_t)f]));
+
+        Check(worst <= tol, "reduced ease stays within tolerance everywhere");
+        Check(k.size() < cx.size(), "a smooth ease keeps fewer keys than frames");
+
+        // A linear move is the ideal case: exactly two keys, because linear
+        // keyframes represent a straight ramp perfectly. A smooth ease needs
+        // more, because a curve is not piecewise-linear -- that is the cost of
+        // linear keys, and the reason a bezier-handle bake would be tighter.
+        AnimParams lin = a;
+        lin.stages[0].easing = Easing::Linear();
+        std::vector<float> lx;
+        for (int f = 0; f <= 60; ++f)
+            lx.push_back(0.5f + FlattenTransform(lin, (float)f, 1920.0f, 1080.0f).posX);
+        Check(mtx::ReduceChannel(lx, 0.0f, tol).size() == 2, "a linear move is two keys exactly");
+    }
+}
+
+static void TestFusionBakePreservesBounce()
+{
+    std::printf("Fusion bake: bounce is kept, not dropped\n");
+
+    // A bounce is high-frequency: the reduction cannot represent it with a few
+    // keys, so it must keep many -- and still land within tolerance. This is
+    // the "we do not drop bounce" guarantee, made concrete.
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled    = true;
+    a.stages[0].startFrame = 0.0f;
+    a.stages[0].endFrame   = 60.0f;
+    a.stages[0].posYFrom   = -0.4f; a.stages[0].posYTo = 0.0f;
+    a.stages[0].easing     = MakeEasing(20.0f, 0.0f, 0.0f, 0.0f,
+                                        kBounceBall, 60.0f, 4.0f, 35.0f, 45.0f);
+
+    std::vector<float> cy;
+    for (int f = 0; f <= 60; ++f)
+        cy.push_back(0.5f + FlattenTransform(a, (float)f, 1920.0f, 1080.0f).posY);
+
+    const float tol = 0.0008f;
+    const auto k = mtx::ReduceChannel(cy, 0.0f, tol);
+
+    float worst = 0.0f;
+    for (int f = 0; f <= 60; ++f)
+        worst = std::max(worst, std::fabs(SampleKeys(k, (float)f) - cy[(size_t)f]));
+
+    Check(worst <= tol, "bounce reconstructs within tolerance");
+    Check(k.size() > 8, "bounce keeps many keys rather than dropping the oscillation");
+}
+
+static void TestFusionBakeDecomposition()
+{
+    std::printf("Fusion bake: channels decompose correctly\n");
+
+    const float W = 1920.0f, H = 1080.0f;
+
+    // A pure uniform zoom: size tracks scale, aspect stays 1, centre and angle
+    // do not move, and nothing reports shear.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled    = true;
+        a.stages[0].startFrame = 0.0f;
+        a.stages[0].endFrame   = 30.0f;
+        a.stages[0].easing     = Easing::Linear();
+        a.stages[0].scaleFrom  = 1.0f; a.stages[0].scaleTo = 2.0f;
+
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 30);
+
+        Check(!b.hadShear,  "a uniform zoom carries no shear");
+        Check(!b.hadMirror, "a uniform zoom does not mirror");
+        Check(b.aspect.size() == 2, "aspect is constant for a uniform zoom");
+        for (const auto& key : b.aspect) CheckNear(key.value, 1.0f, 1e-4f, "aspect stays 1");
+        Check(b.centreX.size() == 2 && b.centreY.size() == 2, "centre does not move");
+        Check(b.angle.size() == 2, "angle does not move");
+        CheckNear(SampleKeys(b.size, 30.0f), 2.0f, 1e-3f, "size reaches the final scale");
+    }
+
+    // A single stage never shears, even with rotation and swivel together: its
+    // matrix is Rotate * (diagonal Scale), whose columns stay orthogonal, so it
+    // decomposes exactly to Angle + Size + Aspect. This is the case that
+    // matters most in practice, and it bakes cleanly.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled     = true;
+        a.stages[0].startFrame  = 0.0f;
+        a.stages[0].endFrame    = 30.0f;
+        a.stages[0].rotFrom     = 0.0f;  a.stages[0].rotTo     = 40.0f;
+        a.stages[0].swivelYFrom = 0.0f;  a.stages[0].swivelYTo = 60.0f;
+
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 30);
+        Check(!b.hadShear, "a single stage with rotation and swivel carries no shear");
+        Check(b.aspect.size() > 2, "the swivel animates aspect");
+    }
+
+    // Shear only appears across stages: an outer non-uniform scale over an
+    // inner rotation gives Scale * Rotate, whose columns are not orthogonal.
+    // The bake must flag this rather than pretend one Transform captured it.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stageCount = 2;
+        a.stages[0].enabled = true; a.stages[0].startFrame = 0.0f; a.stages[0].endFrame = 30.0f;
+        a.stages[0].linkScale = false;
+        a.stages[0].scaleYFrom = 1.0f; a.stages[0].scaleYTo = 2.0f;   // outer stretch
+        a.stages[1].enabled = true; a.stages[1].startFrame = 0.0f; a.stages[1].endFrame = 30.0f;
+        a.stages[1].rotFrom = 0.0f; a.stages[1].rotTo = 45.0f;        // inner rotate
+
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 30);
+        Check(b.hadShear, "an outer stretch over an inner rotate is flagged as sheared");
+        Check(b.maxShear > 0.1f, "the reported shear is substantial");
+    }
+}
+
 int main()
 {
     std::printf("=== MultiTransform animation engine tests ===\n");
@@ -2323,6 +2506,9 @@ int main()
     TestShutterSampleTimes();
     TestBlurDisabledIsExactlyUnblurred();
     TestBlurSampleCounts();
+    TestFusionBakeReduction();
+    TestFusionBakePreservesBounce();
+    TestFusionBakeDecomposition();
 
     std::printf("\n%d checks, %d failure(s)\n", g_checks, g_failures);
     if (g_failures == 0) std::printf("ALL TESTS PASSED\n");
