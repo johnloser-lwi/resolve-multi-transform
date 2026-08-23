@@ -1558,22 +1558,25 @@ void MultiTransformPlugin::bakeToFusion()
         caveats += "\n- The pose mirrors (a swivel past 90 degrees); a Transform cannot, so "
                    "the mirrored part is not represented.";
 
-    std::string path;
-    if (!mtx::ChooseFusionSettingToSave("MultiTransform", path)) return;   // cancelled
-
+    // Straight to the clipboard rather than a file: pasting into the Fusion Node
+    // Editor is how Fusion moves nodes, and it reads the very text this emits, so
+    // Bake then Ctrl+V is the whole workflow -- no file, no dialog, no load.
     const std::string text = mtx::EmitFusionSetting(baked, "MTX");
     std::string error;
-    if (!mtx::WriteTextFile(path, text, error))
+    if (!mtx::CopyTextToClipboard(text, error))
     {
-        sendMessage(OFX::Message::eMessageError, "", "Could not write the Fusion setting:\n" + error);
+        sendMessage(OFX::Message::eMessageError, "",
+                    "Could not copy the Fusion nodes to the clipboard:\n" + error);
         return;
     }
 
-    mtx::ProbeLog("baked to Fusion: " + path + "  (frames 0.." + std::to_string(endFrame)
+    mtx::ProbeLog("baked to Fusion clipboard (frames 0.." + std::to_string(endFrame)
                   + ", keys=" + std::to_string(mtx::TotalKeys(baked)) + ")");
 
-    std::string msg = "Baked to:\n" + path +
-        "\n\nPaste it into a Fusion comp and wire your clip into the Transform's input.";
+    const std::string msg =
+        "Copied a Fusion Transform to the clipboard.\n\n"
+        "In a Fusion comp, paste (Ctrl+V) into the Node Editor, then wire your clip into "
+        "the Transform's input.";
     if (!caveats.empty())
         sendMessage(OFX::Message::eMessageWarning, "", msg + "\n\nWith caveats:" + caveats);
     else
@@ -2970,11 +2973,10 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     page->addChild(*saveEffect);
 
     PushButtonParamDescriptor* bake = p_Desc.definePushButtonParam(kParamBakeFusion);
-    bake->setLabels("Bake to Fusion (.setting)...", "Bake to Fusion",
-                    "Bake to Fusion (.setting)...");
-    bake->setHint("Write the whole animation as a native Fusion Transform (plus a "
-                  "Brightness/Contrast when it fades), baked to keyframes over the clip's "
-                  "length. Paste the .setting into a Fusion comp and wire your clip into it. "
+    bake->setLabels("Copy as Fusion Nodes", "Copy Fusion", "Copy as Fusion Nodes");
+    bake->setHint("Bake the whole animation to a native Fusion Transform (plus a "
+                  "Brightness/Contrast when it fades) and copy it to the clipboard. In a "
+                  "Fusion comp, paste (Ctrl+V) and wire your clip into the Transform's input. "
                   "A Fusion Transform concatenates with other transforms and resamples the "
                   "source once, so it stays sharp through further scaling. Non-uniform scale, "
                   "tilt/swivel under a rotation, or a mirror are approximated and warned "
