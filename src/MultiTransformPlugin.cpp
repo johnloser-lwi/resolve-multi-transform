@@ -1542,6 +1542,13 @@ void MultiTransformPlugin::bakeToFusion()
 
     const mtx::BakedTransform baked = mtx::BakeToFusion(a, w, h, 0, endFrame);
 
+    // Carry the motion blur onto the Transform, mapping what Fusion can express.
+    const BlurParams bp = fetchBlurParams(clipStart);
+    mtx::FusionBlur fblur;
+    fblur.enabled      = bp.enabled;
+    fblur.shutterAngle = bp.shutterAngle;
+    fblur.quality      = bp.samples;
+
     // Warn before writing, not after: the file is still worth having, but the
     // user should know a single Transform could not hold everything.
     std::string caveats;
@@ -1561,7 +1568,17 @@ void MultiTransformPlugin::bakeToFusion()
     // Straight to the clipboard rather than a file: pasting into the Fusion Node
     // Editor is how Fusion moves nodes, and it reads the very text this emits, so
     // Bake then Ctrl+V is the whole workflow -- no file, no dialog, no load.
-    const std::string text = mtx::EmitFusionSetting(baked, "MTX");
+    // Fusion always renders Quality samples and biases the shutter differently,
+    // so the plugin's adaptive sampling and shutter phase have no exact home.
+    if (bp.enabled && bp.adaptive)
+        caveats += "\n- Motion blur is carried over at a fixed sample count (Fusion has no "
+                   "adaptive equivalent); raise the Transform's Quality if a fast frame looks "
+                   "under-sampled.";
+    if (bp.enabled && std::fabs(bp.shutterPhase) > 0.01f)
+        caveats += "\n- Shutter phase is not carried; Fusion's Transform centres the shutter on "
+                   "the frame.";
+
+    const std::string text = mtx::EmitFusionSetting(baked, "MTX", fblur);
     std::string error;
     if (!mtx::CopyTextToClipboard(text, error))
     {

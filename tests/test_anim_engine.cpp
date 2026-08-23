@@ -2555,6 +2555,26 @@ static void TestFusionEmitter()
         Check(Contains(s, "SourceOp = \"MTXTransform\""),  "the fade takes the Transform as input");
     }
 
+    // Motion blur appears on the Transform only when enabled, and carries the
+    // shutter angle and sample count.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled    = true;
+        a.stages[0].startFrame = 0.0f; a.stages[0].endFrame = 60.0f;
+        a.stages[0].posXFrom   = -0.3f; a.stages[0].posXTo = 0.3f;
+        const mtx::BakedTransform b = mtx::BakeToFusion(a, W, H, 0, 60);
+
+        Check(!Contains(mtx::EmitFusionSetting(b, "MTX"), "MotionBlur = Input"),
+              "no motion blur when it is off");
+
+        mtx::FusionBlur blur;
+        blur.enabled = true; blur.shutterAngle = 172.5; blur.quality = 24;
+        const std::string s = mtx::EmitFusionSetting(b, "MTX", blur);
+        Check(Contains(s, "MotionBlur = Input { Value = 1 }"), "motion blur on when enabled");
+        Check(Contains(s, "Quality = Input { Value = 24 }"),   "sample count carried as Quality");
+        Check(Contains(s, "ShutterAngle = Input { Value = 172.5 }"), "shutter angle carried");
+    }
+
     // The emitted key values are the fitted ones, so a spot value in the text
     // matches EvalBezierChannel -- the emitter does not distort the bake.
     {

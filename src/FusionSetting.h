@@ -61,13 +61,32 @@ inline std::string FusSpline(const std::string& name, const std::vector<BezierKe
 
 } // namespace detail
 
+/** @brief Motion-blur settings carried onto the baked Transform.
+ *
+ *  Only what a Fusion tool's built-in motion blur can express. The baked
+ *  Transform animates along the same trajectory the plugin does, so Fusion's
+ *  own blur -- driven by that animation's velocity -- lands close to the
+ *  plugin's for the same shutter angle and sample count. The plugin's adaptive
+ *  sampling has no Fusion equivalent (Fusion always renders Quality samples),
+ *  and shutter *phase* maps only loosely onto Center Bias, so neither is
+ *  carried; the caller can note it. */
+struct FusionBlur
+{
+    bool   enabled      = false;
+    double shutterAngle = 180.0;   ///< degrees, as the plugin authors it
+    int    quality      = 16;      ///< sample count
+
+    static FusionBlur Default() { return {}; }
+};
+
 /** @brief The .setting text for a baked transform, ready to paste into Fusion.
  *
  *  One Transform node, its input left open for the user's own footage, plus a
  *  Brightness/Contrast when opacity animates. Node names are prefixed with
  *  @p prefix so two bakes pasted into one comp do not collide.
  */
-inline std::string EmitFusionSetting(const BakedTransform& b, const std::string& prefix = "MTX")
+inline std::string EmitFusionSetting(const BakedTransform& b, const std::string& prefix = "MTX",
+                                     const FusionBlur& blur = FusionBlur::Default())
 {
     using detail::FusSpline;
 
@@ -84,10 +103,23 @@ inline std::string EmitFusionSetting(const BakedTransform& b, const std::string&
     std::string s = "{\n\tTools = ordered() {\n";
 
     // The Transform. Input unconnected -- wire the clip in.
+    std::string blurInputs;
+    if (blur.enabled)
+    {
+        // Fusion's tool motion blur samples the animated transform between
+        // frames, and this Transform carries the same animation, so matching
+        // the shutter angle and sample count matches the plugin's blur closely.
+        blurInputs =
+            "\t\t\t\tMotionBlur = Input { Value = 1 },\n"
+            "\t\t\t\tQuality = Input { Value = " + detail::FusNum(blur.quality) + " },\n"
+            "\t\t\t\tShutterAngle = Input { Value = " + detail::FusNum(blur.shutterAngle) + " },\n";
+    }
+
     s += "\t\t" + xf + " = Transform {\n\t\t\tInputs = {\n"
          "\t\t\t\tCenter = Input { SourceOp = \"" + xf + "Center\", Source = \"Value\" },\n"
          "\t\t\t\tSize = Input { SourceOp = \"" + xf + "Size\", Source = \"Value\" },\n"
          "\t\t\t\tAngle = Input { SourceOp = \"" + xf + "Angle\", Source = \"Value\" },\n"
+         + blurInputs +
          "\t\t\t},\n\t\t\tViewInfo = OperatorInfo { Pos = { 220, 0 } },\n\t\t},\n";
 
     s += "\t\t" + xf + "Center = XYPath {\n\t\t\tInputs = {\n"
