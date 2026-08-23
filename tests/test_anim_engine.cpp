@@ -2313,40 +2313,103 @@ static void TestFusionBakeReduction()
         Check(k[1].frame == 10.0f, "the bend frame is the kept middle key");
     }
 
-    // The guarantee: an eased S-curve, reduced, reconstructs within tolerance
-    // at *every* frame -- and with far fewer keys than frames.
+    // The linear reducer's guarantee: within tolerance at every frame.
+    {
+        std::vector<float> v(31);
+        for (int i = 0; i < 31; ++i) v[i] = std::sin(i * 0.2f) * 0.3f;
+        const float tol = 0.005f;
+        const auto k = mtx::ReduceChannel(v, 0.0f, tol);
+        float worst = 0.0f;
+        for (int f = 0; f <= 30; ++f)
+            worst = std::max(worst, std::fabs(SampleKeys(k, (float)f) - v[(size_t)f]));
+        Check(worst <= tol, "linear reduction stays within tolerance everywhere");
+    }
+}
+
+static float SampleBezier(const std::vector<mtx::BezierKey>& k, float frame)
+{
+    return mtx::EvalBezierChannel(k, frame);
+}
+
+static void TestFusionBakeBezier()
+{
+    std::printf("Fusion bake: bezier fit collapses eases to a few keys\n");
+
+    const float W = 1920.0f, H = 1080.0f;
+    const float tol = 0.0008f;
+
+    auto channel = [&](const Easing& e)
     {
         AnimParams a = AnimParams::Default();
-        a.stages[0].enabled   = true;
+        a.stages[0].enabled    = true;
         a.stages[0].startFrame = 0.0f;
         a.stages[0].endFrame   = 60.0f;
-        a.stages[0].easing     = Easing::Smooth();
+        a.stages[0].easing     = e;
         a.stages[0].posXFrom   = -0.3f; a.stages[0].posXTo = 0.3f;
-
         std::vector<float> cx;
         for (int f = 0; f <= 60; ++f)
-            cx.push_back(0.5f + FlattenTransform(a, (float)f, 1920.0f, 1080.0f).posX);
+            cx.push_back(0.5f + FlattenTransform(a, (float)f, W, H).posX);
+        return cx;
+    };
 
-        const float tol = 0.0008f;
-        const auto k = mtx::ReduceChannel(cx, 0.0f, tol);
+    // The point: a single-stage ease fits to a handful of cubic keys where the
+    // linear reducer needed ~20, and it reconstructs within tolerance. The
+    // cubic handles are spaced evenly in time, so a very asymmetric ease costs
+    // a segment or two more than the theoretical two -- still a fraction of the
+    // linear count, and the reason a free-handle fit would be tighter still.
+    for (const Easing& e : { Easing::Smooth(), Easing::EaseIn(), Easing::EaseOut() })
+    {
+        const std::vector<float> cx = channel(e);
+        const auto k   = mtx::FitChannel(cx, 0.0f, tol);
+        const auto lin = mtx::ReduceChannel(cx, 0.0f, tol);
 
         float worst = 0.0f;
         for (int f = 0; f <= 60; ++f)
-            worst = std::max(worst, std::fabs(SampleKeys(k, (float)f) - cx[(size_t)f]));
+            worst = std::max(worst, std::fabs(SampleBezier(k, (float)f) - cx[(size_t)f]));
 
-        Check(worst <= tol, "reduced ease stays within tolerance everywhere");
-        Check(k.size() < cx.size(), "a smooth ease keeps fewer keys than frames");
+        Check(worst <= tol, "the bezier fit stays within tolerance everywhere");
+        Check(k.size() <= 10, "an eased move fits to a handful of keys");
+        Check(k.size() * 2 < lin.size(), "the bezier fit more than halves the linear key count");
+    }
 
-        // A linear move is the ideal case: exactly two keys, because linear
-        // keyframes represent a straight ramp perfectly. A smooth ease needs
-        // more, because a curve is not piecewise-linear -- that is the cost of
-        // linear keys, and the reason a bezier-handle bake would be tighter.
-        AnimParams lin = a;
-        lin.stages[0].easing = Easing::Linear();
-        std::vector<float> lx;
+    // Linear stays two keys, and its handles sit on the straight line.
+    {
+        const std::vector<float> cx = channel(Easing::Linear());
+        const auto k = mtx::FitChannel(cx, 0.0f, tol);
+        Check(k.size() == 2, "a linear move is two keys");
+    }
+
+    // Endpoints are honoured exactly -- a baked move starts and ends where the
+    // animation does, no fit drift at the ends.
+    {
+        const std::vector<float> cx = channel(Easing::Smooth());
+        const auto k = mtx::FitChannel(cx, 0.0f, tol);
+        CheckNear(k.front().value, cx.front(), 1e-6f, "first key equals the first sample");
+        CheckNear(k.back().value,  cx.back(),  1e-6f, "last key equals the last sample");
+        CheckNear(k.front().frame, 0.0f,  1e-6f, "first key at the start frame");
+        CheckNear(k.back().frame,  60.0f, 1e-6f, "last key at the end frame");
+    }
+
+    // Bounce still fits within tolerance, with more segments -- not dropped.
+    {
+        AnimParams a = AnimParams::Default();
+        a.stages[0].enabled    = true;
+        a.stages[0].startFrame = 0.0f;
+        a.stages[0].endFrame   = 60.0f;
+        a.stages[0].posYFrom   = -0.4f; a.stages[0].posYTo = 0.0f;
+        a.stages[0].easing     = MakeEasing(20.0f, 0.0f, 0.0f, 0.0f,
+                                            kBounceBall, 60.0f, 4.0f, 35.0f, 45.0f);
+        std::vector<float> cy;
         for (int f = 0; f <= 60; ++f)
-            lx.push_back(0.5f + FlattenTransform(lin, (float)f, 1920.0f, 1080.0f).posX);
-        Check(mtx::ReduceChannel(lx, 0.0f, tol).size() == 2, "a linear move is two keys exactly");
+            cy.push_back(0.5f + FlattenTransform(a, (float)f, W, H).posY);
+
+        const auto k = mtx::FitChannel(cy, 0.0f, tol);
+        float worst = 0.0f;
+        for (int f = 0; f <= 60; ++f)
+            worst = std::max(worst, std::fabs(SampleBezier(k, (float)f) - cy[(size_t)f]));
+
+        Check(worst <= tol, "a bounce fits within tolerance");
+        Check(k.size() > 4, "a bounce keeps several segments rather than one");
     }
 }
 
@@ -2404,7 +2467,7 @@ static void TestFusionBakeDecomposition()
         for (const auto& key : b.aspect) CheckNear(key.value, 1.0f, 1e-4f, "aspect stays 1");
         Check(b.centreX.size() == 2 && b.centreY.size() == 2, "centre does not move");
         Check(b.angle.size() == 2, "angle does not move");
-        CheckNear(SampleKeys(b.size, 30.0f), 2.0f, 1e-3f, "size reaches the final scale");
+        CheckNear(mtx::EvalBezierChannel(b.size, 30.0f), 2.0f, 1e-3f, "size reaches the final scale");
     }
 
     // A single stage never shears, even with rotation and swivel together: its
@@ -2507,6 +2570,7 @@ int main()
     TestBlurDisabledIsExactlyUnblurred();
     TestBlurSampleCounts();
     TestFusionBakeReduction();
+    TestFusionBakeBezier();
     TestFusionBakePreservesBounce();
     TestFusionBakeDecomposition();
 

@@ -44,6 +44,22 @@ struct BakedKey
     float value;
 };
 
+/** @brief One cubic keyframe: value plus a Bezier handle on each side.
+ *
+ *  Handles are offsets from the key point, in (frame, value): the right handle
+ *  of key i and the left handle of key i+1 are the two inner control points of
+ *  the cubic Bezier segment between them. An endpoint has a zero handle on its
+ *  outer side. This is Fusion's own keyframe model, so the emitter writes it
+ *  almost verbatim -- and it is why an eased move collapses to two keys: the
+ *  ease *is* a cubic, so one segment holds it exactly. */
+struct BezierKey
+{
+    float frame;
+    float value;
+    float lhFrame, lhValue;   ///< left handle offset  (lhFrame <= 0)
+    float rhFrame, rhValue;   ///< right handle offset (rhFrame >= 0)
+};
+
 /** @brief The per-channel error a reduced curve may differ from the samples by.
  *
  *  In each channel's own units. Centre and size are fractions of the frame
@@ -70,12 +86,12 @@ struct BakeTolerances
  *  blend. A single key in a channel means it never animated. */
 struct BakedTransform
 {
-    std::vector<BakedKey> centreX;
-    std::vector<BakedKey> centreY;
-    std::vector<BakedKey> size;
-    std::vector<BakedKey> aspect;
-    std::vector<BakedKey> angle;
-    std::vector<BakedKey> opacity;
+    std::vector<BezierKey> centreX;
+    std::vector<BezierKey> centreY;
+    std::vector<BezierKey> size;
+    std::vector<BezierKey> aspect;
+    std::vector<BezierKey> angle;
+    std::vector<BezierKey> opacity;
 
     /// Set when any sampled frame carried shear a Transform cannot hold. The
     /// bake is then an approximation and the caller should warn. maxShear is
@@ -167,6 +183,183 @@ inline std::vector<BakedKey> ReduceChannel(const std::vector<float>& samples,
     return out;
 }
 
+
+
+/** @brief Evaluate a fitted channel at a frame, as Fusion's spline would.
+ *  Exposed so callers and tests measure against the same cubic the emitter
+ *  will write, rather than re-deriving it. */
+inline float EvalBezierChannel(const std::vector<BezierKey>& k, float frame)
+{
+    if (k.empty()) return 0.0f;
+    if (frame <= k.front().frame) return k.front().value;
+    if (frame >= k.back().frame)  return k.back().value;
+
+    for (size_t i = 1; i < k.size(); ++i)
+    {
+        if (frame > k[i].frame) continue;
+
+        const BezierKey& a = k[i - 1];
+        const BezierKey& b = k[i];
+        const float span = b.frame - a.frame;
+        if (span <= 1e-6f) return b.value;
+
+        // Control points in (frame, value); the segment's time curve is a cubic
+        // too, so a frame maps to the parameter u by Newton on the time cubic.
+        const float p0f = a.frame,            p0v = a.value;
+        const float p1f = a.frame + a.rhFrame, p1v = a.value + a.rhValue;
+        const float p2f = b.frame + b.lhFrame, p2v = b.value + b.lhValue;
+        const float p3f = b.frame,            p3v = b.value;
+
+        float u = (frame - a.frame) / span;   // good first guess
+        for (int it = 0; it < 8; ++it)
+        {
+            const float mu = 1.0f - u;
+            const float ft = mu*mu*mu*p0f + 3*mu*mu*u*p1f + 3*mu*u*u*p2f + u*u*u*p3f;
+            const float dft = 3*mu*mu*(p1f-p0f) + 6*mu*u*(p2f-p1f) + 3*u*u*(p3f-p2f);
+            if (std::fabs(dft) < 1e-6f) break;
+            u -= (ft - frame) / dft;
+            if (u < 0.0f) u = 0.0f; if (u > 1.0f) u = 1.0f;
+        }
+        const float mu = 1.0f - u;
+        return mu*mu*mu*p0v + 3*mu*mu*u*p1v + 3*mu*u*u*p2v + u*u*u*p3v;
+    }
+    return k.back().value;
+}
+
+namespace detail {
+
+/** Least-squares fit of the two inner control *values* of a cubic Bezier whose
+ *  time control points are evenly spaced (so time is linear in the parameter
+ *  and u = (frame - frameLo)/span). Closed form: a 2x2 normal equation. */
+inline void FitSegment(const std::vector<float>& s, int lo, int hi,
+                       float& c1, float& c2)
+{
+    const float v0 = s[lo], v3 = s[hi];
+    const float span = static_cast<float>(hi - lo);
+
+    // Fewer than two interior samples: place the handles on the straight line,
+    // which is what a linear key pair is.
+    if (hi - lo < 2)
+    {
+        c1 = v0 + (v3 - v0) / 3.0f;
+        c2 = v0 + (v3 - v0) * 2.0f / 3.0f;
+        return;
+    }
+
+    double a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+    for (int i = lo + 1; i < hi; ++i)
+    {
+        const double u  = (i - lo) / span;
+        const double mu = 1.0 - u;
+        const double B1 = 3.0 * mu * mu * u;   // weight on c1
+        const double B2 = 3.0 * mu * u  * u;   // weight on c2
+        const double r  = s[i] - (mu*mu*mu*v0 + u*u*u*v3);
+        a11 += B1 * B1;  a12 += B1 * B2;  a22 += B2 * B2;
+        b1  += B1 * r;   b2  += B2 * r;
+    }
+
+    const double det = a11 * a22 - a12 * a12;
+    if (std::fabs(det) < 1e-12)
+    {
+        c1 = v0 + (v3 - v0) / 3.0f;
+        c2 = v0 + (v3 - v0) * 2.0f / 3.0f;
+        return;
+    }
+    c1 = static_cast<float>(( b1 * a22 - b2 * a12) / det);
+    c2 = static_cast<float>((-b1 * a12 + b2 * a11) / det);
+}
+
+} // namespace detail
+
+/** @brief Fit a per-frame sample list with the fewest cubic Bezier keyframes
+ *  whose spline stays within @p tol of every sample.
+ *
+ *  One cubic is fitted across the whole range; if it holds, the channel is two
+ *  keys with handles -- which is where an eased move lands, because the ease is
+ *  itself a cubic. Otherwise it splits at the worst frame and recurses, so a
+ *  bounce becomes as many segments as it needs and nothing is dropped. The
+ *  same lossy-to-a-tolerance rule as the linear reducer, but against curves the
+ *  channels are actually made of, so the key count is a fraction of it.
+ */
+inline std::vector<BezierKey> FitChannel(const std::vector<float>& samples,
+                                         float firstFrame, float tol)
+{
+    const int n = static_cast<int>(samples.size());
+    std::vector<BezierKey> out;
+    if (n == 0) return out;
+    if (n == 1)
+    {
+        out.push_back({ firstFrame, samples[0], 0, 0, 0, 0 });
+        return out;
+    }
+
+    // Which frames become keys. Endpoints always; the fitter adds the rest.
+    std::vector<char> keep(static_cast<size_t>(n), 0);
+    keep[0] = 1; keep[n - 1] = 1;
+
+    std::vector<std::pair<int,int>> stack;
+    stack.push_back({ 0, n - 1 });
+    while (!stack.empty())
+    {
+        const int lo = stack.back().first, hi = stack.back().second;
+        stack.pop_back();
+        if (hi <= lo + 1) continue;
+
+        float c1, c2;
+        detail::FitSegment(samples, lo, hi, c1, c2);
+
+        const float v0 = samples[lo], v3 = samples[hi];
+        const float span = static_cast<float>(hi - lo);
+
+        int   worst = -1;
+        float worstDev = tol;
+        for (int i = lo + 1; i < hi; ++i)
+        {
+            const float u  = (i - lo) / span;
+            const float mu = 1.0f - u;
+            const float fit = mu*mu*mu*v0 + 3*mu*mu*u*c1 + 3*mu*u*u*c2 + u*u*u*v3;
+            const float dev = std::fabs(samples[i] - fit);
+            if (dev > worstDev) { worstDev = dev; worst = i; }
+        }
+
+        if (worst >= 0)
+        {
+            keep[worst] = 1;
+            stack.push_back({ lo, worst });
+            stack.push_back({ worst, hi });
+        }
+    }
+
+    // Gather kept frames, then fit each final segment once more to set the
+    // handles the emitter writes. A key's handles come from the two segments
+    // touching it; an endpoint has only one.
+    std::vector<int> idx;
+    for (int i = 0; i < n; ++i) if (keep[i]) idx.push_back(i);
+
+    out.resize(idx.size());
+    for (size_t j = 0; j < idx.size(); ++j)
+    {
+        out[j].frame = firstFrame + static_cast<float>(idx[j]);
+        out[j].value = samples[idx[j]];
+        out[j].lhFrame = out[j].lhValue = 0.0f;
+        out[j].rhFrame = out[j].rhValue = 0.0f;
+    }
+
+    for (size_t seg = 0; seg + 1 < idx.size(); ++seg)
+    {
+        const int lo = idx[seg], hi = idx[seg + 1];
+        float c1, c2;
+        detail::FitSegment(samples, lo, hi, c1, c2);
+
+        const float third = static_cast<float>(hi - lo) / 3.0f;
+        out[seg].rhFrame     =  third;
+        out[seg].rhValue     =  c1 - samples[lo];
+        out[seg + 1].lhFrame = -third;
+        out[seg + 1].lhValue =  c2 - samples[hi];
+    }
+    return out;
+}
+
 /** @brief Sample the animation frame by frame and reduce each channel.
  *
  *  @param startFrame,endFrame inclusive, clip-relative -- the same frame numbers
@@ -211,12 +404,12 @@ inline BakedTransform BakeToFusion(const AnimParams& a, float width, float heigh
     }
 
     const float f0 = static_cast<float>(startFrame);
-    b.centreX = ReduceChannel(cx, f0, tol.centre);
-    b.centreY = ReduceChannel(cy, f0, tol.centre);
-    b.size    = ReduceChannel(sz, f0, tol.size);
-    b.aspect  = ReduceChannel(as, f0, tol.aspect);
-    b.angle   = ReduceChannel(an, f0, tol.angle);
-    b.opacity = ReduceChannel(op, f0, tol.opacity);
+    b.centreX = FitChannel(cx, f0, tol.centre);
+    b.centreY = FitChannel(cy, f0, tol.centre);
+    b.size    = FitChannel(sz, f0, tol.size);
+    b.aspect  = FitChannel(as, f0, tol.aspect);
+    b.angle   = FitChannel(an, f0, tol.angle);
+    b.opacity = FitChannel(op, f0, tol.opacity);
     return b;
 }
 
