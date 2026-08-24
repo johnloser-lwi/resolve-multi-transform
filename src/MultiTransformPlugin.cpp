@@ -292,6 +292,7 @@ private:
     void             savePreset(bool wholeEffect);
     void             bakeToFusion();
     void             publishOutputs();
+    void             disableOutputParams();
     void             copyLinkedToFusion();
     void             changedParamImpl(const OFX::InstanceChangedArgs& p_Args,
                                       const std::string& p_ParamName);
@@ -473,6 +474,12 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _outEnable  = fetchBooleanParam(kParamOutputEnable);
     _outNull    = fetchBooleanParam(kParamOutputNull);
     _linkedName = fetchStringParam(kParamLinkedName);
+
+    // The read-outs are described disabled, but this host has been seen
+    // re-enabling one once keyframes land on it (Out: Center X grew a live
+    // slider). Instance-level state is what the Inspector actually honours,
+    // so disabled is asserted here and re-asserted after every publish.
+    disableOutputParams();
     _outCenterX = fetchDoubleParam(kParamOutCenterX);
     _outCenterY = fetchDoubleParam(kParamOutCenterY);
     _outSize    = fetchDoubleParam(kParamOutSize);
@@ -1588,6 +1595,13 @@ void MultiTransformPlugin::copyLinkedToFusion()
     mtx::ProbeLog("copied linked Fusion transform (source " + sourceTool + ")");
 }
 
+void MultiTransformPlugin::disableOutputParams()
+{
+    OFX::DoubleParam* outs[] = { _outCenterX, _outCenterY, _outSize, _outAngle, _outOpacity };
+    for (OFX::DoubleParam* o : outs)
+        if (o) o->setEnabled(false);
+}
+
 MultiTransformPlugin::~MultiTransformPlugin()
 {
     // A pending debounced publish must not outlive the instance. (Measured:
@@ -1651,6 +1665,11 @@ void MultiTransformPlugin::publishOutputs()
         }
 
         endEditBlock();
+
+        // Writing values and keys can flip a control live again (see the
+        // constructor); put it back before the user can grab it.
+        disableOutputParams();
+
         mtx::ProbeLog("output link published: frames 0.." + std::to_string(endFrame)
                       + ", keys=" + std::to_string(total));
     }
