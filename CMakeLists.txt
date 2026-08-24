@@ -50,6 +50,7 @@ set_target_properties(mtxcuda PROPERTIES
 # --- The plugin --------------------------------------------------------------
 add_library(MultiTransform MODULE
     src/MultiTransformPlugin.cpp
+    src/EditDebounce.cpp
     src/HostProbe.cpp
     src/Preset.cpp
     src/PresetIO.cpp

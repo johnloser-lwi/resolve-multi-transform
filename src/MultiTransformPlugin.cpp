@@ -31,6 +31,7 @@
 #include "FrameBounds.h"
 #include "FusionBake.h"
 #include "FusionSetting.h"
+#include "EditDebounce.h"
 
 #include <chrono>
 #include <cstring>
@@ -234,6 +235,7 @@ class MultiTransformPlugin : public OFX::ImageEffect, public mtx::FrameBoundsPro
 {
 public:
     explicit MultiTransformPlugin(OfxImageEffectHandle p_Handle);
+    ~MultiTransformPlugin() override;
 
     // --- FrameBoundsProvider: the overlay reads the frame from here, never
     // from the host's region-of-definition query. See FrameBounds.h.
@@ -511,6 +513,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     (void)fetchPushButtonParam(kParamSaveEffect);
     (void)fetchPushButtonParam(kParamBakeFusion);
     (void)fetchPushButtonParam(kParamCopyLinked);
+    (void)fetchPushButtonParam(kParamUpdateOutputs);
     (void)fetchPushButtonParam(kParamSaveStage);
     (void)fetchPushButtonParam(kParamLoadPreset);
     (void)fetchPushButtonParam(kParamLoadPresetFit);
@@ -1585,6 +1588,14 @@ void MultiTransformPlugin::copyLinkedToFusion()
     mtx::ProbeLog("copied linked Fusion transform (source " + sourceTool + ")");
 }
 
+MultiTransformPlugin::~MultiTransformPlugin()
+{
+    // A pending debounced publish must not outlive the instance. (Measured:
+    // this host keeps instances alive for the session, but correctness is
+    // cheap and the measurement is not a contract.)
+    mtx::CancelDebounced(this);
+}
+
 void MultiTransformPlugin::publishOutputs()
 {
     if (!_outEnable || !_outEnable->getValue())
@@ -2126,7 +2137,7 @@ bool OutputIrrelevant(const std::string& n)
         || n == kParamShowCurve  || n == kParamShowLibrary || n == kParamShowTimeline
         || n == kParamShowPath   || n == kParamShowOpacity
         || n == kParamDragPreview || n == kParamPresetFolder
-        || n == kParamLinkedName;
+        || n == kParamLinkedName || n == kParamUpdateOutputs;
 }
 
 } // namespace
@@ -2140,25 +2151,28 @@ void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
     changedParamImpl(p_Args, p_ParamName);
 
     // Keep the output link fresh after any edit that could move the composed
-    // transform. Two deliberate exceptions to "any edit":
-    //  * parameters that cannot affect the transform (read-outs, UI state);
-    //  * pose edits while a gizmo drag is in progress -- the interact writes
-    //    a value per mouse move, and a keyframe rewrite per move is exactly
-    //    the "horrible performance" this feature was warned about. The drag's
-    //    end clears the preview ghost, and *that* change publishes once.
+    // transform -- but never *during* one. Inspector slider drags fire this
+    // action per tick with no release event, and a keyframe rewrite per tick
+    // makes the drag choppy, so the publish is debounced: each edit re-arms a
+    // short timer and the rewrite happens once, after the hand comes off the
+    // control. Gizmo drags get the same treatment for uniformity (their
+    // per-move pose writes are additionally skipped outright below), and the
+    // Update Outputs button remains the immediate, fully in-spec path.
     if (OutputIrrelevant(p_ParamName)) return;
-    if (p_ParamName == kParamPreviewGhost)
+    if (p_ParamName != kParamPreviewGhost)
     {
         bool dragging = false;
         _previewGhost->getValue(dragging);
-        if (!dragging) publishOutputs();   // drag finished: one publish
-        return;
+        if (dragging) return;              // mid-gizmo-drag pose write: skip
     }
-    bool dragging = false;
-    _previewGhost->getValue(dragging);
-    if (dragging) return;                  // mid-drag pose write: defer
 
-    publishOutputs();
+    bool wanted = false;
+    _outEnable->getValue(wanted);
+    if (!wanted) return;                   // nothing armed when the link is off
+
+    mtx::ScheduleDebounced(this, 300, [](void* self) {
+        static_cast<MultiTransformPlugin*>(self)->publishOutputs();
+    });
 }
 
 void MultiTransformPlugin::changedParamImpl(const OFX::InstanceChangedArgs& p_Args,
@@ -2214,6 +2228,7 @@ void MultiTransformPlugin::changedParamImpl(const OFX::InstanceChangedArgs& p_Ar
     if (p_ParamName == kParamSaveEffect)    { savePreset(true);  return; }
     if (p_ParamName == kParamBakeFusion)    { bakeToFusion();    return; }
     if (p_ParamName == kParamCopyLinked)    { copyLinkedToFusion(); return; }
+    if (p_ParamName == kParamUpdateOutputs) { publishOutputs();   return; }
     if (p_ParamName == kParamSaveStage)     { savePreset(false); return; }
     if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
@@ -3487,6 +3502,14 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                         "move.");
     copyLinked->setParent(*gOut);
     page->addChild(*copyLinked);
+
+    PushButtonParamDescriptor* updateOut = p_Desc.definePushButtonParam(kParamUpdateOutputs);
+    updateOut->setLabels("Update Outputs Now", "Update Outputs", "Update Outputs Now");
+    updateOut->setHint("Rewrite the output keyframes immediately. Edits normally republish "
+                       "on their own shortly after you release a control; this button is the "
+                       "manual fallback if an update ever fails to arrive.");
+    updateOut->setParent(*gOut);
+    page->addChild(*updateOut);
 
     struct OutDef { const char* name; const char* label; double def; double lo; double hi; };
     const OutDef outs[] = {
