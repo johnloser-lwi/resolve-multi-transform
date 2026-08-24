@@ -87,6 +87,7 @@ constexpr const char* kParamOutCenterY     = "outCenterY";
 constexpr const char* kParamOutSize        = "outSize";
 constexpr const char* kParamOutAngle       = "outAngle";
 constexpr const char* kParamOutOpacity     = "outOpacity";
+constexpr const char* kParamLinkedName     = "linkedNodeName";    ///< this node's name in the comp, for the expressions
 constexpr const char* kParamCopyLinked     = "copyFusionLinked";   ///< clipboard: expression-linked Transform
 
 // --- Motion blur ---

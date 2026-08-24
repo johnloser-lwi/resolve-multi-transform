@@ -350,6 +350,7 @@ private:
     /// which costs a keyframe rewrite per channel.
     OFX::BooleanParam* _outEnable  = nullptr;
     OFX::BooleanParam* _outNull    = nullptr;
+    OFX::StringParam*  _linkedName = nullptr;
     OFX::DoubleParam*  _outCenterX = nullptr;
     OFX::DoubleParam*  _outCenterY = nullptr;
     OFX::DoubleParam*  _outSize    = nullptr;
@@ -469,6 +470,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
 
     _outEnable  = fetchBooleanParam(kParamOutputEnable);
     _outNull    = fetchBooleanParam(kParamOutputNull);
+    _linkedName = fetchStringParam(kParamLinkedName);
     _outCenterX = fetchDoubleParam(kParamOutCenterX);
     _outCenterY = fetchDoubleParam(kParamOutCenterY);
     _outSize    = fetchDoubleParam(kParamOutSize);
@@ -1547,11 +1549,13 @@ void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
 
 void MultiTransformPlugin::copyLinkedToFusion()
 {
-    // The plugin cannot see its own tool name in the comp; the host names the
-    // first instance after the plugin label, so that is the guess. A wrong
-    // guess is visible and cheap to fix -- the pasted node just sits still
-    // until the expressions (or the node name) are corrected.
-    const std::string sourceTool = "MultiTransform1";
+    // The plugin cannot see its own tool name in the comp, so the user states
+    // it in the field next to the button. The default matches what the host
+    // names a first instance; a wrong name is visible and cheap to fix -- the
+    // pasted node just sits still until the name or expressions are corrected.
+    std::string sourceTool;
+    if (_linkedName) _linkedName->getValue(sourceTool);
+    if (sourceTool.empty()) sourceTool = "MultiTransform1";
 
     const BlurParams bp = fetchBlurParams(0.0);
     mtx::FusionBlur fblur;
@@ -2124,7 +2128,8 @@ bool OutputIrrelevant(const std::string& n)
         || n == kParamActiveStage || n == kParamEditTarget
         || n == kParamShowCurve  || n == kParamShowLibrary || n == kParamShowTimeline
         || n == kParamShowPath   || n == kParamShowOpacity
-        || n == kParamDragPreview || n == kParamPresetFolder;
+        || n == kParamDragPreview || n == kParamPresetFolder
+        || n == kParamLinkedName;
 }
 
 } // namespace
@@ -3465,13 +3470,24 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     outNull->setParent(*gOut);
     page->addChild(*outNull);
 
+    StringParamDescriptor* linkedName = p_Desc.defineStringParam(kParamLinkedName);
+    linkedName->setLabels("This Node's Name", "Node Name", "This Node's Name");
+    linkedName->setHint("The name this Multi Transform node has in the Fusion comp (shown on "
+                        "the node itself, e.g. MultiTransform1). The copied expressions "
+                        "reference it, so it must match exactly.");
+    linkedName->setDefault("MultiTransform1");
+    linkedName->setAnimates(false);
+    linkedName->setParent(*gOut);
+    page->addChild(*linkedName);
+
     PushButtonParamDescriptor* copyLinked = p_Desc.definePushButtonParam(kParamCopyLinked);
     copyLinked->setLabels("Copy Linked Transform", "Copy Linked", "Copy Linked Transform");
     copyLinked->setHint("Copy a Fusion Transform whose Center, Size and Angle are expressions "
                         "reading the outputs above (plus a Brightness/Contrast fade on "
                         "outOpacity). Paste it into the comp next to this node and it follows "
-                        "live. The expressions assume this node is named MultiTransform1 -- "
-                        "edit them if it is not. Needs Output Link enabled to move.");
+                        "live. The expressions use the node name from the field above, so set "
+                        "it to this node's actual name first. Needs Output Link enabled to "
+                        "move.");
     copyLinked->setParent(*gOut);
     page->addChild(*copyLinked);
 
