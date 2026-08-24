@@ -2627,9 +2627,14 @@ static void TestFusionEmitter()
         Check(Contains(s, "ClipBlack = Input { Value = 1 }"), "fade clips black");
         Check(!Contains(s, "BezierSpline"), "no keyframes in the linked emit");
 
-        mtx::FusionBlur blur; blur.enabled = true; blur.quality = 12;
-        Check(Contains(mtx::EmitFusionLinked("MT2", "X", blur), "Quality = Input { Value = 12 }"),
-              "linked emit carries motion blur");
+        // Blur inputs are expressions on the plugin's own stored parameters,
+        // so they follow the Inspector live -- no snapshot, no publishing.
+        Check(Contains(s, "MotionBlur = Input { Expression = \"MultiTransform1.motionBlur\""),
+              "blur toggle is linked, not snapshotted");
+        Check(Contains(s, "Quality = Input { Expression = \"MultiTransform1.blurSamples\""),
+              "sample count is linked");
+        Check(Contains(s, "ShutterAngle = Input { Expression = \"MultiTransform1.shutterAngle\""),
+              "shutter angle is linked");
         Check(Contains(mtx::EmitFusionLinked("MT2", "X"), "Expression = \"MT2.outSize\""),
               "source tool name is parameterised");
     }

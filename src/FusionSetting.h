@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "FusionBake.h"
+#include "ParamNames.h"   // blur param names, referenced by the linked expressions
 
 namespace mtx {
 
@@ -166,20 +167,24 @@ inline std::string EmitFusionSetting(const BakedTransform& b, const std::string&
  *  either the node name or the expressions.
  */
 inline std::string EmitFusionLinked(const std::string& sourceTool,
-                                    const std::string& prefix = "MTXL",
-                                    const FusionBlur& blur = FusionBlur::Default())
+                                    const std::string& prefix = "MTXL")
 {
     const std::string xf = prefix + "Transform";
     const std::string bc = prefix + "Fade";
 
-    std::string blurInputs;
-    if (blur.enabled)
-    {
-        blurInputs =
-            "\t\t\t\tMotionBlur = Input { Value = 1 },\n"
-            "\t\t\t\tQuality = Input { Value = " + detail::FusNum(blur.quality) + " },\n"
-            "\t\t\t\tShutterAngle = Input { Value = " + detail::FusNum(blur.shutterAngle) + " },\n";
-    }
+    // The blur settings link live too, and more directly than the transform
+    // channels: MotionBlur, Quality and ShutterAngle read the plugin's own
+    // stored parameters -- which expressions can always see -- so they follow
+    // a toggle or a slider instantly, with no Output Link publishing involved.
+    // Adaptive sampling and shutter phase stay unlinked as ever: Fusion's tool
+    // blur has no input for either.
+    const std::string blurInputs =
+        "\t\t\t\tMotionBlur = Input { Expression = \"" + sourceTool + "."
+                + kParamBlurEnabled + "\" },\n"
+        "\t\t\t\tQuality = Input { Expression = \"" + sourceTool + "."
+                + kParamBlurSamples + "\" },\n"
+        "\t\t\t\tShutterAngle = Input { Expression = \"" + sourceTool + "."
+                + kParamShutterAngle + "\" },\n";
 
     std::string s = "{\n\tTools = ordered() {\n";
 

@@ -1557,13 +1557,10 @@ void MultiTransformPlugin::copyLinkedToFusion()
     if (_linkedName) _linkedName->getValue(sourceTool);
     if (sourceTool.empty()) sourceTool = "MultiTransform1";
 
-    const BlurParams bp = fetchBlurParams(0.0);
-    mtx::FusionBlur fblur;
-    fblur.enabled      = bp.enabled;
-    fblur.shutterAngle = bp.shutterAngle;
-    fblur.quality      = bp.samples;
-
-    const std::string text = mtx::EmitFusionLinked(sourceTool, "MTXL", fblur);
+    // Blur is not snapshotted here: the linked emitter wires MotionBlur,
+    // Quality and ShutterAngle as expressions on the plugin's own stored
+    // parameters, so they follow toggles live with no publishing involved.
+    const std::string text = mtx::EmitFusionLinked(sourceTool, "MTXL");
     std::string error;
     if (!mtx::CopyTextToClipboard(text, error))
     {
