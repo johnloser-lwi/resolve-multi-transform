@@ -289,6 +289,9 @@ private:
     int              activeStageIndex() const;
     void             savePreset(bool wholeEffect);
     void             bakeToFusion();
+    void             publishOutputs();
+    void             changedParamImpl(const OFX::InstanceChangedArgs& p_Args,
+                                      const std::string& p_ParamName);
     void             loadPreset(bool fitToClip);
     /** The playhead expressed in the units a given stage's frames use. */
     double playheadInStageFrames(int stageIndex, double absoluteTime) const;
@@ -340,6 +343,18 @@ private:
     /// so it must be a handle: a by-name fetch there is the race described in
     /// the constructor.
     OFX::ChoiceParam*  _editTarget   = nullptr;
+
+    /// Output-link: the composed transform published as keyframes so Fusion
+    /// expressions can follow it. Off by default -- every edit republishes,
+    /// which costs a keyframe rewrite per channel.
+    OFX::BooleanParam* _outEnable  = nullptr;
+    OFX::BooleanParam* _outNull    = nullptr;
+    OFX::DoubleParam*  _outCenterX = nullptr;
+    OFX::DoubleParam*  _outCenterY = nullptr;
+    OFX::DoubleParam*  _outSize    = nullptr;
+    OFX::DoubleParam*  _outAngle   = nullptr;
+    OFX::DoubleParam*  _outOpacity = nullptr;
+    bool _publishingOutputs = false;   ///< guards the writes' own changedParam echoes
 
     /// The last rendered frame's canonical bounds, for the overlay. Written by
     /// the render thread, read by the UI thread, hence the lock; it is four
@@ -450,6 +465,14 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _presetFolder = fetchStringParam(kParamPresetFolder);
     _previewGhost = fetchBooleanParam(kParamPreviewGhost);
     _editTarget   = fetchChoiceParam(kParamEditTarget);
+
+    _outEnable  = fetchBooleanParam(kParamOutputEnable);
+    _outNull    = fetchBooleanParam(kParamOutputNull);
+    _outCenterX = fetchDoubleParam(kParamOutCenterX);
+    _outCenterY = fetchDoubleParam(kParamOutCenterY);
+    _outSize    = fetchDoubleParam(kParamOutSize);
+    _outAngle   = fetchDoubleParam(kParamOutAngle);
+    _outOpacity = fetchDoubleParam(kParamOutOpacity);
 
     // --- Every remaining parameter the plugin ever fetches by name ----------
     //
@@ -1520,6 +1543,75 @@ void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
     syncStageVisibility();
 }
 
+void MultiTransformPlugin::publishOutputs()
+{
+    if (!_outEnable || !_outEnable->getValue())
+        return;
+
+    // The writes below land back in changedParam; the flag turns those echoes
+    // into no-ops. RAII so an exception cannot leave it stuck.
+    struct Guard {
+        bool& f;
+        explicit Guard(bool& v) : f(v) { f = true; }
+        ~Guard() { f = false; }
+    } guard(_publishingOutputs);
+
+    try
+    {
+        float w = 1920.0f, h = 1080.0f;
+        sourceSize(0.0, w, h);
+
+        double clipStart = 0.0, clipLength = 0.0;
+        mtx::GetClipRange(this, clipStart, clipLength);
+
+        const AnimParams a  = fetchAnimParams(clipStart);
+        const float animEnd = AnimationEndTime(a, clipLength > 1.0 ? clipLength - 1.0f : 60.0f);
+        int endFrame = static_cast<int>(std::ceil(
+            std::max(clipLength > 1.0 ? clipLength - 1.0 : 0.0, static_cast<double>(animEnd))));
+        if (endFrame < 1) endFrame = 60;
+
+        const mtx::BakedLinear b = mtx::BakeToLinearKeys(a, w, h, 0, endFrame);
+
+        // One undo entry for the whole republish, not one per keyframe.
+        beginEditBlock("Output Link");
+
+        struct Chan { OFX::DoubleParam* p; const std::vector<mtx::BakedKey>* k; };
+        const Chan chans[] = {
+            { _outCenterX, &b.centreX }, { _outCenterY, &b.centreY },
+            { _outSize,    &b.size    }, { _outAngle,   &b.angle   },
+            { _outOpacity, &b.opacity },
+        };
+        int total = 0;
+        for (const Chan& c : chans)
+        {
+            c.p->deleteAllKeys();
+            if (c.k->size() == 1)
+            {
+                // A channel that never animates stays a plain value: cleaner in
+                // the Inspector and free for the host.
+                c.p->setValue((*c.k)[0].value);
+                continue;
+            }
+            for (const mtx::BakedKey& key : *c.k)
+                c.p->setValueAtTime(key.frame, key.value);
+            total += static_cast<int>(c.k->size());
+        }
+
+        endEditBlock();
+        mtx::ProbeLog("output link published: frames 0.." + std::to_string(endFrame)
+                      + ", keys=" + std::to_string(total));
+    }
+    catch (const OFX::Exception::Suite& e)
+    {
+        mtx::ProbeLog(std::string("output link publish failed: status ")
+                      + std::to_string(e.status()));
+    }
+    catch (...)
+    {
+        mtx::ProbeLog("output link publish failed: unknown exception");
+    }
+}
+
 void MultiTransformPlugin::bakeToFusion()
 {
     // Source dimensions -- the space the transform maths is expressed in, and
@@ -1978,8 +2070,56 @@ void MultiTransformPlugin::updateDuration(int stageIndex, bool editable)
     _stage[stageIndex].duration->setValue(want);
 }
 
+namespace {
+
+/** True for parameters whose change cannot alter the composed transform, so a
+ *  republish would be pure waste. Momentary UI state and read-outs, mostly --
+ *  including the output parameters themselves, whose writes echo back here. */
+bool OutputIrrelevant(const std::string& n)
+{
+    using namespace mtx;
+    return n == kParamOutCenterX || n == kParamOutCenterY || n == kParamOutSize
+        || n == kParamOutAngle   || n == kParamOutOpacity
+        || n == kParamActiveStage || n == kParamEditTarget
+        || n == kParamShowCurve  || n == kParamShowLibrary || n == kParamShowTimeline
+        || n == kParamShowPath   || n == kParamShowOpacity
+        || n == kParamDragPreview || n == kParamPresetFolder;
+}
+
+} // namespace
+
 void MultiTransformPlugin::changedParam(const OFX::InstanceChangedArgs& p_Args,
                                         const std::string& p_ParamName)
+{
+    // Republishing from inside the publisher's own writes would recurse.
+    if (_publishingOutputs) return;
+
+    changedParamImpl(p_Args, p_ParamName);
+
+    // Keep the output link fresh after any edit that could move the composed
+    // transform. Two deliberate exceptions to "any edit":
+    //  * parameters that cannot affect the transform (read-outs, UI state);
+    //  * pose edits while a gizmo drag is in progress -- the interact writes
+    //    a value per mouse move, and a keyframe rewrite per move is exactly
+    //    the "horrible performance" this feature was warned about. The drag's
+    //    end clears the preview ghost, and *that* change publishes once.
+    if (OutputIrrelevant(p_ParamName)) return;
+    if (p_ParamName == kParamPreviewGhost)
+    {
+        bool dragging = false;
+        _previewGhost->getValue(dragging);
+        if (!dragging) publishOutputs();   // drag finished: one publish
+        return;
+    }
+    bool dragging = false;
+    _previewGhost->getValue(dragging);
+    if (dragging) return;                  // mid-drag pose write: defer
+
+    publishOutputs();
+}
+
+void MultiTransformPlugin::changedParamImpl(const OFX::InstanceChangedArgs& p_Args,
+                                            const std::string& p_ParamName)
 {
     // A bulk preset write must not trigger the per-parameter handlers below --
     // several of them would rewrite the very values being restored.
@@ -2212,6 +2352,17 @@ bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
                                       OFX::Clip*& p_IdentityClip, double& p_IdentityTime)
 {
     if (!_srcClip) return false;
+
+    // Publish-only mode: the instance exists to drive other nodes through the
+    // output link, so it is always a pass-through regardless of its animation.
+    // The answer is the same at every time, so there is no per-frame verdict
+    // for the host to cache stale (the trap described below).
+    if (_outNull && _outNull->getValue())
+    {
+        p_IdentityClip = _srcClip;
+        p_IdentityTime = p_Args.time;
+        return true;
+    }
 
     // Answer for the whole clip, not for this frame.
     //
@@ -3232,6 +3383,70 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                          "deleted -- only where the dialogs open changes.");
     resetFolder->setParent(*gPresets);
     page->addChild(*resetFolder);
+
+    // --- Output link ---
+    //
+    // The composed transform, published as keyframes for Fusion expressions to
+    // follow (see ParamNames.h). The outputs are plain animatable doubles: the
+    // plugin writes their keys, the user links to them. They are disabled so a
+    // stray drag cannot edit what the publisher will overwrite anyway, and
+    // they do not trigger re-renders -- their values are derived from the real
+    // parameters, so re-evaluating on their account would render every frame
+    // twice.
+    GroupParamDescriptor* gOut = DefineSection(p_Desc, page, kParamGroupOutput, "Output Link",
+        "Publish the final composed transform (all stages plus the base pose) as keyframed "
+        "read-outs that Fusion expressions can follow, e.g. "
+        "Transform1.Size = MultiTransform1.outSize.");
+
+    BooleanParamDescriptor* outOn = p_Desc.defineBooleanParam(kParamOutputEnable);
+    outOn->setLabels("Enable Output Link", "Output Link", "Enable Output Link");
+    outOn->setHint("Keep the read-outs below in sync: every edit rewrites their keyframes "
+                   "over the clip's length. Off by default because that rewrite has a cost; "
+                   "enable it only on instances something is linked to.");
+    outOn->setDefault(false);
+    outOn->setAnimates(false);
+    outOn->setEvaluateOnChange(false);
+    outOn->setParent(*gOut);
+    page->addChild(*outOn);
+
+    // A node whose only job is driving another transform has no reason to
+    // touch pixels at all: in publish-only mode the effect declares itself
+    // identity, the host skips its render entirely, and the instance costs
+    // nothing but the keyframe rewrite on edits.
+    BooleanParamDescriptor* outNull = p_Desc.defineBooleanParam(kParamOutputNull);
+    outNull->setLabels("Publish Only (no render)", "Publish Only", "Publish Only (no render)");
+    outNull->setHint("Pass the image through untouched and only publish the transform "
+                     "read-outs. Use this when the instance exists purely to drive other "
+                     "nodes via expressions -- the host skips its render completely.");
+    outNull->setDefault(false);
+    outNull->setAnimates(false);
+    outNull->setParent(*gOut);
+    page->addChild(*outNull);
+
+    struct OutDef { const char* name; const char* label; double def; double lo; double hi; };
+    const OutDef outs[] = {
+        { kParamOutCenterX, "Out: Center X", 0.5, -10.0, 10.0 },
+        { kParamOutCenterY, "Out: Center Y", 0.5, -10.0, 10.0 },
+        { kParamOutSize,    "Out: Size",     1.0,   0.0, 100.0 },
+        { kParamOutAngle,   "Out: Angle",    0.0, -100000.0, 100000.0 },
+        { kParamOutOpacity, "Out: Opacity",  1.0,   0.0, 1.0 },
+    };
+    for (const OutDef& d : outs)
+    {
+        DoubleParamDescriptor* o = p_Desc.defineDoubleParam(d.name);
+        o->setLabels(d.label, d.label, d.label);
+        o->setHint("Published by the plugin; link to it, do not edit it. Fusion conventions: "
+                   "Center is normalised with 0.5,0.5 at the frame centre, Size is a scale "
+                   "multiplier, Angle is degrees counter-clockwise, Opacity is 0..1.");
+        o->setDefault(d.def);
+        o->setRange(d.lo, d.hi);
+        o->setDisplayRange(d.lo, d.hi);
+        o->setAnimates(true);
+        o->setEvaluateOnChange(false);
+        o->setEnabled(false);
+        o->setParent(*gOut);
+        page->addChild(*o);
+    }
 
     // --- Motion blur ---
     GroupParamDescriptor* blur = p_Desc.defineGroupParam("motionBlurGroup");

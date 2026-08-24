@@ -2511,6 +2511,45 @@ static bool Contains(const std::string& hay, const std::string& needle)
     return hay.find(needle) != std::string::npos;
 }
 
+static void TestOutputLinkBake()
+{
+    std::printf("Output link: linear keys agree with the validated bake conventions\n");
+
+    const float W = 1920.0f, H = 1080.0f;
+    AnimParams a = AnimParams::Default();
+    a.stages[0].enabled    = true;
+    a.stages[0].startFrame = 0.0f; a.stages[0].endFrame = 60.0f;
+    a.stages[0].easing     = Easing::Smooth();
+    a.stages[0].posXFrom   = -0.35f; a.stages[0].posXTo = 0.30f;
+    a.stages[0].scaleFrom  = 1.0f;   a.stages[0].scaleTo = 1.6f;
+    a.stages[0].rotFrom    = 0.0f;   a.stages[0].rotTo   = 30.0f;
+
+    const mtx::BakedLinear lin = mtx::BakeToLinearKeys(a, W, H, 0, 60);
+
+    // Linear interpolation of the published keys reconstructs the composed
+    // transform within tolerance at every frame -- the guarantee an expression
+    // reading the parameter depends on.
+    float worst = 0.0f;
+    for (int f = 0; f <= 60; ++f)
+    {
+        const FlatPose p = FlattenTransform(a, (float)f, W, H);
+        worst = std::max(worst, std::fabs(SampleKeys(lin.centreX, (float)f) - (0.5f + p.posX)));
+        worst = std::max(worst, std::fabs(SampleKeys(lin.size,    (float)f) - std::fabs(p.scaleX)));
+    }
+    Check(worst <= 0.0008f, "published keys reconstruct the transform within tolerance");
+    Check(SampleKeys(lin.angle, 60.0f) > 29.9f && SampleKeys(lin.angle, 60.0f) < 30.1f,
+          "angle ends at the final rotation");
+    Check(lin.centreX.size() < 61, "keys are reduced, not one per frame");
+    Check(lin.opacity.size() == 2 || lin.opacity.size() == 1,
+          "a constant opacity stays a couple of keys");
+
+    // Conventions match the Fusion bake exactly: an expression driving a
+    // Fusion Transform from these outputs behaves like the validated paste.
+    const mtx::BakedTransform bez = mtx::BakeToFusion(a, W, H, 0, 60);
+    CheckNear(SampleKeys(lin.centreX, 30.0f), mtx::EvalBezierChannel(bez.centreX, 30.0f),
+              0.002f, "linear and bezier bakes agree mid-move");
+}
+
 static void TestFusionEmitter()
 {
     std::printf("Fusion emitter: structure and the conditional fade node\n");
@@ -2658,6 +2697,7 @@ int main()
     TestFusionBakeBezier();
     TestFusionBakePreservesBounce();
     TestFusionBakeDecomposition();
+    TestOutputLinkBake();
     TestFusionEmitter();
 
     std::printf("\n%d checks, %d failure(s)\n", g_checks, g_failures);

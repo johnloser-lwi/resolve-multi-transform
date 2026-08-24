@@ -413,6 +413,60 @@ inline BakedTransform BakeToFusion(const AnimParams& a, float width, float heigh
     return b;
 }
 
+/** @brief A bake reduced to linear keyframes, for hosts whose keys the plugin
+ *  cannot shape.
+ *
+ *  OFX lets a plugin write a parameter's value at a time, but not the handles
+ *  between keys -- the host owns the interpolation. So the output-link
+ *  publisher wants plain keys placed densely enough that any sane host
+ *  interpolation lands within tolerance: exactly what ReduceChannel produces.
+ *  Channels and conventions match BakedTransform (Fusion Centre/Size/Angle,
+ *  opacity 0..1), so a value read from these keys agrees with a pasted bake. */
+struct BakedLinear
+{
+    std::vector<BakedKey> centreX;
+    std::vector<BakedKey> centreY;
+    std::vector<BakedKey> size;
+    std::vector<BakedKey> angle;
+    std::vector<BakedKey> opacity;
+    int frameCount = 0;
+};
+
+/** @brief Sample the animation per frame and reduce each channel to linear
+ *  keyframes within the tolerances. Aspect, shear and mirror are not carried:
+ *  this feeds single-value outputs, and the caller warns via the full bake. */
+inline BakedLinear BakeToLinearKeys(const AnimParams& a, float width, float height,
+                                    int startFrame, int endFrame,
+                                    const BakeTolerances& tol = BakeTolerances::Default())
+{
+    BakedLinear b;
+    if (endFrame < startFrame) return b;
+
+    const int n = endFrame - startFrame + 1;
+    b.frameCount = n;
+
+    std::vector<float> cx, cy, sz, an, op;
+    cx.reserve(n); cy.reserve(n); sz.reserve(n); an.reserve(n); op.reserve(n);
+
+    for (int f = startFrame; f <= endFrame; ++f)
+    {
+        const FlatPose p = FlattenTransform(a, static_cast<float>(f), width, height);
+        cx.push_back(0.5f + p.posX);
+        cy.push_back(0.5f + kFusionPosYSign * p.posY);
+        sz.push_back(std::fabs(p.scaleX));
+        an.push_back(kFusionAngleSign * p.rot);
+        op.push_back(p.opacity);
+    }
+
+    const float f0 = static_cast<float>(startFrame);
+    b.centreX = ReduceChannel(cx, f0, tol.centre);
+    b.centreY = ReduceChannel(cy, f0, tol.centre);
+    b.size    = ReduceChannel(sz, f0, tol.size);
+    b.angle   = ReduceChannel(an, f0, tol.angle);
+    b.opacity = ReduceChannel(op, f0, tol.opacity);
+    return b;
+}
+
 /** @brief Total keyframes across every channel, for reporting. */
 inline int TotalKeys(const BakedTransform& b)
 {
