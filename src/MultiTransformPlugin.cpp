@@ -290,6 +290,7 @@ private:
     void             savePreset(bool wholeEffect);
     void             bakeToFusion();
     void             publishOutputs();
+    void             copyLinkedToFusion();
     void             changedParamImpl(const OFX::InstanceChangedArgs& p_Args,
                                       const std::string& p_ParamName);
     void             loadPreset(bool fitToClip);
@@ -507,6 +508,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     (void)fetchPushButtonParam(kParamBaseReset);
     (void)fetchPushButtonParam(kParamSaveEffect);
     (void)fetchPushButtonParam(kParamBakeFusion);
+    (void)fetchPushButtonParam(kParamCopyLinked);
     (void)fetchPushButtonParam(kParamSaveStage);
     (void)fetchPushButtonParam(kParamLoadPreset);
     (void)fetchPushButtonParam(kParamLoadPresetFit);
@@ -1543,6 +1545,45 @@ void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
     syncStageVisibility();
 }
 
+void MultiTransformPlugin::copyLinkedToFusion()
+{
+    // The plugin cannot see its own tool name in the comp; the host names the
+    // first instance after the plugin label, so that is the guess. A wrong
+    // guess is visible and cheap to fix -- the pasted node just sits still
+    // until the expressions (or the node name) are corrected.
+    const std::string sourceTool = "MultiTransform1";
+
+    const BlurParams bp = fetchBlurParams(0.0);
+    mtx::FusionBlur fblur;
+    fblur.enabled      = bp.enabled;
+    fblur.shutterAngle = bp.shutterAngle;
+    fblur.quality      = bp.samples;
+
+    const std::string text = mtx::EmitFusionLinked(sourceTool, "MTXL", fblur);
+    std::string error;
+    if (!mtx::CopyTextToClipboard(text, error))
+    {
+        sendMessage(OFX::Message::eMessageError, "",
+                    "Could not copy the linked Transform to the clipboard:\n" + error);
+        return;
+    }
+
+    std::string msg =
+        "Copied a Transform linked by expressions to this node's Output Link.\n\n"
+        "Paste (Ctrl+V) into the Fusion comp and wire your clip into the Transform's "
+        "input. The expressions reference \"" + sourceTool + "\" -- if this node has a "
+        "different name in the comp, edit the expressions or rename the node.";
+
+    bool linkOn = false;
+    if (_outEnable) _outEnable->getValue(linkOn);
+    if (!linkOn)
+        msg += "\n\nOutput Link is OFF on this instance: the pasted Transform will not "
+               "move until you enable it.";
+
+    sendMessage(OFX::Message::eMessageMessage, "", msg);
+    mtx::ProbeLog("copied linked Fusion transform (source " + sourceTool + ")");
+}
+
 void MultiTransformPlugin::publishOutputs()
 {
     if (!_outEnable || !_outEnable->getValue())
@@ -2170,6 +2211,7 @@ void MultiTransformPlugin::changedParamImpl(const OFX::InstanceChangedArgs& p_Ar
 
     if (p_ParamName == kParamSaveEffect)    { savePreset(true);  return; }
     if (p_ParamName == kParamBakeFusion)    { bakeToFusion();    return; }
+    if (p_ParamName == kParamCopyLinked)    { copyLinkedToFusion(); return; }
     if (p_ParamName == kParamSaveStage)     { savePreset(false); return; }
     if (p_ParamName == kParamLoadPreset)    { loadPreset(false); return; }
     if (p_ParamName == kParamLoadPresetFit) { loadPreset(true);  return; }
@@ -3422,6 +3464,16 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     outNull->setAnimates(false);
     outNull->setParent(*gOut);
     page->addChild(*outNull);
+
+    PushButtonParamDescriptor* copyLinked = p_Desc.definePushButtonParam(kParamCopyLinked);
+    copyLinked->setLabels("Copy Linked Transform", "Copy Linked", "Copy Linked Transform");
+    copyLinked->setHint("Copy a Fusion Transform whose Center, Size and Angle are expressions "
+                        "reading the outputs above (plus a Brightness/Contrast fade on "
+                        "outOpacity). Paste it into the comp next to this node and it follows "
+                        "live. The expressions assume this node is named MultiTransform1 -- "
+                        "edit them if it is not. Needs Output Link enabled to move.");
+    copyLinked->setParent(*gOut);
+    page->addChild(*copyLinked);
 
     struct OutDef { const char* name; const char* label; double def; double lo; double hi; };
     const OutDef outs[] = {

@@ -2614,6 +2614,26 @@ static void TestFusionEmitter()
         Check(Contains(s, "ShutterAngle = Input { Value = 172.5 }"), "shutter angle carried");
     }
 
+    // The linked emitter: expressions instead of keyframes, referencing the
+    // source tool's output parameters by name.
+    {
+        const std::string s = mtx::EmitFusionLinked("MultiTransform1", "MTXL");
+        Check(Contains(s, "MTXLTransform = Transform"), "linked emit has the Transform");
+        Check(Contains(s, "Expression = \"Point(MultiTransform1.outCenterX, MultiTransform1.outCenterY)\""),
+              "Center is an expression on the output link");
+        Check(Contains(s, "Expression = \"MultiTransform1.outSize\""),  "Size expression");
+        Check(Contains(s, "Expression = \"MultiTransform1.outAngle\""), "Angle expression");
+        Check(Contains(s, "Expression = \"MultiTransform1.outOpacity\""), "fade Gain expression");
+        Check(Contains(s, "ClipBlack = Input { Value = 1 }"), "fade clips black");
+        Check(!Contains(s, "BezierSpline"), "no keyframes in the linked emit");
+
+        mtx::FusionBlur blur; blur.enabled = true; blur.quality = 12;
+        Check(Contains(mtx::EmitFusionLinked("MT2", "X", blur), "Quality = Input { Value = 12 }"),
+              "linked emit carries motion blur");
+        Check(Contains(mtx::EmitFusionLinked("MT2", "X"), "Expression = \"MT2.outSize\""),
+              "source tool name is parameterised");
+    }
+
     // The emitted key values are the fitted ones, so a spot value in the text
     // matches EvalBezierChannel -- the emitter does not distort the bake.
     {

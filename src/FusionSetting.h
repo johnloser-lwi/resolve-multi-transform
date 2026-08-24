@@ -154,4 +154,55 @@ inline std::string EmitFusionSetting(const BakedTransform& b, const std::string&
     return s;
 }
 
+/** @brief A Transform (and fade) pre-linked to a Multi Transform's output
+ *  parameters by expression, ready to paste next to the plugin's own node.
+ *
+ *  The complement of EmitFusionSetting: no keyframes at all -- every input is
+ *  an expression reading the plugin's Output Link read-outs, so the pasted
+ *  node follows the plugin live and stays current through any edit. The
+ *  plugin cannot know its own tool name in the comp, so @p sourceTool is the
+ *  caller's best guess (the host names the first instance MultiTransform1);
+ *  a wrong guess leaves the expressions unresolved until the user corrects
+ *  either the node name or the expressions.
+ */
+inline std::string EmitFusionLinked(const std::string& sourceTool,
+                                    const std::string& prefix = "MTXL",
+                                    const FusionBlur& blur = FusionBlur::Default())
+{
+    const std::string xf = prefix + "Transform";
+    const std::string bc = prefix + "Fade";
+
+    std::string blurInputs;
+    if (blur.enabled)
+    {
+        blurInputs =
+            "\t\t\t\tMotionBlur = Input { Value = 1 },\n"
+            "\t\t\t\tQuality = Input { Value = " + detail::FusNum(blur.quality) + " },\n"
+            "\t\t\t\tShutterAngle = Input { Value = " + detail::FusNum(blur.shutterAngle) + " },\n";
+    }
+
+    std::string s = "{\n\tTools = ordered() {\n";
+
+    s += "\t\t" + xf + " = Transform {\n\t\t\tInputs = {\n"
+         "\t\t\t\tCenter = Input { Expression = \"Point(" + sourceTool + ".outCenterX, "
+                 + sourceTool + ".outCenterY)\" },\n"
+         "\t\t\t\tSize = Input { Expression = \"" + sourceTool + ".outSize\" },\n"
+         "\t\t\t\tAngle = Input { Expression = \"" + sourceTool + ".outAngle\" },\n"
+         + blurInputs +
+         "\t\t\t},\n\t\t\tViewInfo = OperatorInfo { Pos = { 220, 0 } },\n\t\t},\n";
+
+    // The fade is always included -- whether opacity animates is live in the
+    // link, not knowable at emit time. Clipped as in the baked emitter.
+    s += "\t\t" + bc + " = BrightnessContrast {\n\t\t\tInputs = {\n"
+         "\t\t\t\tGain = Input { Expression = \"" + sourceTool + ".outOpacity\" },\n"
+         "\t\t\t\tAlpha = Input { Value = 1 },\n"
+         "\t\t\t\tClipBlack = Input { Value = 1 },\n"
+         "\t\t\t\tClipWhite = Input { Value = 1 },\n"
+         "\t\t\t\tInput = Input { SourceOp = \"" + xf + "\", Source = \"Output\" },\n"
+         "\t\t\t},\n\t\t\tViewInfo = OperatorInfo { Pos = { 440, 0 } },\n\t\t},\n";
+
+    s += "\t}\n}\n";
+    return s;
+}
+
 } // namespace mtx
