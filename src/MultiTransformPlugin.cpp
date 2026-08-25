@@ -3554,7 +3554,15 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
         o->setRange(d.lo, d.hi);
         o->setDisplayRange(d.lo, d.hi);
         o->setAnimates(true);
-        o->setEvaluateOnChange(false);
+        // Evaluate-on-change must stay TRUE. It was false once, to spare a
+        // re-render per publish -- but the flag also tells the host nobody
+        // needs invalidating when these change, so a Fusion expression reading
+        // them kept its cached value until something unrelated dirtied the
+        // graph: the linked Transform lagged edits at random and showed stale
+        // stages. One cheap re-render per debounced publish is the price of
+        // dependents actually hearing about the new keys. (probe.log showed
+        // every publish landing while the consumer displayed old data.)
+        o->setEvaluateOnChange(true);
         o->setEnabled(false);
         o->setParent(*gOut);
         page->addChild(*o);
