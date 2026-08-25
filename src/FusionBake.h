@@ -432,12 +432,22 @@ struct BakedLinear
     int frameCount = 0;
 };
 
-/** @brief Sample the animation per frame and reduce each channel to linear
- *  keyframes within the tolerances. Aspect, shear and mirror are not carried:
- *  this feeds single-value outputs, and the caller warns via the full bake. */
-inline BakedLinear BakeToLinearKeys(const AnimParams& a, float width, float height,
-                                    int startFrame, int endFrame,
-                                    const BakeTolerances& tol = BakeTolerances::Default())
+/** @brief Sample the animation per frame into dense keyframes: one key on
+ *  every frame, except that a channel which never moves collapses to a single
+ *  key. Aspect, shear and mirror are not carried: this feeds single-value
+ *  outputs, and the caller warns via the full bake.
+ *
+ *  Dense deliberately, not reduced. The output-link keys are consumed by the
+ *  host's own interpolation, which the plugin cannot shape -- Resolve gives
+ *  plugin-written keys smooth auto tangents, and between sparse, unevenly
+ *  spaced Douglas-Peucker knots those tangents overshoot. Worse, each channel
+ *  reduced alone puts its knots in different places, and a zoom toward a side
+ *  multiplies centre by size, so the two channels' interpolation errors beat
+ *  against each other as visible wobble. A key on every frame leaves the host
+ *  nothing to invent: exact wherever a render happens. Nobody hand-edits
+ *  these keys, so their count costs nothing but a slightly longer publish. */
+inline BakedLinear BakeToDenseKeys(const AnimParams& a, float width, float height,
+                                   int startFrame, int endFrame)
 {
     BakedLinear b;
     if (endFrame < startFrame) return b;
@@ -459,11 +469,23 @@ inline BakedLinear BakeToLinearKeys(const AnimParams& a, float width, float heig
     }
 
     const float f0 = static_cast<float>(startFrame);
-    b.centreX = ReduceChannel(cx, f0, tol.centre);
-    b.centreY = ReduceChannel(cy, f0, tol.centre);
-    b.size    = ReduceChannel(sz, f0, tol.size);
-    b.angle   = ReduceChannel(an, f0, tol.angle);
-    b.opacity = ReduceChannel(op, f0, tol.opacity);
+    auto dense = [f0](const std::vector<float>& v) {
+        std::vector<BakedKey> out;
+        // A channel that never moves is one key, not n copies of it.
+        bool flat = true;
+        for (float s : v)
+            if (std::fabs(s - v.front()) > 1e-6f) { flat = false; break; }
+        if (flat) { out.push_back({ f0, v.front() }); return out; }
+        out.reserve(v.size());
+        for (size_t i = 0; i < v.size(); ++i)
+            out.push_back({ f0 + static_cast<float>(i), v[i] });
+        return out;
+    };
+    b.centreX = dense(cx);
+    b.centreY = dense(cy);
+    b.size    = dense(sz);
+    b.angle   = dense(an);
+    b.opacity = dense(op);
     return b;
 }
 

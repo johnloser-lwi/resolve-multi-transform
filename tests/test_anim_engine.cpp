@@ -2524,7 +2524,7 @@ static void TestOutputLinkBake()
     a.stages[0].scaleFrom  = 1.0f;   a.stages[0].scaleTo = 1.6f;
     a.stages[0].rotFrom    = 0.0f;   a.stages[0].rotTo   = 30.0f;
 
-    const mtx::BakedLinear lin = mtx::BakeToLinearKeys(a, W, H, 0, 60);
+    const mtx::BakedLinear lin = mtx::BakeToDenseKeys(a, W, H, 0, 60);
 
     // Linear interpolation of the published keys reconstructs the composed
     // transform within tolerance at every frame -- the guarantee an expression
@@ -2539,9 +2539,8 @@ static void TestOutputLinkBake()
     Check(worst <= 0.0008f, "published keys reconstruct the transform within tolerance");
     Check(SampleKeys(lin.angle, 60.0f) > 29.9f && SampleKeys(lin.angle, 60.0f) < 30.1f,
           "angle ends at the final rotation");
-    Check(lin.centreX.size() < 61, "keys are reduced, not one per frame");
-    Check(lin.opacity.size() == 2 || lin.opacity.size() == 1,
-          "a constant opacity stays a couple of keys");
+    Check(lin.centreX.size() == 61, "an animated channel has one key per frame");
+    Check(lin.opacity.size() == 1, "a constant channel collapses to one key");
 
     // Conventions match the Fusion bake exactly: an expression driving a
     // Fusion Transform from these outputs behaves like the validated paste.

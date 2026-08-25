@@ -1637,7 +1637,7 @@ void MultiTransformPlugin::publishOutputs()
             std::max(clipLength > 1.0 ? clipLength - 1.0 : 0.0, static_cast<double>(animEnd))));
         if (endFrame < 1) endFrame = 60;
 
-        const mtx::BakedLinear b = mtx::BakeToLinearKeys(a, w, h, 0, endFrame);
+        const mtx::BakedLinear b = mtx::BakeToDenseKeys(a, w, h, 0, endFrame);
 
         // One undo entry for the whole republish, not one per keyframe. RAII,
         // because an edit block left open when a write throws is an editor
