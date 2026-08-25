@@ -181,24 +181,23 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     // and Fusion's OFX host on the stack, in that order. A status-checked call
     // would still have made the call. Not asking is the only safe answer, and
     // render() already knows the frame every time it draws one.
-    mtx::FrameBoundsProvider* bounds = mtx::FrameBoundsOf(_effect);
+    // The frame the overlay draws on is the *project* frame, read as instance
+    // properties with a plain property get: no graph evaluation, no exception,
+    // none of what made the region-of-definition query unsafe on this thread.
+    //
+    // Render-published bounds are only the fallback, not the primary, because
+    // the host renders this effect at whatever size suits it and reports
+    // renderScale 1 regardless: Resolve's Edit page renders the timeline
+    // filmstrip thumbnail through the plugin (a 432x243 render was logged
+    // against a 3840x2160 project), and Fusion crops renders to the DoD. Both
+    // published bounds far smaller than the picture, and the overlay then drew
+    // every widget into a bottom-left stamp -- piled on top of one another,
+    // nothing usably draggable. The project size describes the canvas the user
+    // is actually looking at, it exists before the first render (a fresh
+    // identity effect is never rendered at all), and it is the same answer on
+    // both pages.
     OfxRectD rod{ 0.0, 0.0, 0.0, 0.0 };
-    if (!bounds || !bounds->lastFrameBounds(rod))
     {
-        // Nothing rendered yet: fall back to the project's frame.
-        //
-        // "Nothing rendered yet" is the normal state of a freshly added effect,
-        // not a corner case. With every parameter at its default the transform
-        // is the identity, isIdentity says so, and the host never calls
-        // render() at all -- so waiting for a render meant the overlay did not
-        // appear until the user changed something, which is exactly backwards
-        // for the control they would use to change it.
-        //
-        // The project size and offset are properties of this instance, read
-        // with a plain property get: no graph evaluation, no exception, none
-        // of what made the region-of-definition query unsafe on this thread.
-        // They describe the canvas, which is what the overlay wants anyway;
-        // the first real render replaces them with the frame's own bounds.
         const OfxPropertySetHandle props = _effect->getPropertySet().propSetHandle();
         double sizeX = 0.0, sizeY = 0.0, offX = 0.0, offY = 0.0;
         const bool ok =
@@ -207,18 +206,25 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
             OFX::Private::gPropSuite->propGetDouble(props, kOfxImageEffectPropProjectOffset, 0, &offX)  == kOfxStatOK &&
             OFX::Private::gPropSuite->propGetDouble(props, kOfxImageEffectPropProjectOffset, 1, &offY)  == kOfxStatOK;
 
-        if (!ok || sizeX <= 0.0 || sizeY <= 0.0)
+        if (ok && sizeX > 0.0 && sizeY > 0.0)
         {
-            mtx::ProbeOnce("overlay-no-frame", "overlay: no frame rendered and no project size; overlay waits");
-            return false;
+            rod.x1 = offX;          rod.y1 = offY;
+            rod.x2 = offX + sizeX;  rod.y2 = offY + sizeY;
         }
-
-        rod.x1 = offX;          rod.y1 = offY;
-        rod.x2 = offX + sizeX;  rod.y2 = offY + sizeY;
-        mtx::ProbeOnce("overlay-project-frame",
-                       "overlay: drawing on the project frame until the first render ("
-                       + std::to_string(static_cast<int>(sizeX)) + "x"
-                       + std::to_string(static_cast<int>(sizeY)) + ")");
+        else
+        {
+            // No project size on offer: the last rendered frame's bounds are
+            // better than nothing.
+            mtx::FrameBoundsProvider* bounds = mtx::FrameBoundsOf(_effect);
+            if (!bounds || !bounds->lastFrameBounds(rod))
+            {
+                mtx::ProbeOnce("overlay-no-frame",
+                               "overlay: no project size and no rendered frame; overlay waits");
+                return false;
+            }
+            mtx::ProbeOnce("overlay-render-bounds",
+                           "overlay: host reports no project size; using last render bounds");
+        }
     }
 
     out.effect     = _effect;

@@ -1639,8 +1639,15 @@ void MultiTransformPlugin::publishOutputs()
 
         const mtx::BakedLinear b = mtx::BakeToLinearKeys(a, w, h, 0, endFrame);
 
-        // One undo entry for the whole republish, not one per keyframe.
-        beginEditBlock("Output Link");
+        // One undo entry for the whole republish, not one per keyframe. RAII,
+        // because an edit block left open when a write throws is an editor
+        // whose input stays locked -- the host is still waiting for the
+        // gesture to finish.
+        struct EditBlock {
+            MultiTransformPlugin* fx;
+            explicit EditBlock(MultiTransformPlugin* p) : fx(p) { fx->beginEditBlock("Output Link"); }
+            ~EditBlock() { try { fx->endEditBlock(); } catch (...) {} }
+        } editBlock(this);
 
         struct Chan { OFX::DoubleParam* p; const std::vector<mtx::BakedKey>* k; };
         const Chan chans[] = {
@@ -1663,8 +1670,6 @@ void MultiTransformPlugin::publishOutputs()
                 c.p->setValueAtTime(key.frame, key.value);
             total += static_cast<int>(c.k->size());
         }
-
-        endEditBlock();
 
         // Writing values and keys can flip a control live again (see the
         // constructor); put it back before the user can grab it.
