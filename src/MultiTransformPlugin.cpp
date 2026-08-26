@@ -2864,11 +2864,13 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // Duration is a derived read-out, so it must not claim to invalidate
     // anything: Start and End already do, and this would only purge the cache a
     // second time for a value that changes no pixels.
-    DefineDouble(desc, page, gTiming, StageParam(kParamDuration, i), "Duration (frames)",
+    DoubleParamDescriptor* dur = DefineDouble(desc, page, gTiming,
+                 StageParam(kParamDuration, i), "Duration (frames)",
                  "End Frame minus Start Frame. Calculated automatically -- shown for "
                  "reference, not editable.",
-                 24.0, -1e9, 1e9, 0.0, 240.0, 1.0)
-        ->setCacheInvalidation(eCacheInvalidateValueChange);
+                 24.0, -1e9, 1e9, 0.0, 240.0, 1.0);
+    dur->setCacheInvalidation(eCacheInvalidateValueChange);
+    dur->setCanUndo(false);           // derived read-out the plugin rewrites
 
     // --- Per-channel timing offsets ---
     //
@@ -3216,6 +3218,10 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
         t->setDefault(false);
         t->setIsSecret(true);
         t->setIsPersistant(false);
+        // Out of the undo history: these are messages, and a message replayed
+        // by undo is an action the user did not take. Undoing in Fusion was
+        // re-firing them -- sync jumps, and the preset dialog opening itself.
+        t->setCanUndo(false);
         page->addChild(*t);
     }
     PushButtonParamDescriptor* saveEffect = p_Desc.definePushButtonParam(kParamSaveEffect);
@@ -3253,6 +3259,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     overlayLoad->setDefault(false);
     overlayLoad->setIsSecret(true);
     overlayLoad->setIsPersistant(false);
+    overlayLoad->setCanUndo(false);   // undo must not re-open the load dialog
     page->addChild(*overlayLoad);
 
     PushButtonParamDescriptor* loadFit = p_Desc.definePushButtonParam(kParamLoadPresetFit);
@@ -3314,6 +3321,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     ghost->setDefault(false);
     ghost->setIsSecret(true);
     ghost->setIsPersistant(false);
+    ghost->setCanUndo(false);         // momentary drag state, not an edit
     ghost->setParent(*gOverlay);
     InvalidatesCache(ghost);
     page->addChild(*ghost);
@@ -3438,6 +3446,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     // applies to every instance of the effect on this machine and does not
     // travel with a timeline sent to someone else.
     StringParamDescriptor* folder = p_Desc.defineStringParam(kParamPresetFolder);
+    folder->setCanUndo(false);        // read-out the plugin refreshes itself
     folder->setLabels("Preset Folder", "Folder", "Preset Folder");
 
     // A single-line field, greyed out -- deliberately not eStringTypeLabel.
@@ -3563,6 +3572,10 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
         // dependents actually hearing about the new keys. (probe.log showed
         // every publish landing while the consumer displayed old data.)
         o->setEvaluateOnChange(true);
+        // Not in the undo history: publishes would otherwise stack an "Output
+        // Link" step per edit burst, and undoing real work would first grind
+        // through them.
+        o->setCanUndo(false);
         o->setEnabled(false);
         o->setParent(*gOut);
         page->addChild(*o);
