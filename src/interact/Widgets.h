@@ -163,6 +163,36 @@ private:
     ClickTracker _clicks;
 };
 
+/** @brief The blur slider: the opacity slider's twin, for the blur radius.
+ *
+ * Same placement rule (left edge, vertically centred, beside the opacity
+ * track in a fixed slot so neither moves when the other is toggled) and the
+ * same target (whichever of A / B / Base the gizmo is on). The track is
+ * quadratic -- the value grows with the square of the knob's height -- because
+ * the useful range is lopsided: a few pixels of softness need fine control,
+ * while 60 vs 70 px barely reads differently. The track tops out at 100 px;
+ * larger radii are typed in the Inspector and pin the knob at the top.
+ */
+class DefocusWidget : public Widget
+{
+public:
+    void layout(const OverlayContext& c) override;
+    void draw(const OverlayContext& c) override;
+    bool penDown  (const OverlayContext& c, const OfxPointD& p) override;
+    bool penMotion(const OverlayContext& c, const OfxPointD& p) override;
+    bool penUp    (const OverlayContext& c, const OfxPointD& p) override;
+
+private:
+    /// Current radius of whichever target the gizmo is on, in pixels.
+    double   value(const OverlayContext& c) const;
+    void     write(const OverlayContext& c, double px) const;
+    /// Radius from a Y position on the track.
+    double   valueAt(const OverlayContext& c, double y) const;
+
+    OfxRectD     _track{};
+    ClickTracker _clicks;
+};
+
 /** @brief The saved-curve picker: a grid of curves drawn as curves.
  *
  * A dropdown of names would say "Heavy Settle" and leave you to remember what

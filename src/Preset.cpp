@@ -36,12 +36,14 @@ PresetStage PresetStage::Default()
     // keys loaded as very nearly invisible. Every other field means the same
     // thing in both, which is exactly why this one slipped through.
     p.opacityFrom  = 100.0f;         p.opacityTo  = 100.0f;
+    p.defocusFrom  = s.defocusFrom;  p.defocusTo  = s.defocusTo;
     p.anchorX      = s.anchorX;      p.anchorY    = s.anchorY;
     p.pathC1X      = s.pathC1X;      p.pathC1Y    = s.pathC1Y;
     p.pathC2X      = s.pathC2X;      p.pathC2Y    = s.pathC2Y;
     p.offsetPos    = s.offsetPos;    p.offsetScale  = s.offsetScale;
     p.offsetRot    = s.offsetRot;    p.offsetTilt   = s.offsetTilt;
     p.offsetSwivel = s.offsetSwivel; p.offsetOpacity = s.offsetOpacity;
+    p.offsetDefocus = s.offsetDefocus;
 
     // Easing is stored as the human-facing amounts, not the derived bezier
     // handles, so a preset stays readable and survives changes to the mapping.
@@ -116,6 +118,8 @@ void WriteStage(std::string& o, const PresetStage& s, const char* indent)
     kv("swivelYTo",    Num(s.swivelYTo));
     kv("opacityFrom",  Num(s.opacityFrom));
     kv("opacityTo",    Num(s.opacityTo));
+    kv("defocusFrom",  Num(s.defocusFrom));
+    kv("defocusTo",    Num(s.defocusTo));
     kv("anchorX",      Num(s.anchorX));
     kv("anchorY",      Num(s.anchorY));
     kv("pathC1X",      Num(s.pathC1X));
@@ -128,6 +132,7 @@ void WriteStage(std::string& o, const PresetStage& s, const char* indent)
     kv("offsetTilt",   Num(s.offsetTilt));
     kv("offsetSwivel", Num(s.offsetSwivel));
     kv("offsetOpacity",Num(s.offsetOpacity));
+    kv("offsetDefocus",Num(s.offsetDefocus));
     kv("easingPreset", Num(s.easingPreset));
     kv("easeIn",       Num(s.easeIn));
     kv("easeOut",      Num(s.easeOut));
@@ -172,6 +177,7 @@ std::string ToJson(const PresetData& d)
     o += "    \"tiltX\": "     + Num(d.base.tiltX) + ",\n";
     o += "    \"swivelY\": "   + Num(d.base.swivelY) + ",\n";
     o += "    \"opacity\": "   + Num(d.base.opacity) + ",\n";
+    o += "    \"defocus\": "   + Num(d.base.defocus) + ",\n";
     o += "    \"anchorX\": "   + Num(d.base.anchorX) + ",\n";
     o += "    \"anchorY\": "   + Num(d.base.anchorY) + "\n";
     o += "  },\n";
@@ -229,6 +235,8 @@ PresetStage StageFromFields(const Fields& f)
     s.swivelYTo     = static_cast<float>(FieldNum(f, "swivelYTo", s.swivelYTo));
     s.opacityFrom   = static_cast<float>(FieldNum(f, "opacityFrom", s.opacityFrom));
     s.opacityTo     = static_cast<float>(FieldNum(f, "opacityTo", s.opacityTo));
+    s.defocusFrom   = static_cast<float>(FieldNum(f, "defocusFrom", s.defocusFrom));
+    s.defocusTo     = static_cast<float>(FieldNum(f, "defocusTo", s.defocusTo));
     s.anchorX       = static_cast<float>(FieldNum(f, "anchorX", s.anchorX));
     s.anchorY       = static_cast<float>(FieldNum(f, "anchorY", s.anchorY));
     s.pathC1X       = static_cast<float>(FieldNum(f, "pathC1X", s.pathC1X));
@@ -241,6 +249,7 @@ PresetStage StageFromFields(const Fields& f)
     s.offsetTilt    = static_cast<float>(FieldNum(f, "offsetTilt",    s.offsetTilt));
     s.offsetSwivel  = static_cast<float>(FieldNum(f, "offsetSwivel",  s.offsetSwivel));
     s.offsetOpacity = static_cast<float>(FieldNum(f, "offsetOpacity", s.offsetOpacity));
+    s.offsetDefocus = static_cast<float>(FieldNum(f, "offsetDefocus", s.offsetDefocus));
     s.easingPreset  = static_cast<int>(FieldNum(f, "easingPreset", s.easingPreset));
     s.easeIn        = static_cast<float>(FieldNum(f, "easeIn", s.easeIn));
     s.easeOut       = static_cast<float>(FieldNum(f, "easeOut", s.easeOut));
@@ -311,6 +320,7 @@ bool FromJson(const std::string& json, PresetData& out, std::string& error)
             b.tiltX     = static_cast<float>(FieldNum(f, "tiltX", b.tiltX));
             b.swivelY   = static_cast<float>(FieldNum(f, "swivelY", b.swivelY));
             b.opacity   = static_cast<float>(FieldNum(f, "opacity", b.opacity));
+            b.defocus   = static_cast<float>(FieldNum(f, "defocus", b.defocus));
             b.anchorX   = static_cast<float>(FieldNum(f, "anchorX", b.anchorX));
             b.anchorY   = static_cast<float>(FieldNum(f, "anchorY", b.anchorY));
         }
@@ -397,6 +407,7 @@ void RescaleTiming(PresetData& d, float targetClipLength)
         s.offsetTilt    *= k;
         s.offsetSwivel  *= k;
         s.offsetOpacity *= k;
+        s.offsetDefocus *= k;
     }
 
     d.sourceClipLength = targetClipLength;

@@ -29,11 +29,14 @@
 
 #include <memory>
 #include "FrameBounds.h"
+#include "Defocus.h"
 #include "FusionBake.h"
 #include "FusionSetting.h"
 #include "EditDebounce.h"
 
+#include <algorithm>
 #include <chrono>
+#include <functional>
 #include <cstring>
 #include <iomanip>
 #include <mutex>
@@ -101,8 +104,24 @@ public:
         _edge       = p_Edge;
     }
 
+    /// Blur radius in render pixels (the canonical radius times the render
+    /// scale). Zero, or anything DefocusActive rejects, leaves the render as it
+    /// always was.
+    void setDefocus(float p_RadiusPx) { _defocus = p_RadiusPx; }
+
     virtual void processImagesCUDA() override;
     virtual void multiThreadProcessImages(OfxRectI p_ProcWindow) override;
+
+    /** @brief The CPU render with the blur applied.
+     *
+     *  Cannot ride on process(): that splits the render window into strips and
+     *  hands one to each thread, but a blur needs the whole frame -- plus a
+     *  border round it, so the frame's edges blur against the real image
+     *  beyond them -- before any pixel of the result is known. So it runs
+     *  three whole-frame phases instead, each spread across the host's
+     *  threads: render the transform into a padded float buffer, blur it, and
+     *  store the interior at the destination's depth. */
+    void processDefocusedCpu();
 
 private:
     /** @brief Describe the source image for the samplers. */
@@ -145,7 +164,41 @@ private:
     mtx::EdgeMode          _edge   = mtx::kEdgeBlack;
     int                    _srcOriginX = 0;
     int                    _srcOriginY = 0;
+    float                  _defocus    = 0.0f;
 };
+
+namespace {
+
+/** Runs fn(begin, end) over [0, lines) split across the host's threads, and
+ *  returns once every thread has finished -- so consecutive jobs are ordered,
+ *  which each blur pass depends on. */
+class LinesJob : public OFX::MultiThread::Processor
+{
+public:
+    LinesJob(int lines, std::function<void(int, int)> fn) : _lines(lines), _fn(std::move(fn)) {}
+
+    void run()
+    {
+        if (_lines <= 0) return;
+        const unsigned cpus = std::max(1u, std::min(OFX::MultiThread::getNumCPUs(),
+                                                    static_cast<unsigned>(_lines)));
+        multiThread(cpus);
+    }
+
+    void multiThreadFunction(unsigned int id, unsigned int n) override
+    {
+        const int per   = (_lines + static_cast<int>(n) - 1) / static_cast<int>(n);
+        const int begin = static_cast<int>(id) * per;
+        const int end   = std::min(_lines, begin + per);
+        if (begin < end) _fn(begin, end);
+    }
+
+private:
+    int _lines;
+    std::function<void(int, int)> _fn;
+};
+
+} // namespace
 
 void TransformProcessor::processImagesCUDA()
 {
@@ -179,7 +232,7 @@ void TransformProcessor::processImagesCUDA()
                               dstData, dstWidth, dstHeight, dstRowBytes, dstDepth(),
                               _transforms,
                               static_cast<int>(_filter), static_cast<int>(_edge),
-                              sv.originX, sv.originY);
+                              sv.originX, sv.originY, _defocus);
 
     if (err) mtx::ProbeOnce("cuda-error", std::string("CUDA error: ") + err);
 }
@@ -226,6 +279,84 @@ void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
             mtx::StorePixel(dstPix, depth, out);
         }
     }
+}
+
+void TransformProcessor::processDefocusedCpu()
+{
+    // Nothing to blur: the ordinary path already clears to transparent.
+    if (!haveSrc()) { multiThreadProcessImages(_renderWindow); return; }
+
+    const OfxRectI db = _dstImg->getBounds();
+    const OfxRectI rw = _renderWindow;
+    const int ww = rw.x2 - rw.x1, wh = rw.y2 - rw.y1;
+    if (ww <= 0 || wh <= 0) return;
+
+    const int    pad = mtx::DefocusPad(_defocus);
+    const int    pw  = ww + 2 * pad, ph = wh + 2 * pad;
+    const size_t n   = static_cast<size_t>(pw) * static_cast<size_t>(ph) * 4;
+
+    std::unique_ptr<float[]> a, b;
+    try { a.reset(new float[n]); b.reset(new float[n]); }
+    catch (const std::bad_alloc&)
+    {
+        // A huge radius on a huge frame. A sharp frame beats no frame.
+        mtx::ProbeOnce("defocus-oom", "render: no memory for the blur buffers; rendering sharp");
+        multiThreadProcessImages(_renderWindow);
+        return;
+    }
+
+    const mtx::ImageView sv = srcView();
+
+    // Phase 1: the transform, into the padded buffer. The border pixels are
+    // real renders of what lies beyond the window -- image or transparency --
+    // which is what lets the window's edges blur honestly.
+    LinesJob(ph, [&](int y0, int y1) {
+        for (int py = y0; py < y1; ++py)
+        {
+            const int y = rw.y1 - pad + py;
+            float* row = a.get() + static_cast<size_t>(py) * pw * 4;
+            for (int px = 0; px < pw; ++px)
+            {
+                const int x = rw.x1 - pad + px;
+                mtx::RenderPixel(sv, _transforms,
+                                 static_cast<float>(x - db.x1) + 0.5f,
+                                 static_cast<float>(y - db.y1) + 0.5f,
+                                 _filter, _edge, row + static_cast<size_t>(px) * 4);
+            }
+        }
+    }).run();
+
+    if (_effect.abort()) return;
+
+    // Phase 2: three rounds of rows-then-columns, each pass a separate job so
+    // it starts only once the previous one has written every line.
+    const float hw = mtx::DefocusHalfWidth(_defocus);
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        LinesJob(ph, [&](int l0, int l1) {
+            mtx::DefocusPassLines(a.get(), b.get(), pw, ph, hw, true, l0, l1);
+        }).run();
+        LinesJob(pw, [&](int l0, int l1) {
+            mtx::DefocusPassLines(b.get(), a.get(), pw, ph, hw, false, l0, l1);
+        }).run();
+        if (_effect.abort()) return;
+    }
+
+    // Phase 3: the interior, at the destination's depth.
+    const int depth      = dstDepth();
+    const int pixelBytes = 4 * mtx::BytesPerChannel(depth);
+    LinesJob(wh, [&](int y0, int y1) {
+        for (int y = rw.y1 + y0; y < rw.y1 + y1; ++y)
+        {
+            unsigned char* dstPix =
+                static_cast<unsigned char*>(_dstImg->getPixelAddress(rw.x1, y));
+            if (!dstPix) continue;
+            const float* in = a.get()
+                + (static_cast<size_t>(y - rw.y1 + pad) * pw + pad) * 4;
+            for (int x = 0; x < ww; ++x, dstPix += pixelBytes, in += 4)
+                mtx::StorePixel(dstPix, depth, in);
+        }
+    }).run();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -336,6 +467,7 @@ private:
     OFX::DoubleParam*   _baseTiltX     = nullptr;
     OFX::DoubleParam*   _baseSwivelY   = nullptr;
     OFX::DoubleParam*   _baseOpacity   = nullptr;
+    OFX::DoubleParam*   _baseDefocus   = nullptr;
     OFX::Double2DParam* _baseAnchor    = nullptr;
 
     /// Read-out of the preference, refreshed from settings.json rather than
@@ -395,6 +527,7 @@ private:
         OFX::DoubleParam*   tiltOffset;
         OFX::DoubleParam*   swivelOffset;
         OFX::DoubleParam*   opacityOffset;
+        OFX::DoubleParam*   defocusOffset;
         OFX::BooleanParam*  enabled;
         OFX::ChoiceParam*   timingAnchor;
         OFX::DoubleParam*   startFrame;
@@ -419,6 +552,8 @@ private:
         OFX::DoubleParam*   rotTo;
         OFX::DoubleParam*   opacityFrom;
         OFX::DoubleParam*   opacityTo;
+        OFX::DoubleParam*   defocusFrom;
+        OFX::DoubleParam*   defocusTo;
         OFX::Double2DParam* anchor;
         OFX::ChoiceParam*   easingPreset;
         OFX::DoubleParam*   easeIn;
@@ -509,6 +644,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     (void)fetchBooleanParam(kParamShowTimeline);
     (void)fetchBooleanParam(kParamShowPath);
     (void)fetchBooleanParam(kParamShowOpacity);
+    (void)fetchBooleanParam(kParamShowDefocus);
     (void)fetchBooleanParam(kParamDragPreview);
     (void)fetchBooleanParam(kParamLoadFromOverlay);
     (void)fetchBooleanParam(kParamQuickFromOverlay);
@@ -535,6 +671,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
     _baseTiltX     = fetchDoubleParam  (kParamBaseTiltX);
     _baseSwivelY   = fetchDoubleParam  (kParamBaseSwivelY);
     _baseOpacity   = fetchDoubleParam  (kParamBaseOpacity);
+    _baseDefocus   = fetchDoubleParam  (kParamBaseDefocus);
     _baseAnchor    = fetchDouble2DParam(kParamBaseAnchor);
 
     _blurEnabled  = fetchBooleanParam(kParamBlurEnabled);
@@ -563,6 +700,7 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.tiltOffset    = fetchDoubleParam  (StageParam(kParamTiltOffset,    i));
         s.swivelOffset  = fetchDoubleParam  (StageParam(kParamSwivelOffset,  i));
         s.opacityOffset = fetchDoubleParam  (StageParam(kParamOpacityOffset, i));
+        s.defocusOffset = fetchDoubleParam  (StageParam(kParamDefocusOffset, i));
         s.enabled       = fetchBooleanParam (StageParam(kParamEnabled,       i));
         s.timingAnchor  = fetchChoiceParam  (StageParam(kParamAnchor2,       i));
         s.startFrame    = fetchDoubleParam  (StageParam(kParamStartFrame,    i));
@@ -587,6 +725,8 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.rotTo         = fetchDoubleParam  (StageParam(kParamRotTo,         i));
         s.opacityFrom   = fetchDoubleParam  (StageParam(kParamOpacityFrom,   i));
         s.opacityTo     = fetchDoubleParam  (StageParam(kParamOpacityTo,     i));
+        s.defocusFrom   = fetchDoubleParam  (StageParam(kParamDefocusFrom,   i));
+        s.defocusTo     = fetchDoubleParam  (StageParam(kParamDefocusTo,     i));
         s.anchor        = fetchDouble2DParam(StageParam(kParamAnchor,        i));
         s.easingPreset  = fetchChoiceParam  (StageParam(kParamEasingPreset,  i));
         s.easeIn        = fetchDoubleParam  (StageParam(kParamEaseIn,        i));
@@ -694,6 +834,7 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         b.tiltX     = static_cast<float>(_baseTiltX->getValueAtTime(p_Time));
         b.swivelY   = static_cast<float>(_baseSwivelY->getValueAtTime(p_Time));
         b.opacity   = static_cast<float>(_baseOpacity->getValueAtTime(p_Time) * 0.01);
+        b.defocus   = static_cast<float>(_baseDefocus->getValueAtTime(p_Time));
 
         double bx = 0.0, by = 0.0;
         _basePos->getValueAtTime(p_Time, bx, by);
@@ -756,6 +897,8 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         // Parameters are percentages for familiarity; the engine works in 0..1.
         s.opacityFrom   = static_cast<float>(h.opacityFrom->getValueAtTime(p_Time) * 0.01);
         s.opacityTo     = static_cast<float>(h.opacityTo->getValueAtTime(p_Time) * 0.01);
+        s.defocusFrom   = static_cast<float>(h.defocusFrom->getValueAtTime(p_Time));
+        s.defocusTo     = static_cast<float>(h.defocusTo->getValueAtTime(p_Time));
 
         double x = 0.0, y = 0.0;
         h.posFrom->getValueAtTime(p_Time, x, y);
@@ -775,6 +918,7 @@ AnimParams MultiTransformPlugin::fetchAnimParams(double p_Time) const
         s.offsetTilt    = static_cast<float>(h.tiltOffset->getValueAtTime(p_Time));
         s.offsetSwivel  = static_cast<float>(h.swivelOffset->getValueAtTime(p_Time));
         s.offsetOpacity = static_cast<float>(h.opacityOffset->getValueAtTime(p_Time));
+        s.offsetDefocus = static_cast<float>(h.defocusOffset->getValueAtTime(p_Time));
 
         // The amounts are the single source of truth; the preset dropdown only
         // ever stamps values into them.
@@ -863,6 +1007,8 @@ mtx::PresetStage MultiTransformPlugin::captureStage(int i) const
     s.swivelYTo   = static_cast<float>(h.swivelYTo->getValue());
     s.opacityFrom = static_cast<float>(h.opacityFrom->getValue());
     s.opacityTo   = static_cast<float>(h.opacityTo->getValue());
+    s.defocusFrom = static_cast<float>(h.defocusFrom->getValue());
+    s.defocusTo   = static_cast<float>(h.defocusTo->getValue());
 
     double x = 0.0, y = 0.0;
     h.posFrom->getValue(x, y); s.posXFrom = static_cast<float>(x); s.posYFrom = static_cast<float>(y);
@@ -877,6 +1023,7 @@ mtx::PresetStage MultiTransformPlugin::captureStage(int i) const
     s.offsetTilt    = static_cast<float>(h.tiltOffset->getValue());
     s.offsetSwivel  = static_cast<float>(h.swivelOffset->getValue());
     s.offsetOpacity = static_cast<float>(h.opacityOffset->getValue());
+    s.offsetDefocus = static_cast<float>(h.defocusOffset->getValue());
 
     h.easingPreset->getValue(s.easingPreset);
     s.easeIn        = static_cast<float>(h.easeIn->getValue());
@@ -921,6 +1068,7 @@ mtx::PresetData MultiTransformPlugin::capturePreset(bool wholeEffect) const
         b.tiltX     = static_cast<float>(_baseTiltX->getValue());
         b.swivelY   = static_cast<float>(_baseSwivelY->getValue());
         b.opacity   = static_cast<float>(_baseOpacity->getValue() * 0.01);
+        b.defocus   = static_cast<float>(_baseDefocus->getValue());
 
         double bx = 0.0, by = 0.0;
         _basePos->getValue(bx, by);    b.posX    = static_cast<float>(bx); b.posY    = static_cast<float>(by);
@@ -961,6 +1109,8 @@ void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
     h.swivelYTo->setValue(s.swivelYTo);
     h.opacityFrom->setValue(s.opacityFrom);
     h.opacityTo->setValue(s.opacityTo);
+    h.defocusFrom->setValue(s.defocusFrom);
+    h.defocusTo->setValue(s.defocusTo);
 
     h.posFrom->setValue(s.posXFrom, s.posYFrom);
     h.posTo->setValue(s.posXTo, s.posYTo);
@@ -973,6 +1123,7 @@ void MultiTransformPlugin::applyStage(int i, const mtx::PresetStage& s)
     h.tiltOffset->setValue(s.offsetTilt);
     h.swivelOffset->setValue(s.offsetSwivel);
     h.opacityOffset->setValue(s.offsetOpacity);
+    h.defocusOffset->setValue(s.offsetDefocus);
 
     // The amounts are the source of truth for the curve; the dropdown is only a
     // label for them. Both are restored verbatim, which is safe only because
@@ -1171,6 +1322,7 @@ void MultiTransformPlugin::flattenToFirstStage()
         _baseLinkScale->setValue(true); _basePos->setValue(0.0, 0.0);
         _baseRot->setValue(0.0);        _baseTiltX->setValue(0.0);
         _baseSwivelY->setValue(0.0);    _baseOpacity->setValue(100.0);
+        _baseDefocus->setValue(0.0);
         _baseAnchor->setValue(0.5, 0.5);
 
         // Stage 1 holds the flattened pose at both ends. A hold rather than a
@@ -1192,6 +1344,7 @@ void MultiTransformPlugin::flattenToFirstStage()
         // PresetStage holds raw parameter values and the Opacity parameter is a
         // percentage. Without this the whole animation flattened to one percent.
         s.opacityFrom = f.opacity * 100.0f; s.opacityTo = f.opacity * 100.0f;
+        s.defocusFrom = f.defocus;          s.defocusTo = f.defocus;
 
         // Tilt and swivel are orthographic scale factors, so the decomposition
         // has already absorbed them into scaleX and scaleY.
@@ -1463,6 +1616,7 @@ void MultiTransformPlugin::transferEnds(int stage, int mode)
         { h.tiltXFrom,   h.tiltXTo   },
         { h.swivelYFrom, h.swivelYTo },
         { h.opacityFrom, h.opacityTo },
+        { h.defocusFrom, h.defocusTo },
     };
 
     const char* label = (mode == 0) ? "Copy A to B"
@@ -1537,6 +1691,7 @@ void MultiTransformPlugin::applyPreset(const mtx::PresetData& d)
         _baseTiltX->setValue(d.base.tiltX);
         _baseSwivelY->setValue(d.base.swivelY);
         _baseOpacity->setValue(d.base.opacity * 100.0);
+        _baseDefocus->setValue(d.base.defocus);
         _baseAnchor->setValue(d.base.anchorX, d.base.anchorY);
 
         for (int i = 0; i < kMaxStages; ++i) applyStage(i, d.stages[i]);
@@ -1730,6 +1885,18 @@ void MultiTransformPlugin::bakeToFusion()
     if (aspectVaries)
         caveats += "\n- Non-uniform scale (Scale X different from Scale Y) is not baked; the "
                    "Transform uses the X scale for both axes.";
+    {
+        bool anyBlur = std::fabs(a.base.defocus) > 1e-4f;
+        for (int i = 0; i < a.stageCount && i < kMaxStages; ++i)
+        {
+            const Stage& st = a.stages[i];
+            if (st.enabled && (std::fabs(st.defocusFrom) > 1e-4f || std::fabs(st.defocusTo) > 1e-4f))
+                anyBlur = true;
+        }
+        if (anyBlur)
+            caveats += "\n- Blur is not baked: a Transform has no blur. Add a Fusion Blur node "
+                       "after it if the shot needs one.";
+    }
     if (baked.hadMirror)
         caveats += "\n- The pose mirrors (a swivel past 90 degrees); a Transform cannot, so "
                    "the mirrored part is not represented.";
@@ -1978,6 +2145,7 @@ void MultiTransformPlugin::syncStageVisibility()
         s.tiltOffset->setIsSecret(hidden);
         s.swivelOffset->setIsSecret(hidden);
         s.opacityOffset->setIsSecret(hidden);
+        s.defocusOffset->setIsSecret(hidden);
         s.pathReset->setIsSecret(hidden);
 
         s.enabled->setIsSecret(hidden);
@@ -1999,6 +2167,7 @@ void MultiTransformPlugin::syncStageVisibility()
         s.tiltXFrom->setIsSecret(hidden);
         s.swivelYFrom->setIsSecret(hidden);
         s.opacityFrom->setIsSecret(hidden);
+        s.defocusFrom->setIsSecret(hidden);
 
         s.scaleTo->setIsSecret(hidden);
         s.posTo->setIsSecret(hidden);
@@ -2006,6 +2175,7 @@ void MultiTransformPlugin::syncStageVisibility()
         s.tiltXTo->setIsSecret(hidden);
         s.swivelYTo->setIsSecret(hidden);
         s.opacityTo->setIsSecret(hidden);
+        s.defocusTo->setIsSecret(hidden);
 
         // Same combined rule as the bounce amounts: visible only when the stage
         // is active AND the axes are unlinked.
@@ -2159,7 +2329,7 @@ bool OutputIrrelevant(const std::string& n)
         || n == kParamOutAngle   || n == kParamOutOpacity
         || n == kParamActiveStage || n == kParamEditTarget
         || n == kParamShowCurve  || n == kParamShowLibrary || n == kParamShowTimeline
-        || n == kParamShowPath   || n == kParamShowOpacity
+        || n == kParamShowPath   || n == kParamShowOpacity || n == kParamShowDefocus
         || n == kParamDragPreview || n == kParamPresetFolder
         || n == kParamLinkedName || n == kParamUpdateOutputs;
 }
@@ -2295,6 +2465,7 @@ void MultiTransformPlugin::changedParamImpl(const OFX::InstanceChangedArgs& p_Ar
         _baseTiltX->setValue(0.0);
         _baseSwivelY->setValue(0.0);
         _baseOpacity->setValue(100.0);
+        _baseDefocus->setValue(0.0);
         _baseAnchor->setValue(0.5, 0.5);
         syncStageVisibility();   // Scale Y goes back into hiding with the link
         return;
@@ -2525,6 +2696,7 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     // the sampler so the pixels are still read from where they really are.
     const OfxRectI db = dst->getBounds();
     int srcOriginX = 0, srcOriginY = 0;
+    float defocusPx = 0.0f;
 
     // The overlay takes its frame from here rather than asking the host for a
     // region of definition -- see FrameBounds.h for the crash that made it so.
@@ -2571,6 +2743,13 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
                                    static_cast<float>(clipTime), w, h);
 
         addPreviewGhost(st, anim, clipTime, w, h);
+
+        // The radius is authored in full-resolution pixels; a host rendering
+        // at a reduced scale (proxy, playback optimisation) needs it scaled
+        // down with everything else, or a proxy frame would look several
+        // times blurrier than the full-size one.
+        const double rs = p_Args.renderScale.x > 1e-9 ? p_Args.renderScale.x : 1.0;
+        defocusPx = EvaluateDefocus(anim, static_cast<float>(clipTime)) * static_cast<float>(rs);
     }
 
     TransformProcessor processor(*this);
@@ -2582,8 +2761,14 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     processor.setParams(st,
                         static_cast<FilterMode>(filterIdx),
                         static_cast<EdgeMode>(edgeIdx));
+    processor.setDefocus(defocusPx);
 
-    processor.process();
+    // CUDA blurs inside its own launch; only the CPU path needs the whole-frame
+    // detour, because process() would hand it the frame a strip at a time.
+    if (mtx::DefocusActive(defocusPx) && !p_Args.isEnabledCudaRender)
+        processor.processDefocusedCpu();
+    else
+        processor.process();
 
     // One line per dispatch kind with what it cost. The first render of a kind
     // is not representative -- it pays JIT and cache warm-up -- but the order of
@@ -2882,13 +3067,14 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
     // stage of the four.
     {
         struct OffsetSpec { const char* param; const char* label; const char* what; };
-        const OffsetSpec offs[6] = {
+        const OffsetSpec offs[7] = {
             { kParamPosOffset,     "Position Offset", "the move along the motion path" },
             { kParamScaleOffset,   "Scale Offset",    "both scale axes"                },
             { kParamRotOffset,     "Rotation Offset", "the in-plane rotation"          },
             { kParamTiltOffset,    "Tilt Offset",     "the tilt about the X axis"      },
             { kParamSwivelOffset,  "Swivel Offset",   "the swivel about the Y axis"    },
             { kParamOpacityOffset, "Opacity Offset",  "the fade"                       },
+            { kParamDefocusOffset, "Blur Offset",     "the blur"                       },
         };
 
         for (const OffsetSpec& o : offs)
@@ -2987,6 +3173,15 @@ void DefineStage(OFX::ImageEffectDescriptor& desc, PageParamDescriptor* page, in
                      "or the reverse for a fade out. Opacity animates on this stage's own "
                      "timing and easing, so a fade can be staggered against the movement.",
                      100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
+
+        DefineDouble(desc, page, g,
+                     StageParam(end.isTo ? kParamDefocusTo : kParamDefocusFrom, i), "Blur",
+                     "Gaussian blur radius in pixels. Set A to 20 and B to 0 to focus in, or "
+                     "the reverse to soften out. Stages add their blur together, and it "
+                     "animates on this stage's own timing and easing. Applied to the "
+                     "transformed image as a whole, after the move -- a defocus, not a "
+                     "motion blur.",
+                     0.0, 0.0, 2000.0, 0.0, 100.0, 0.5);
 
     }
 
@@ -3350,6 +3545,14 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
     showOpacity->setParent(*gOverlay);
     page->addChild(*showOpacity);
 
+    BooleanParamDescriptor* showDefocus = p_Desc.defineBooleanParam(kParamShowDefocus);
+    showDefocus->setLabels("Show Blur Slider", "Blur Slider", "Show Blur Slider");
+    showDefocus->setHint("Draw the blur slider down the left edge of the viewer, beside the "
+                         "opacity slider. Also toggled by the BLUR button in the overlay.");
+    showDefocus->setDefault(false);
+    showDefocus->setParent(*gOverlay);
+    page->addChild(*showDefocus);
+
     BooleanParamDescriptor* showLib = p_Desc.defineBooleanParam(kParamShowLibrary);
     showLib->setLabels("Show Curve Library", "Curve Library", "Show Curve Library");
     showLib->setHint("Draw the saved-curve picker in the viewer overlay. Also toggled by the "
@@ -3415,6 +3618,11 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
                  "Resting opacity as a percentage. Multiplies with each stage's fade, so a "
                  "base of 50 and a stage fading 0 to 100 ends at 50.",
                  100.0, 0.0, 100.0, 0.0, 100.0, 1.0);
+
+    DefineDouble(p_Desc, page, gBase, kParamBaseDefocus, "Blur",
+                 "Resting Gaussian blur radius in pixels. Adds to each stage's blur, so a "
+                 "base of 4 keeps a constant softness under the animation.",
+                 0.0, 0.0, 2000.0, 0.0, 100.0, 0.5);
 
     DefineDouble2D(p_Desc, page, gBase, kParamBaseAnchor, "Anchor",
                    "Point the resting scale and rotation pivot around. 0.5, 0.5 is the image "

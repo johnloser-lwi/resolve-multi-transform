@@ -61,6 +61,7 @@ static PresetData BusyPreset()
     d.base.tiltX     = -18.0f;
     d.base.swivelY   = 42.5f;
     d.base.opacity   = 0.75f;
+    d.base.defocus   = 2.25f;
     d.base.anchorX   = 0.2f;
     d.base.anchorY   = 0.9f;
 
@@ -89,6 +90,8 @@ static PresetData BusyPreset()
         s.swivelYTo    = 15.75f + i;
         s.opacityFrom  = 0.0f;
         s.opacityTo    = 1.0f;
+        s.defocusFrom  = 18.5f + i;
+        s.defocusTo    = 0.0f;
         s.anchorX      = 0.25f;
         s.anchorY      = 0.75f;
         s.pathC1X      = 0.3f;  s.pathC1Y = -0.4f;
@@ -99,6 +102,7 @@ static PresetData BusyPreset()
         s.offsetTilt   = 1.0f;
         s.offsetSwivel = -4.25f;
         s.offsetOpacity = 6.0f + i;
+        s.offsetDefocus = -3.5f + i;
         s.easingPreset = 7;      // Custom
         s.easeIn       = 33.0f;
         s.easeOut      = 66.0f;
@@ -136,6 +140,8 @@ static void CheckStagesEqual(const PresetStage& a, const PresetStage& b, const s
     CheckNear(a.swivelYTo,     b.swivelYTo,     1e-3, what + ": swivelYTo");
     CheckNear(a.opacityFrom,   b.opacityFrom,   1e-4, what + ": opacityFrom");
     CheckNear(a.opacityTo,     b.opacityTo,     1e-4, what + ": opacityTo");
+    CheckNear(a.defocusFrom,   b.defocusFrom,   1e-4, what + ": defocusFrom");
+    CheckNear(a.defocusTo,     b.defocusTo,     1e-4, what + ": defocusTo");
     CheckNear(a.anchorX,       b.anchorX,       1e-4, what + ": anchorX");
     CheckNear(a.anchorY,       b.anchorY,       1e-4, what + ": anchorY");
     CheckNear(a.pathC1X,       b.pathC1X,       1e-4, what + ": pathC1X");
@@ -148,6 +154,7 @@ static void CheckStagesEqual(const PresetStage& a, const PresetStage& b, const s
     CheckNear(a.offsetTilt,    b.offsetTilt,    1e-3, what + ": offsetTilt");
     CheckNear(a.offsetSwivel,  b.offsetSwivel,  1e-3, what + ": offsetSwivel");
     CheckNear(a.offsetOpacity, b.offsetOpacity, 1e-3, what + ": offsetOpacity");
+    CheckNear(a.offsetDefocus, b.offsetDefocus, 1e-3, what + ": offsetDefocus");
     Check(a.easingPreset == b.easingPreset, what + ": easingPreset");
     CheckNear(a.easeIn,        b.easeIn,        1e-3, what + ": easeIn");
     CheckNear(a.easeOut,       b.easeOut,       1e-3, what + ": easeOut");
@@ -183,6 +190,7 @@ static void TestRoundTrip()
     Check(out.blurAdaptive == in.blurAdaptive, "blur adaptive survives");
 
     CheckNear(out.base.scaleX,  in.base.scaleX,  1e-4, "base scale X survives");
+    CheckNear(out.base.defocus, in.base.defocus, 1e-4, "base blur survives");
     CheckNear(out.base.scaleY,  in.base.scaleY,  1e-4, "base scale Y survives");
     Check(out.base.linkScale == in.base.linkScale, "base link survives");
     CheckNear(out.base.posX,    in.base.posX,    1e-4, "base position X survives");
@@ -272,6 +280,12 @@ static void TestMissingKeysUseDefaults()
     const PresetStage def = PresetStage::Default();
     CheckNear(out.stages[0].scaleTo, 2.5, 1e-4, "the stated key is applied");
     CheckNear(out.stages[0].scaleFrom, def.scaleFrom, 1e-4, "an absent key uses the default");
+
+    // Every preset written before the blur existed lacks its keys; those must
+    // load sharp, not inherit whatever blur the target held.
+    CheckNear(out.stages[0].defocusFrom, 0.0, 1e-6, "an old preset loads without blur (A)");
+    CheckNear(out.stages[0].defocusTo,   0.0, 1e-6, "an old preset loads without blur (B)");
+    CheckNear(out.base.defocus,          0.0, 1e-6, "an old preset loads without base blur");
     CheckNear(out.stages[0].easeIn,    def.easeIn,    1e-4, "absent easing uses the default");
     Check(out.stages[0].anchor == def.anchor, "an absent anchor uses the default");
 

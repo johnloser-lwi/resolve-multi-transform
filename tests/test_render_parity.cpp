@@ -8,12 +8,14 @@
 // late and is miserable to attribute.
 
 #include "AnimEngine.h"
+#include "Defocus.h"
 #include "Sampler.h"
 #include "render/CudaRender.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -446,9 +448,116 @@ static void RunDepthChecks(int W, int H)
     }
 }
 
+/** Reference blurred render: what the plugin's CPU path does, built from the
+ *  shared Defocus.h routines -- the transform into a padded float buffer, the
+ *  three passes, the interior stored at the destination's depth. */
+static void RenderCpuDefocused(const std::vector<float>& src, int w, int h,
+                               std::vector<unsigned char>& dst, int dstDepth,
+                               const SampleTransforms& st, FilterMode filter, EdgeMode edge,
+                               float radius)
+{
+    ImageView v;
+    v.data = reinterpret_cast<const unsigned char*>(src.data());
+    v.width = w; v.height = h; v.rowStrideBytes = w * 16; v.depth = kDepthFloat;
+
+    const int pad = DefocusPad(radius);
+    const int pw = w + 2 * pad, ph = h + 2 * pad;
+    std::vector<float> a(static_cast<size_t>(pw) * ph * 4), b(a.size());
+    for (int py = 0; py < ph; ++py)
+        for (int px = 0; px < pw; ++px)
+            RenderPixel(v, st,
+                        static_cast<float>(px - pad) + 0.5f,
+                        static_cast<float>(py - pad) + 0.5f,
+                        filter, edge, &a[(static_cast<size_t>(py) * pw + px) * 4]);
+
+    DefocusImage(a.data(), b.data(), pw, ph, radius);
+
+    const int bpp = 4 * BytesPerChannel(dstDepth);
+    dst.assign(static_cast<size_t>(w) * h * bpp, 0);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            StorePixel(&dst[(static_cast<size_t>(y) * w + x) * bpp], dstDepth,
+                       &a[(static_cast<size_t>(y + pad) * pw + (x + pad)) * 4]);
+}
+
+/** The blur ("defocus"): CPU and CUDA must produce the same pixels.
+ *
+ *  Both run DefocusBoxLine, the same additions in the same order, but nvcc
+ *  may contract (sum + f*edge) * inv into an FMA where the host compiler does
+ *  not, and the running sums carry that across a whole line. So the bound is a
+ *  small tolerance, not bit equality -- still three orders of magnitude below
+ *  one 8-bit step. */
+static void RunDefocusChecks(int W, int H)
+{
+    std::printf("Blur (defocus)\n");
+
+    const std::vector<float> src = MakeTestImage(W, H);
+
+    AnimParams a = MakeAnim(1.3f, 12.0f, 0.05f, -0.03f);
+    const SampleTransforms st = BuildSampleTransforms(a, BlurParams::Default(), 15.0f,
+                                                      static_cast<float>(W),
+                                                      static_cast<float>(H));
+
+    struct D { const char* name; float radius; EdgeMode edge; int depth; double tol; };
+    const D cases[] = {
+        { "radius 0.5 (fractional window)", 0.5f,  kEdgeBlack, kDepthFloat, 2e-4 },
+        { "radius 4",                       4.0f,  kEdgeBlack, kDepthFloat, 2e-4 },
+        { "radius 23.7",                    23.7f, kEdgeBlack, kDepthFloat, 5e-4 },
+        { "radius 12, edge clamp",          12.0f, kEdgeClamp, kDepthFloat, 5e-4 },
+        { "radius 9, 8-bit output",         9.0f,  kEdgeBlack, kDepthByte,  1.0  },  // in codes
+        { "radius 9, half output",          9.0f,  kEdgeBlack, kDepthHalf,  2e-3 },
+    };
+
+    for (const D& d : cases)
+    {
+        std::vector<unsigned char> cpu, gpu;
+        RenderCpuDefocused(src, W, H, cpu, d.depth, st, kFilterBilinear, d.edge, d.radius);
+        gpu.assign(cpu.size(), 0);
+        RunMultiTransformCudaSync(src.data(), W, H, gpu.data(), W, H, st,
+                                  kFilterBilinear, d.edge, 0, 0,
+                                  kDepthFloat, d.depth, d.radius);
+
+        double worst = 0.0;
+        const int count = W * H * 4;
+        for (int i = 0; i < count; ++i)
+        {
+            double cv, gv;
+            if (d.depth == kDepthByte)      { cv = cpu[i]; gv = gpu[i]; }
+            else if (d.depth == kDepthHalf)
+            {
+                unsigned short ch, gh;
+                std::memcpy(&ch, &cpu[i * 2], 2); std::memcpy(&gh, &gpu[i * 2], 2);
+                cv = HalfToFloat(ch); gv = HalfToFloat(gh);
+            }
+            else
+            {
+                float cf, gf;
+                std::memcpy(&cf, &cpu[i * 4], 4); std::memcpy(&gf, &gpu[i * 4], 4);
+                cv = cf; gv = gf;
+            }
+            worst = std::max(worst, std::fabs(cv - gv));
+        }
+        Report(d.name, worst <= d.tol, worst);
+    }
+
+    // And the blur is not a no-op dressed up: blurred CUDA output differs from
+    // the sharp render, by a lot, on this high-detail image.
+    {
+        std::vector<float> sharp(static_cast<size_t>(W) * H * 4), blurred(sharp.size());
+        RunMultiTransformCudaSync(src.data(), W, H, sharp.data(), W, H, st,
+                                  kFilterBilinear, kEdgeBlack, 0, 0, kDepthFloat, kDepthFloat, 0.0f);
+        RunMultiTransformCudaSync(src.data(), W, H, blurred.data(), W, H, st,
+                                  kFilterBilinear, kEdgeBlack, 0, 0, kDepthFloat, kDepthFloat, 8.0f);
+        const double d = MaxDiff(sharp, blurred);
+        Report("blur actually changes the image", d > 0.1, d);
+    }
+}
+
 int main()
 {
     std::printf("=== CPU vs CUDA parity ===\n");
+
+    RunDefocusChecks(256, 192);
 
     const int W = 256, H = 192;
 

@@ -125,6 +125,7 @@ struct OverlayContext
     bool showTimeline = true;
     bool showPath     = false;
     bool showOpacity  = false;
+    bool showDefocus  = false;
 
     /// Shift held. OFX's pen actions carry no modifier state at all -- PenArgs
     /// has position and pressure and nothing else -- so this is tracked from

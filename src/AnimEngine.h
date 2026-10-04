@@ -302,6 +302,7 @@ struct Stage
     float tiltXFrom,    tiltXTo;      ///< degrees about the horizontal axis
     float swivelYFrom,  swivelYTo;    ///< degrees about the vertical axis
     float opacityFrom,  opacityTo;    ///< 0..1
+    float defocusFrom,  defocusTo;    ///< blur radius, output pixels; 0 is sharp
     float anchorX,      anchorY;      ///< normalised, 0.5,0.5 == image centre
 
     // Motion path. Offsets, in normalised position units, of the two bezier
@@ -321,6 +322,7 @@ struct Stage
     // window opens, exactly as a stage holds before its start frame.
     float offsetPos,  offsetScale, offsetRot;
     float offsetTilt, offsetSwivel, offsetOpacity;
+    float offsetDefocus;
 
     Easing easing;
 
@@ -340,11 +342,13 @@ struct Stage
         s.tiltXFrom   = 0.0f; s.tiltXTo   = 0.0f;
         s.swivelYFrom = 0.0f; s.swivelYTo = 0.0f;
         s.opacityFrom = 1.0f; s.opacityTo = 1.0f;
+        s.defocusFrom = 0.0f; s.defocusTo = 0.0f;
         s.anchorX     = 0.5f; s.anchorY   = 0.5f;
         s.pathC1X     = 0.0f; s.pathC1Y   = 0.0f;
         s.pathC2X     = 0.0f; s.pathC2Y   = 0.0f;
         s.offsetPos   = 0.0f; s.offsetScale  = 0.0f; s.offsetRot     = 0.0f;
         s.offsetTilt  = 0.0f; s.offsetSwivel = 0.0f; s.offsetOpacity = 0.0f;
+        s.offsetDefocus = 0.0f;
         s.easing      = Easing::Smooth();
         return s;
     }
@@ -367,6 +371,7 @@ struct BasePose
     float tiltX;          ///< about the horizontal axis, degrees
     float swivelY;        ///< about the vertical axis, degrees
     float opacity;        ///< 0..1
+    float defocus;        ///< blur radius, output pixels
     float anchorX, anchorY;
 
     MTX_HD static BasePose Default()
@@ -376,6 +381,7 @@ struct BasePose
         b.posX   = 0.0f; b.posY   = 0.0f;
         b.rot    = 0.0f; b.tiltX  = 0.0f; b.swivelY = 0.0f;
         b.opacity = 1.0f;
+        b.defocus = 0.0f;
         b.anchorX = 0.5f; b.anchorY = 0.5f;
         return b;
     }
@@ -387,7 +393,8 @@ struct BasePose
         return fabsf(scaleX - 1.0f) <= e && fabsf(scaleY - 1.0f) <= e
             && fabsf(posX) <= e && fabsf(posY) <= e
             && fabsf(rot) <= e && fabsf(tiltX) <= e && fabsf(swivelY) <= e
-            && fabsf(opacity - 1.0f) <= e;
+            && fabsf(opacity - 1.0f) <= e
+            && fabsf(defocus) <= e;
     }
 };
 
@@ -748,6 +755,29 @@ MTX_HD inline float EvaluateOpacity(const AnimParams& a, float t)
     return Clamp01(opacity);
 }
 
+/** @brief Combined blur radius, in output pixels, at time @p t.
+ *
+ * Stages ADD, where opacity multiplies: a blur is a distance, and two stages
+ * each softening by 4 px read as one 8 px softening, not as some product of
+ * the two. The base adds too, so a resting softness survives the animation.
+ * Easing overshoot can push a stage's lerp below zero, and a negative radius
+ * is meaningless, so the total is clamped.
+ */
+MTX_HD inline float EvaluateDefocus(const AnimParams& a, float t)
+{
+    float radius = a.base.defocus;
+
+    const int count = a.stageCount < kMaxStages ? a.stageCount : kMaxStages;
+    for (int i = 0; i < count; ++i)
+    {
+        const Stage& s = a.stages[i];
+        if (!s.enabled) continue;
+        radius += Lerp(s.defocusFrom, s.defocusTo,
+                       StageProgress(s, StageLocalTime(a, s, t) - s.offsetDefocus));
+    }
+    return radius > 0.0f ? radius : 0.0f;
+}
+
 /** @brief A whole animation collapsed to one static pose.
  *
  * Always expressed about the image centre, because the anchor is a free choice
@@ -760,6 +790,7 @@ struct FlatPose
     float rot;              ///< degrees
     float posX, posY;       ///< normalised, as the position parameters are
     float opacity;          ///< 0..1
+    float defocus;          ///< blur radius, output pixels
 
     /// How much shear had to be discarded, relative to the pose's own size.
     /// Zero for anything built from rotations and uniform scales; non-zero only
@@ -832,6 +863,7 @@ inline FlatPose FlattenTransform(const AnimParams& a, float t, float width, floa
     f.posY = height > 1e-9f ? ty / height : 0.0f;
 
     f.opacity = EvaluateOpacity(a, t);
+    f.defocus = EvaluateDefocus(a, t);
 
     // Relative to the pose's size, so the caller can judge "is this a lot"
     // without knowing the frame dimensions.
@@ -861,6 +893,7 @@ MTX_HD inline float MaxChannelOffset(const Stage& s)
     if (s.offsetTilt    > m) m = s.offsetTilt;
     if (s.offsetSwivel  > m) m = s.offsetSwivel;
     if (s.offsetOpacity > m) m = s.offsetOpacity;
+    if (s.offsetDefocus > m) m = s.offsetDefocus;
     return m;
 }
 
@@ -1067,6 +1100,7 @@ inline bool StageMoves(const Stage& s)
     if (differs(s.tiltXFrom, s.tiltXTo))     return true;
     if (differs(s.swivelYFrom, s.swivelYTo)) return true;
     if (differs(s.opacityFrom, s.opacityTo)) return true;
+    if (differs(s.defocusFrom, s.defocusTo)) return true;
 
     // A bent path moves even when the two endpoints coincide.
     if (fabsf(s.pathC1X) > kEps || fabsf(s.pathC1Y) > kEps) return true;
@@ -1104,6 +1138,7 @@ inline bool IsNoOp(const AnimParams& a)
         if (!near(s.posYFrom, 0.0f)    || !near(s.posYTo, 0.0f))    return false;
         if (!near(s.rotFrom, 0.0f)     || !near(s.rotTo, 0.0f))     return false;
         if (!near(s.opacityFrom, 1.0f) || !near(s.opacityTo, 1.0f)) return false;
+        if (!near(s.defocusFrom, 0.0f) || !near(s.defocusTo, 0.0f)) return false;
 
         // Path offsets bulge the trajectory away from the endpoints, so a stage
         // that starts and ends at the same place can still move in between.

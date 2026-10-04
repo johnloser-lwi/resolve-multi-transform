@@ -61,6 +61,7 @@ private:
     OfxRectD timelineToggleRect(const OverlayContext& c) const;
     OfxRectD pathToggleRect(const OverlayContext& c) const;
     OfxRectD opacityToggleRect(const OverlayContext& c) const;
+    OfxRectD defocusToggleRect(const OverlayContext& c) const;
     OfxRectD removeStageRect(const OverlayContext& c) const;
     OfxRectD enableStageRect(const OverlayContext& c) const;
     OfxRectD quickToggleRect(const OverlayContext& c) const;
@@ -77,6 +78,7 @@ private:
     LibraryWidget  _library;
     QuickWidget    _quick;
     OpacityWidget  _opacity;
+    DefocusWidget  _defocus;
 
     /// Widget that claimed the current drag, so motion/up go to the same place.
     Widget* _captured = nullptr;

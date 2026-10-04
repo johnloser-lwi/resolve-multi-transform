@@ -284,6 +284,37 @@ Opacity composes the same way transforms do — two stages each at 50% leave 25%
 correctly: with motion blur on, a fade mid-shutter is sampled per shutter step rather than
 frozen at the frame-centre value.
 
+### Blur
+
+Each panel also has a **Blur** radius in pixels: a Gaussian softening of the transformed
+image, not a motion blur. It animates like opacity:
+
+- **Focus in** — From Blur `20`, To Blur `0`
+- **Soften out** — From Blur `0`, To Blur `20`
+
+It has its own **Blur Offset** in the stage timing, and a resting **Blur** in the base
+transform. Where opacity multiplies across stages, blur **adds**: a blur is a distance, and two
+stages softening by 4 px read as one 8 px softening. The overlay has a **BLUR** button beside
+OPAC that shows a slider next to the opacity one; its track is quadratic (fine control over the
+first few pixels) and tops out at 100 px, and a double-click returns it to sharp.
+
+How it works, and what it costs:
+
+- The blur is a separable box filter run three times, which is visually indistinguishable from a
+  Gaussian. It is borrowed from Text Animator, along with its key details: it runs on
+  premultiplied pixels so transparent edges blur cleanly, and its window is fractional, so an
+  easing blur fades smoothly to sharp instead of stepping 3 px, 2 px, 1 px, off.
+- The frame is rendered with a border around it before blurring, so the frame edge blurs against
+  whatever lies beyond it (more image, or transparency) rather than fading at the edge. With edge
+  mode **Black**, an image that exactly fills the frame does blur into transparency at its own
+  borders, as a layer should. Use **Clamp** or **Mirror** to keep the edges solid.
+- On the GPU it costs about **4 ms per UHD frame**, roughly the same at 2 px or 20 px, and
+  5 ms at 100 px. The transform alone is about 0.3 ms, so a blurred instance costs roughly ten
+  unblurred ones. It runs only while the radius is above zero, so a stage that ends sharp stops
+  paying once it gets there.
+- **Bake to Fusion** cannot carry a blur (a Fusion Transform has no blur) and says so in its
+  message. The Output Link has no blur channel either.
+
 ### Setting timing
 
 Each stage has two buttons:

@@ -17,7 +17,7 @@ constexpr double kTabHeightPx = 18.0;
 constexpr double kTabGapPx    = 4.0;
 constexpr double kToggleWPx   = 54.0;   // preferred width
 constexpr double kToggleMinPx = 42.0;   // floor: still fits CURVE, the longest label
-constexpr int    kToggleCount = 6;      // widest row: TIME PATH OPAC CURVE LIB LOAD
+constexpr int    kToggleCount = 7;      // widest row: TIME PATH OPAC BLUR CURVE LIB LOAD
 } // namespace
 
 MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
@@ -53,6 +53,8 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamRotTo,        i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamOpacityFrom,  i)));
             addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamOpacityTo,    i)));
+            addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamDefocusFrom,  i)));
+            addParamToSlaveTo(_effect->fetchDoubleParam  (StageParam(kParamDefocusTo,    i)));
             addParamToSlaveTo(_effect->fetchDouble2DParam(StageParam(kParamAnchor,       i)));
             addParamToSlaveTo(_effect->fetchDouble2DParam(StageParam(kParamPathC1,       i)));
             addParamToSlaveTo(_effect->fetchDouble2DParam(StageParam(kParamPathC2,       i)));
@@ -265,6 +267,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     out.showTimeline= GetBool(_effect, kParamShowTimeline, time);
     out.showPath    = GetBool(_effect, kParamShowPath, time);
     out.showOpacity = GetBool(_effect, kParamShowOpacity, time);
+    out.showDefocus = GetBool(_effect, kParamShowDefocus, time);
     out.shiftHeld   = _shiftHeld;
     out.ctrlHeld    = _ctrlHeld;
 
@@ -287,6 +290,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         b.tiltX     = static_cast<float>(GetDouble(_effect, kParamBaseTiltX,   time));
         b.swivelY   = static_cast<float>(GetDouble(_effect, kParamBaseSwivelY, time));
         b.opacity   = static_cast<float>(GetDouble(_effect, kParamBaseOpacity, time) * 0.01);
+        b.defocus   = static_cast<float>(GetDouble(_effect, kParamBaseDefocus, time));
 
         double bx = 0.0, by = 0.0;
         GetDouble2D(_effect, kParamBasePos,    time, bx, by);
@@ -326,6 +330,8 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         s.swivelYTo   = static_cast<float>(GetDouble(_effect, StageParam(kParamSwivelYTo,   i), time));
         s.opacityFrom = static_cast<float>(GetDouble(_effect, StageParam(kParamOpacityFrom, i), time) * 0.01);
         s.opacityTo   = static_cast<float>(GetDouble(_effect, StageParam(kParamOpacityTo,   i), time) * 0.01);
+        s.defocusFrom = static_cast<float>(GetDouble(_effect, StageParam(kParamDefocusFrom, i), time));
+        s.defocusTo   = static_cast<float>(GetDouble(_effect, StageParam(kParamDefocusTo,   i), time));
 
         double x = 0.0, y = 0.0;
         GetDouble2D(_effect, StageParam(kParamPosFrom, i), time, x, y);
@@ -345,6 +351,7 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
         s.offsetTilt    = static_cast<float>(GetDouble(_effect, StageParam(kParamTiltOffset,    i), time));
         s.offsetSwivel  = static_cast<float>(GetDouble(_effect, StageParam(kParamSwivelOffset,  i), time));
         s.offsetOpacity = static_cast<float>(GetDouble(_effect, StageParam(kParamOpacityOffset, i), time));
+        s.offsetDefocus = static_cast<float>(GetDouble(_effect, StageParam(kParamDefocusOffset, i), time));
 
         s.easing = MakeEasing(
             static_cast<float>(GetDouble(_effect, StageParam(kParamEaseIn,        i), time)),
@@ -469,15 +476,20 @@ OfxRectD MultiTransformInteract::loadPresetRect(const OverlayContext& c) const
 
 OfxRectD MultiTransformInteract::timelineToggleRect(const OverlayContext& c) const
 {
-    return rightButtonRect(c, 5, kToggleWPx, 1);
+    return rightButtonRect(c, 6, kToggleWPx, 1);
 }
 
 OfxRectD MultiTransformInteract::pathToggleRect(const OverlayContext& c) const
 {
-    return rightButtonRect(c, 4, kToggleWPx, 1);
+    return rightButtonRect(c, 5, kToggleWPx, 1);
 }
 
 OfxRectD MultiTransformInteract::opacityToggleRect(const OverlayContext& c) const
+{
+    return rightButtonRect(c, 4, kToggleWPx, 1);
+}
+
+OfxRectD MultiTransformInteract::defocusToggleRect(const OverlayContext& c) const
 {
     return rightButtonRect(c, 3, kToggleWPx, 1);
 }
@@ -614,6 +626,7 @@ void MultiTransformInteract::drawToolbar(const OverlayContext& c)
     Button(c, timelineToggleRect(c), "TIME",  c.showTimeline, colours::kAccent);
     Button(c, pathToggleRect(c),     "PATH",  c.showPath,     colours::kAccent);
     Button(c, opacityToggleRect(c),  "OPAC",  c.showOpacity,  colours::kAccent);
+    Button(c, defocusToggleRect(c),  "BLUR",  c.showDefocus,  colours::kAccent);
     Button(c, curveToggleRect(c),    "CURVE", c.showCurve,    colours::kAccent);
     Button(c, libraryToggleRect(c),  "LIB",   c.showLibrary,  colours::kAccent);
 
@@ -736,13 +749,15 @@ bool MultiTransformInteract::toolbarHit(const OverlayContext& c, const OfxPointD
         bool        current;
         const char* undoName;
     };
-    const PanelToggle panels[3] = {
+    const PanelToggle panels[4] = {
         { &MultiTransformInteract::timelineToggleRect, kParamShowTimeline,
           c.showTimeline, "Show Timeline" },
         { &MultiTransformInteract::pathToggleRect,     kParamShowPath,
           c.showPath,     "Show Motion Path" },
         { &MultiTransformInteract::opacityToggleRect,  kParamShowOpacity,
           c.showOpacity,  "Show Opacity Slider" },
+        { &MultiTransformInteract::defocusToggleRect,  kParamShowDefocus,
+          c.showDefocus,  "Show Blur Slider" },
     };
 
     for (const PanelToggle& t : panels)
@@ -849,6 +864,7 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         _gizmo.layout(c);
         _path.layout(c);
         _opacity.layout(c);
+        _defocus.layout(c);
         _quick.layout(c);
 
         // Back to front: the gizmo lives on the image, the HUD panels above it.
@@ -857,6 +873,7 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
         _gizmo.draw(c);
         if (c.showPath)     _path.draw(c);
         if (c.showOpacity)  _opacity.draw(c);
+        if (c.showDefocus)  _defocus.draw(c);
         if (c.showTimeline) _timeline.draw(c);
         if (c.showCurve)    _curve.draw(c);
         drawToolbar(c);
@@ -892,6 +909,7 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         _gizmo.layout(c);
         _path.layout(c);
         _opacity.layout(c);
+        _defocus.layout(c);
         _quick.layout(c);
 
         const OfxPointD p = args.penPosition;
@@ -921,9 +939,10 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
         // Leaving one in the order would have it swallow clicks aimed at
         // whatever is underneath -- which the curve editor did to the motion
         // path handles once already.
-        Widget* order[6] = { c.showLibrary  ? &_library  : nullptr,
+        Widget* order[7] = { c.showLibrary  ? &_library  : nullptr,
                              c.showCurve    ? &_curve    : nullptr,
                              c.showOpacity  ? &_opacity  : nullptr,
+                             c.showDefocus  ? &_defocus  : nullptr,
                              c.showTimeline ? &_timeline : nullptr,
                              c.showPath     ? &_path     : nullptr,
                              &_gizmo };
@@ -983,6 +1002,7 @@ bool MultiTransformInteract::penMotion(const OFX::PenArgs& args)
         _gizmo.layout(c);
         _path.layout(c);
         _opacity.layout(c);
+        _defocus.layout(c);
 
         if (_captured->penMotion(c, args.penPosition))
         {

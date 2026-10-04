@@ -63,6 +63,7 @@ add_library(MultiTransform MODULE
     src/interact/PathWidget.cpp
     src/interact/LibraryWidget.cpp
     src/interact/OpacityWidget.cpp
+    src/interact/DefocusWidget.cpp
     src/interact/QuickWidget.cpp
 )
 target_include_directories(MultiTransform PRIVATE src)

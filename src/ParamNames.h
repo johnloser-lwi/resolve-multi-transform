@@ -19,6 +19,7 @@ constexpr const char* kParamShowLibrary    = "showCurveLibrary";
 constexpr const char* kParamShowTimeline   = "showTimeline";
 constexpr const char* kParamShowPath       = "showMotionPath";
 constexpr const char* kParamShowOpacity    = "showOpacitySlider";
+constexpr const char* kParamShowDefocus    = "showBlurSlider";
 
 /// Set while a gizmo drag is in progress, so the renderer draws a faded copy of
 /// the source at the pose being dragged. Hidden and **not persistent**: it is a
@@ -50,6 +51,7 @@ constexpr const char* kParamBaseRot        = "baseRot";
 constexpr const char* kParamBaseTiltX      = "baseTiltX";
 constexpr const char* kParamBaseSwivelY    = "baseSwivelY";
 constexpr const char* kParamBaseOpacity    = "baseOpacity";
+constexpr const char* kParamBaseDefocus    = "baseDefocus";   ///< "Blur" in the UI
 constexpr const char* kParamBaseAnchor     = "baseAnchor";
 constexpr const char* kParamBaseReset      = "baseReset";
 
@@ -145,6 +147,10 @@ constexpr const char* kParamRotFrom        = "rotFrom";
 constexpr const char* kParamRotTo          = "rotTo";
 constexpr const char* kParamOpacityFrom    = "opacityFrom";
 constexpr const char* kParamOpacityTo      = "opacityTo";
+// "Blur" in the interface. Named defocus here because every blur* identifier
+// already belongs to the motion blur (motionBlur, blurSamples, BlurParams).
+constexpr const char* kParamDefocusFrom    = "defocusFrom";
+constexpr const char* kParamDefocusTo      = "defocusTo";
 // --- Quick Control ---
 //
 // Eight one-shot actions behind a dropdown and a single Apply, instead of eight
@@ -212,6 +218,7 @@ constexpr const char* kParamRotOffset      = "rotOffset";
 constexpr const char* kParamTiltOffset     = "tiltOffset";
 constexpr const char* kParamSwivelOffset   = "swivelOffset";
 constexpr const char* kParamOpacityOffset  = "opacityOffset";
+constexpr const char* kParamDefocusOffset  = "defocusOffset";
 
 constexpr const char* kParamAnchor         = "anchor";
 constexpr const char* kParamPathC1         = "pathC1";      ///< offset of the first path handle

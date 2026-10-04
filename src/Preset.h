@@ -32,6 +32,7 @@ struct PresetStage
     float tiltXFrom, tiltXTo;
     float swivelYFrom, swivelYTo;
     float opacityFrom, opacityTo;
+    float defocusFrom, defocusTo;   ///< blur radius, pixels
     float anchorX, anchorY;
     float pathC1X, pathC1Y, pathC2X, pathC2Y;
 
@@ -40,6 +41,7 @@ struct PresetStage
     /// every channel on the stage's own clock, exactly the old behaviour.
     float offsetPos, offsetScale, offsetRot;
     float offsetTilt, offsetSwivel, offsetOpacity;
+    float offsetDefocus;
 
     int   easingPreset;
     float easeIn, easeOut, anticipation, overshoot;

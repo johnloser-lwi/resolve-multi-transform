@@ -15,6 +15,9 @@
  *
  * @param st per-shutter-sample inverse transforms, built once per render by
  *           BuildSampleTransforms. A count of 1 means no motion blur.
+ * @param defocusPx blur radius in render pixels; see Defocus.h. When active the
+ *           transform renders into a padded scratch buffer on the stream, is
+ *           blurred there, and is stored back at the destination's depth.
  * @param srcOriginX,srcOriginY where the source's pixel (0,0) sits in the
  *           destination's frame -- non-zero when a host crops the input to its
  *           domain of definition, as Fusion does. See ImageView::originX.
@@ -31,7 +34,8 @@ const char* RunMultiTransformCuda(void* pStream,
                                   int dstRowBytes, int dstDepth,
                                   const mtx::SampleTransforms& st,
                                   int filterMode, int edgeMode,
-                                  int srcOriginX = 0, int srcOriginY = 0);
+                                  int srcOriginX = 0, int srcOriginY = 0,
+                                  float defocusPx = 0.0f);
 
 /** @brief Host-memory, fully synchronous variant used by the parity test.
  *  Rows are assumed tightly packed for the given depth. */
@@ -40,4 +44,5 @@ void RunMultiTransformCudaSync(const void* hostSrc, int srcWidth, int srcHeight,
                                const mtx::SampleTransforms& st,
                                int filterMode, int edgeMode,
                                int srcOriginX = 0, int srcOriginY = 0,
-                               int srcDepth = mtx::kDepthFloat, int dstDepth = mtx::kDepthFloat);
+                               int srcDepth = mtx::kDepthFloat, int dstDepth = mtx::kDepthFloat,
+                               float defocusPx = 0.0f);

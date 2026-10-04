@@ -16,7 +16,8 @@ using namespace mtx;
 
 float BenchMultiTransformCuda(const float* hostSrc, int width, int height,
                               const SampleTransforms& st,
-                              int filterMode, int edgeMode, int iterations);
+                              int filterMode, int edgeMode, int iterations,
+                              float defocusPx = 0.0f);
 
 namespace {
 
@@ -50,11 +51,11 @@ AnimParams MovingAnim(float scaleTo, float posXTo)
 }
 
 void BenchGpu(const char* name, const std::vector<float>& src,
-              const AnimParams& a, const BlurParams& b, float time)
+              const AnimParams& a, const BlurParams& b, float time, float defocusPx = 0.0f)
 {
     const SampleTransforms st = BuildSampleTransforms(a, b, time, kWidth, kHeight);
     const float ms = BenchMultiTransformCuda(src.data(), kWidth, kHeight, st,
-                                             kFilterBilinear, kEdgeBlack, 50);
+                                             kFilterBilinear, kEdgeBlack, 50, defocusPx);
     std::printf("  %-40s %2d sample(s)  %7.3f ms   (%5.1f fps, %4.1f instances @ 24fps)\n",
                 name, st.count, ms,
                 ms > 0.0f ? 1000.0f / ms : 0.0f,
@@ -118,6 +119,12 @@ int main()
     BenchGpu("static pose, blur 64 fixed",      src, staticPose, fixed64,  100.0f);
 
     std::printf("\n");
+
+    // Gaussian blur ("defocus"): three box passes over a padded frame, cost
+    // meant to be independent of the radius.
+    BenchGpu("static pose, gaussian blur 2 px",   src, staticPose, off, 100.0f, 2.0f);
+    BenchGpu("static pose, gaussian blur 20 px",  src, staticPose, off, 100.0f, 20.0f);
+    BenchGpu("static pose, gaussian blur 100 px", src, staticPose, off, 100.0f, 100.0f);
 
     // Mid-animation: the expensive case, genuinely moving.
     AnimParams moving = MovingAnim(1.6f, 0.4f);

@@ -5,6 +5,7 @@
 
 #include "AnimEngine.h"
 #include "ClipRange.h"
+#include "Defocus.h"
 #include "MotionBlur.h"
 #include "TransformMath.h"
 #include "FusionBake.h"
@@ -1619,6 +1620,155 @@ static void TestIsNoOpCoversNewChannels()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Blur ("defocus")
+
+static void TestDefocusEngine()
+{
+    std::printf("Blur: the radius animates, adds across stages, and defeats no-op\n");
+
+    AnimParams a = AnimParams::Default();
+    CheckNear(EvaluateDefocus(a, 5.0f), 0.0f, 1e-6f, "default is sharp");
+    Check(IsNoOp(a), "default is still a no-op");
+
+    // Focus in: 20 px to sharp over frames 0..10, linear so midpoints are exact.
+    Stage& s0 = a.stages[0];
+    s0.startFrame  = 0.0f;  s0.endFrame  = 10.0f;
+    s0.easing      = Easing::Linear();
+    s0.defocusFrom = 20.0f; s0.defocusTo = 0.0f;
+
+    CheckNear(EvaluateDefocus(a, 0.0f),  20.0f, 1e-4f, "starts at A");
+    CheckNear(EvaluateDefocus(a, 5.0f),  10.0f, 1e-4f, "halfway is halfway");
+    CheckNear(EvaluateDefocus(a, 10.0f),  0.0f, 1e-4f, "ends sharp at B");
+    CheckNear(EvaluateDefocus(a, -5.0f), 20.0f, 1e-4f, "holds A before the stage");
+    Check(!IsNoOp(a), "a blur alone is not a no-op");
+    Check(StageMoves(s0), "a blur alone moves the stage");
+
+    // A constant blur on a stage is still not a no-op: it changes every pixel.
+    {
+        AnimParams c = AnimParams::Default();
+        c.stages[0].defocusFrom = 6.0f; c.stages[0].defocusTo = 6.0f;
+        Check(!IsNoOp(c), "a constant blur is not a no-op");
+    }
+
+    // Stages ADD, and so does the base.
+    a.stageCount = 2;
+    Stage& s1 = a.stages[1];
+    s1 = Stage::Default();
+    s1.enabled     = true;
+    s1.startFrame  = 0.0f;  s1.endFrame  = 10.0f;
+    s1.easing      = Easing::Linear();
+    s1.defocusFrom = 4.0f;  s1.defocusTo = 4.0f;
+    a.base.defocus = 1.5f;
+    CheckNear(EvaluateDefocus(a, 5.0f), 10.0f + 4.0f + 1.5f, 1e-4f, "stages and base add");
+    Check(!a.base.IsNeutral(), "a base blur is not neutral");
+
+    // The channel offset shifts the blur, not the stage.
+    {
+        AnimParams o = AnimParams::Default();
+        o.stages[0].startFrame = 0.0f; o.stages[0].endFrame = 10.0f;
+        o.stages[0].easing = Easing::Linear();
+        o.stages[0].defocusFrom = 10.0f; o.stages[0].defocusTo = 0.0f;
+        o.stages[0].offsetDefocus = 5.0f;
+        CheckNear(EvaluateDefocus(o, 5.0f), 10.0f, 1e-4f, "offset holds A until its window opens");
+        CheckNear(EvaluateDefocus(o, 10.0f), 5.0f, 1e-4f, "offset runs the blur late");
+        CheckNear(AnimationEndTime(o, 0.0f), 15.0f, 1e-4f, "a trailing blur extends the animation");
+    }
+
+    // Overshoot can drive the lerp negative; a radius never goes below zero.
+    {
+        AnimParams n = AnimParams::Default();
+        n.stages[0].startFrame = 0.0f; n.stages[0].endFrame = 10.0f;
+        n.stages[0].easing = Easing::Linear();
+        n.stages[0].defocusFrom = 0.0f; n.stages[0].defocusTo = -8.0f;
+        CheckNear(EvaluateDefocus(n, 10.0f), 0.0f, 1e-6f, "negative radius clamps to sharp");
+    }
+
+    // Flatten carries the blur into the held pose.
+    {
+        AnimParams f = AnimParams::Default();
+        f.stages[0].defocusFrom = 7.0f; f.stages[0].defocusTo = 7.0f;
+        CheckNear(FlattenTransform(f, 3.0f, 1920.0f, 1080.0f).defocus, 7.0f, 1e-4f,
+                  "flatten keeps the blur");
+    }
+}
+
+static void TestDefocusBlur()
+{
+    std::printf("Blur: the box passes are exact where it matters\n");
+
+    Check(!DefocusActive(0.0f), "zero radius is inactive");
+    Check(DefocusActive(0.5f), "half a pixel is active");
+
+    // Identity at zero width -- what lets a blur ease all the way to sharp.
+    {
+        float in[5 * 4], out[5 * 4];
+        for (int i = 0; i < 20; ++i) in[i] = static_cast<float>(i) * 0.37f;
+        DefocusBoxLine(in, out, 5, 4, 0.0f);
+        float worst = 0.0f;
+        for (int i = 0; i < 20; ++i) worst = std::max(worst, std::fabs(out[i] - in[i]));
+        CheckNear(worst, 0.0f, 1e-6f, "zero-width window is the identity");
+    }
+
+    // A point blurred well inside the padding keeps its total -- the blur
+    // spreads light, it does not make or lose it -- and spreads symmetrically.
+    {
+        const float r = 9.0f;
+        const int pad = DefocusPad(r);
+        const int n = 2 * pad + 1;
+        std::vector<float> img(static_cast<size_t>(n) * n * 4, 0.0f), tmp(img.size());
+        const int c = pad;
+        for (int k = 0; k < 4; ++k) img[(static_cast<size_t>(c) * n + c) * 4 + k] = 1.0f;
+
+        DefocusImage(img.data(), tmp.data(), n, n, r);
+
+        double total = 0.0;
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) total += img[(static_cast<size_t>(y) * n + x) * 4];
+        CheckNear(static_cast<float>(total), 1.0f, 1e-4f, "blur conserves energy");
+
+        const float left  = img[(static_cast<size_t>(c) * n + (c - 3)) * 4];
+        const float right = img[(static_cast<size_t>(c) * n + (c + 3)) * 4];
+        const float up    = img[(static_cast<size_t>(c + 3) * n + c) * 4];
+        CheckNear(left, right, 1e-6f, "blur is symmetric left/right");
+        CheckNear(left, up,    1e-6f, "blur is symmetric across axes");
+        Check(img[(static_cast<size_t>(c) * n + c) * 4] < 0.1f, "the peak is spread out");
+    }
+
+    // Continuity: a radius just under and just over an integer window gives
+    // nearly the same image. The fractional window exists to kill the snap.
+    {
+        const int n = 64;
+        std::vector<float> a(static_cast<size_t>(n) * n * 4), b(a.size()), t(a.size());
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x)
+                for (int k = 0; k < 4; ++k)
+                    a[(static_cast<size_t>(y) * n + x) * 4 + k] = ((x / 4 + y / 4) % 2) ? 1.0f : 0.0f;
+        b = a;
+        DefocusImage(a.data(), t.data(), n, n, 5.99f);
+        DefocusImage(b.data(), t.data(), n, n, 6.01f);
+        float worst = 0.0f;
+        for (size_t i = 0; i < a.size(); ++i) worst = std::max(worst, std::fabs(a[i] - b[i]));
+        Check(worst < 0.01f, "no snap across an integer window width");
+    }
+
+    // The padding is enough: an opaque field larger than the padded buffer
+    // stays opaque in the interior after blurring, i.e. the buffer's own edge
+    // never reaches back into the frame.
+    {
+        const float r = 17.3f;
+        const int pad = DefocusPad(r);
+        const int inner = 10, n = inner + 2 * pad;
+        std::vector<float> img(static_cast<size_t>(n) * n * 4, 1.0f), tmp(img.size());
+        DefocusImage(img.data(), tmp.data(), n, n, r);
+        float worst = 0.0f;
+        for (int y = pad; y < pad + inner; ++y)
+            for (int x = pad; x < pad + inner; ++x)
+                worst = std::max(worst, std::fabs(img[(static_cast<size_t>(y) * n + x) * 4] - 1.0f));
+        CheckNear(worst, 0.0f, 1e-5f, "padding keeps the frame edge clean");
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Clip time
 
 static void TestClipRangeValidation()
@@ -2702,6 +2852,8 @@ int main()
     TestPeakVelocity();
     TestStageMoves();
     TestClipRangeValidation();
+    TestDefocusEngine();
+    TestDefocusBlur();
     TestLegacyTimingDetection();
     TestNormaliseStageFrameIsIdempotent();
     TestIsNoOpIsTimeIndependent();
