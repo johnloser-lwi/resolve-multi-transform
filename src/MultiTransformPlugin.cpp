@@ -2844,8 +2844,16 @@ void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
     // CUDA only. Phase 0's probe measured supportsOpenCLRender = NO on this
     // host (an NVIDIA GPU makes Resolve choose CUDA), so an OpenCL path could
     // not be tested and was dropped rather than shipped unverified.
+    //
+    // MTX_CPU_ONLY builds leave CUDA undeclared, so every host hands over
+    // images in system memory and the CPU path renders. That exists to test
+    // the Fusion page, which keeps frames in RAM: there a CUDA node most likely
+    // costs a host-to-device copy and back per frame, and this build removes
+    // both. It applies to every page, the Edit page included.
+#ifndef MTX_CPU_ONLY
     p_Desc.setSupportsCudaRender(true);
     p_Desc.setSupportsCudaStream(true);
+#endif
 
     p_Desc.setOverlayInteractDescriptor(new mtx::MultiTransformOverlayDescriptor());
 }
