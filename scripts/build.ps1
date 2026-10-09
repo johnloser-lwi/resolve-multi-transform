@@ -5,12 +5,7 @@
 
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Config = 'Release',
-
-    # Leave CUDA undeclared so every host renders on the CPU. Passed on every
-    # run (ON or OFF), because CMake caches options: a later plain build must
-    # switch the GPU path back on rather than silently stay CPU-only.
-    [switch]$CpuOnly
+    [string]$Config = 'Release'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,10 +28,7 @@ $generator = "Visual Studio $vsMajor $year"
 Write-Host "CMake:     $cmake"
 Write-Host "Generator: $generator"
 
-$cpuFlag = if ($CpuOnly) { 'ON' } else { 'OFF' }
-Write-Host "CPU only:  $cpuFlag"
-
-& $cmake -S $repo -B (Join-Path $repo 'build') -G $generator -A x64 "-DMTX_CPU_ONLY=$cpuFlag"
+& $cmake -S $repo -B (Join-Path $repo 'build') -G $generator -A x64
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
 
 & $cmake --build (Join-Path $repo 'build') --config $Config

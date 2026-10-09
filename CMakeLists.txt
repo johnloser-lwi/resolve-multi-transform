@@ -76,13 +76,6 @@ target_link_libraries(MultiTransform PRIVATE ofxsupport mtxcuda comdlg32 ole32 s
 # the day it was needed, and that day came.
 target_link_options(MultiTransform PRIVATE /MAP)
 
-# CPU-only experiment: build with -DMTX_CPU_ONLY=ON to leave CUDA undeclared, so
-# hosts hand over system-memory images and the CPU path renders everywhere.
-option(MTX_CPU_ONLY "Do not declare CUDA support (render on the CPU in every host)" OFF)
-if(MTX_CPU_ONLY)
-    target_compile_definitions(MultiTransform PRIVATE MTX_CPU_ONLY)
-endif()
-
 set_target_properties(MultiTransform PROPERTIES
     PREFIX ""
     SUFFIX ".ofx"
