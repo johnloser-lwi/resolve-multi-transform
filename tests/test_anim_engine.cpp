@@ -1620,6 +1620,86 @@ static void TestIsNoOpCoversNewChannels()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Motion blur from host keyframes
+
+static void TestBlurFollowsHostKeys()
+{
+    std::printf("Motion blur: parameters that change within the frame blur too\n");
+
+    const float W = 1920.0f, H = 1080.0f;
+
+    BlurParams b = BlurParams::Default();
+    b.enabled = true; b.adaptive = true; b.samples = 32; b.shutterAngle = 180.0f;
+
+    // Stages static, the base keyframed: posX runs 0 -> 0.5 over frames 0..10,
+    // i.e. 0.05 of the width per frame. A snapshot of it is frozen.
+    AnimParams still = AnimParams::Default();
+    const auto keyed = [&still](float tk) {
+        AnimParams a = still;
+        a.base.posX = 0.05f * tk;
+        return a;
+    };
+
+    AnimParams centre = keyed(5.0f);
+
+    // The old path: one snapshot, so no movement and no blur.
+    Check(BuildSampleTransforms(centre, b, 5.0f, W, H).count == 1,
+          "a frozen snapshot of a keyframed move does not blur");
+
+    // The detector sees the keys move across the shutter.
+    Check(ParamsMoveAcrossShutter(centre, keyed, b, 5.0f, W, H),
+          "keyframed movement is detected within the shutter");
+
+    const float disp = MaxShutterDisplacementAt(keyed, b, 5.0f, W, H);
+    // The probe compares the two halves' sample points, a quarter-frame either
+    // side of centre at 180 degrees: 0.05 W/frame * 0.25 frame * 1920 = 24 px.
+    CheckNear(disp, 24.0f, 0.1f, "keyed displacement is the move across the shutter");
+
+    const SampleTransforms st = BuildSampleTransformsAt(keyed, b, 5.0f, W, H);
+    Check(st.count > 1, "a keyframed move blurs");
+
+    // Each sample sits where the keys put it at that sample's time: the first
+    // and last inverse translations differ by the keyed travel.
+    const float tFirst = BlurSampleTime(5.0f, b, 0, st.count);
+    const float tLast  = BlurSampleTime(5.0f, b, st.count - 1, st.count);
+    float x0, y0, x1, y1;
+    st.inv[0].Apply(W * 0.5f, H * 0.5f, x0, y0);
+    st.inv[st.count - 1].Apply(W * 0.5f, H * 0.5f, x1, y1);
+    CheckNear(x0 - x1, 0.05f * (tLast - tFirst) * W, 0.05f, "samples follow the keyed curve");
+
+    // Constant keys behave exactly like the snapshot path.
+    {
+        AnimParams moving = AnimParams::Default();
+        moving.stages[0].endFrame = 10.0f;
+        moving.stages[0].posXTo   = 0.4f;
+        const auto constant = [&moving](float) { return moving; };
+
+        Check(!ParamsMoveAcrossShutter(moving, constant, b, 5.0f, W, H),
+              "stage-only animation is not mistaken for host keys");
+
+        const SampleTransforms a = BuildSampleTransforms(moving, b, 5.0f, W, H);
+        const SampleTransforms c = BuildSampleTransformsAt(constant, b, 5.0f, W, H);
+        Check(a.count == c.count, "constant keys give the same sample count");
+        float worst = 0.0f;
+        for (int k = 0; k < a.count && k < c.count; ++k)
+            for (int i = 0; i < 6; ++i)
+                worst = std::max(worst, std::fabs(a.inv[k].m[i] - c.inv[k].m[i]));
+        CheckNear(worst, 0.0f, 1e-6f, "constant keys give identical matrices");
+    }
+
+    // A keyed fade with no movement is detected too.
+    {
+        const auto fade = [&still](float tk) {
+            AnimParams a = still;
+            a.base.opacity = 0.1f * tk;
+            return a;
+        };
+        Check(ParamsMoveAcrossShutter(fade(5.0f), fade, b, 5.0f, W, H),
+              "a keyframed fade is detected within the shutter");
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Blur ("defocus")
 
 static void TestDefocusEngine()
@@ -2852,6 +2932,7 @@ int main()
     TestPeakVelocity();
     TestStageMoves();
     TestClipRangeValidation();
+    TestBlurFollowsHostKeys();
     TestDefocusEngine();
     TestDefocusBlur();
     TestLegacyTimingDetection();

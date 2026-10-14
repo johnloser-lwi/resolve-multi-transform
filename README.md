@@ -590,6 +590,19 @@ of the slider while a whip pan still gets the full count.
 Turning motion blur off, setting Shutter Angle to 0, or setting Samples to 1 all collapse to
 *exactly* the un-blurred render path — bit-identical, not merely similar. There is a test for it.
 
+### Hand-keyframed parameters blur too
+
+You can also keyframe any parameter in the Inspector — the base transform, a stage's From or
+To — and the blur follows it. No mode to switch: when blur is on, each render checks whether
+re-reading the parameters at the two ends of the shutter moves anything, and if it does, every
+shutter sample reads the parameters at its own sub-frame time, which the host interpolates
+along its keyframe curve. Stages, keyframes, or both together all blur the same way.
+
+That check costs nothing for stage-only animation (the values compare equal and the usual path
+runs); a keyframed frame pays one extra round of parameter reads per shutter sample, a fraction
+of a millisecond. Keyframed parameters also stop the effect from declaring itself a pass-through
+on frames where the keys happen to pass through the neutral pose.
+
 ### Timing anchors
 
 Each stage has an **Anchor** deciding what its Start and End frames are measured from:

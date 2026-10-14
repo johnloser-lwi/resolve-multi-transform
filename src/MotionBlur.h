@@ -87,13 +87,27 @@ struct SampleTransforms
     float opacity[kMaxBlurSamples];
 };
 
+// --- Parameters that vary across the shutter ---------------------------------
+//
+// Everything below comes in two forms. The plain one takes a single AnimParams:
+// the animation is the stage engine's, evaluated at sub-frame times from one
+// set of values. The ParamsAt form takes a callable `at(tk)` returning the
+// AnimParams in force at shutter time tk -- for parameters keyframed in the
+// host, whose values themselves change within the frame. A snapshot read at
+// the frame's own time froze those, so a hand-keyframed base move rendered
+// with no motion blur at all. The plain forms forward to the ParamsAt ones with
+// a constant callable, so the arithmetic is one copy either way.
+
 /** @brief Greatest on-screen movement of any image corner across the shutter,
  *  in pixels. This is the measure of "how much blur is actually happening". */
-inline float MaxShutterDisplacement(const AnimParams& a, const BlurParams& b,
-                                    float t, float width, float height)
+template <typename ParamsAt>
+inline float MaxShutterDisplacementAt(const ParamsAt& at, const BlurParams& b,
+                                      float t, float width, float height)
 {
-    const Mat3 mA = EvaluateTransform(a, BlurSampleTime(t, b, 0, 2), width, height);
-    const Mat3 mB = EvaluateTransform(a, BlurSampleTime(t, b, 1, 2), width, height);
+    const float tA = BlurSampleTime(t, b, 0, 2);
+    const float tB = BlurSampleTime(t, b, 1, 2);
+    const Mat3 mA = EvaluateTransform(at(tA), tA, width, height);
+    const Mat3 mB = EvaluateTransform(at(tB), tB, width, height);
 
     const float cx[4] = { 0.0f, width, 0.0f,   width  };
     const float cy[4] = { 0.0f, 0.0f,  height, height };
@@ -112,16 +126,31 @@ inline float MaxShutterDisplacement(const AnimParams& a, const BlurParams& b,
     return maxDisp;
 }
 
+inline float MaxShutterDisplacement(const AnimParams& a, const BlurParams& b,
+                                    float t, float width, float height)
+{
+    return MaxShutterDisplacementAt([&a](float) -> const AnimParams& { return a; },
+                                    b, t, width, height);
+}
+
 /** @brief Whether opacity changes measurably across the shutter.
  *
  * A fade with no movement still needs multiple samples, so displacement alone
  * is not enough to decide that a frame is static.
  */
+template <typename ParamsAt>
+inline bool OpacityMovesAcrossShutterAt(const ParamsAt& at, const BlurParams& b, float t)
+{
+    const float tA = BlurSampleTime(t, b, 0, 2);
+    const float tB = BlurSampleTime(t, b, 1, 2);
+    const float oA = EvaluateOpacity(at(tA), tA);
+    const float oB = EvaluateOpacity(at(tB), tB);
+    return fabsf(oB - oA) > 1e-4f;
+}
+
 inline bool OpacityMovesAcrossShutter(const AnimParams& a, const BlurParams& b, float t)
 {
-    const float oA = EvaluateOpacity(a, BlurSampleTime(t, b, 0, 2));
-    const float oB = EvaluateOpacity(a, BlurSampleTime(t, b, 1, 2));
-    return fabsf(oB - oA) > 1e-4f;
+    return OpacityMovesAcrossShutterAt([&a](float) -> const AnimParams& { return a; }, b, t);
 }
 
 /** @brief Sample count scaled to how far the image actually moves.
@@ -131,13 +160,14 @@ inline bool OpacityMovesAcrossShutter(const AnimParams& a, const BlurParams& b, 
  * travel keeps quality constant instead of paying a fixed worst-case cost on
  * every frame.
  */
-inline int AdaptiveSampleCount(const AnimParams& a, const BlurParams& b,
-                               float t, float width, float height)
+template <typename ParamsAt>
+inline int AdaptiveSampleCountAt(const ParamsAt& at, const BlurParams& b,
+                                 float t, float width, float height)
 {
     const int maxSamples = b.samples < kMaxBlurSamples ? b.samples : kMaxBlurSamples;
     if (maxSamples <= 1) return 1;
 
-    const float maxDisp = MaxShutterDisplacement(a, b, t, width, height);
+    const float maxDisp = MaxShutterDisplacementAt(at, b, t, width, height);
 
     const float perSample = b.pixelsPerSample > 0.25f ? b.pixelsPerSample : 0.25f;
     int n = static_cast<int>(maxDisp / perSample) + 1;
@@ -146,9 +176,57 @@ inline int AdaptiveSampleCount(const AnimParams& a, const BlurParams& b,
     return n;
 }
 
-/** @brief Build the per-sample inverse transforms for one render. */
-inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurParams& b,
-                                              float t, float width, float height)
+inline int AdaptiveSampleCount(const AnimParams& a, const BlurParams& b,
+                               float t, float width, float height)
+{
+    return AdaptiveSampleCountAt([&a](float) -> const AnimParams& { return a; },
+                                 b, t, width, height);
+}
+
+/** @brief Whether the per-time parameters move the image across the shutter
+ *  differently from the single snapshot @p centre.
+ *
+ *  This is the test for "host keyframes are doing something in this frame":
+ *  at both ends of the shutter, the transform and opacity evaluated from the
+ *  parameters in force there are compared with those evaluated from the
+ *  frame-centre snapshot. Judged on the result rather than on the raw values,
+ *  so a keyframed parameter that happens not to move anything -- or a key
+ *  far from this frame -- costs nothing. Sub-0.01 px and sub-1e-4 opacity
+ *  differences are rounding, not motion. */
+template <typename ParamsAt>
+inline bool ParamsMoveAcrossShutter(const AnimParams& centre, const ParamsAt& at,
+                                    const BlurParams& b, float t, float width, float height)
+{
+    const float cx[4] = { 0.0f, width, 0.0f,   width  };
+    const float cy[4] = { 0.0f, 0.0f,  height, height };
+
+    for (int k = 0; k < 2; ++k)
+    {
+        const float tk = BlurSampleTime(t, b, k, 2);
+        const AnimParams& here = at(tk);
+
+        if (fabsf(EvaluateOpacity(here, tk) - EvaluateOpacity(centre, tk)) > 1e-4f)
+            return true;
+
+        const Mat3 mH = EvaluateTransform(here,   tk, width, height);
+        const Mat3 mC = EvaluateTransform(centre, tk, width, height);
+        for (int i = 0; i < 4; ++i)
+        {
+            float hx, hy, qx, qy;
+            mH.Apply(cx[i], cy[i], hx, hy);
+            mC.Apply(cx[i], cy[i], qx, qy);
+            const float dx = hx - qx, dy = hy - qy;
+            if (dx * dx + dy * dy > 0.01f * 0.01f) return true;
+        }
+    }
+    return false;
+}
+
+/** @brief Build the per-sample inverse transforms for one render, with the
+ *  parameters re-read at each shutter time (see ParamsAt above). */
+template <typename ParamsAt>
+inline SampleTransforms BuildSampleTransformsAt(const ParamsAt& at, const BlurParams& b,
+                                                float t, float width, float height)
 {
     SampleTransforms st;
 
@@ -173,13 +251,13 @@ inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurPar
     // Opacity is checked too, because a fade with no movement genuinely does
     // vary across the shutter and must not be collapsed.
     if (blurring &&
-        MaxShutterDisplacement(a, b, t, width, height) < 0.01f &&
-        !OpacityMovesAcrossShutter(a, b, t))
+        MaxShutterDisplacementAt(at, b, t, width, height) < 0.01f &&
+        !OpacityMovesAcrossShutterAt(at, b, t))
     {
         blurring = false;
     }
 
-    st.count = blurring ? (b.adaptive ? AdaptiveSampleCount(a, b, t, width, height)
+    st.count = blurring ? (b.adaptive ? AdaptiveSampleCountAt(at, b, t, width, height)
                                       : (b.samples < kMaxBlurSamples ? b.samples
                                                                      : kMaxBlurSamples))
                         : 1;
@@ -188,6 +266,7 @@ inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurPar
     for (int k = 0; k < st.count; ++k)
     {
         const float tk = BlurSampleTime(t, b, k, st.count);
+        const AnimParams& a = at(tk);
 
         const Mat3 fwd = EvaluateTransform(a, tk, width, height);
         st.inv[k]      = Invert(fwd);
@@ -234,6 +313,14 @@ inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurPar
         }
     }
     return st;
+}
+
+/** @brief Build the per-sample inverse transforms from one parameter snapshot. */
+inline SampleTransforms BuildSampleTransforms(const AnimParams& a, const BlurParams& b,
+                                              float t, float width, float height)
+{
+    return BuildSampleTransformsAt([&a](float) -> const AnimParams& { return a; },
+                                   b, t, width, height);
 }
 
 } // namespace mtx

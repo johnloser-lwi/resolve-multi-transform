@@ -423,6 +423,7 @@ private:
     void             savePreset(bool wholeEffect);
     void             bakeToFusion();
     void             publishOutputs();
+    bool             hasHostKeys() const;
     void             disableOutputParams();
     void             copyLinkedToFusion();
     void             changedParamImpl(const OFX::InstanceChangedArgs& p_Args,
@@ -1757,6 +1758,32 @@ void MultiTransformPlugin::disableOutputParams()
         if (o) o->setEnabled(false);
 }
 
+bool MultiTransformPlugin::hasHostKeys() const
+{
+    OFX::ValueParam* const base[] = {
+        _baseScale, _baseScaleY, _basePos, _baseRot, _baseTiltX, _baseSwivelY,
+        _baseOpacity, _baseDefocus, _baseAnchor,
+    };
+    for (OFX::ValueParam* p : base)
+        if (p && p->getNumKeys() > 0) return true;
+
+    for (int i = 0; i < kMaxStages; ++i)
+    {
+        const StageParamHandles& h = _stage[i];
+        OFX::ValueParam* const stage[] = {
+            h.enabled, h.startFrame, h.endFrame,
+            h.scaleFrom, h.scaleTo, h.scaleYFrom, h.scaleYTo,
+            h.posFrom, h.posTo, h.rotFrom, h.rotTo,
+            h.tiltXFrom, h.tiltXTo, h.swivelYFrom, h.swivelYTo,
+            h.opacityFrom, h.opacityTo, h.defocusFrom, h.defocusTo,
+            h.anchor, h.pathC1, h.pathC2,
+        };
+        for (OFX::ValueParam* p : stage)
+            if (p && p->getNumKeys() > 0) return true;
+    }
+    return false;
+}
+
 MultiTransformPlugin::~MultiTransformPlugin()
 {
     // A pending debounced publish must not outlive the instance. (Measured:
@@ -2632,6 +2659,13 @@ bool MultiTransformPlugin::isIdentity(const OFX::IsIdentityArguments& p_Args,
     // verdict to get stuck on.
     if (!IsNoOp(fetchAnimParams(p_Args.time))) return false;
 
+    // Neutral at this time is not neutral for the clip when the values are
+    // keyframed in the host: a keyed base passing through its rest pose would
+    // otherwise be skipped on exactly that frame, and with motion blur on that
+    // frame still has movement across its shutter. Checked only once the
+    // values already read as a no-op, so animated work never pays for it.
+    if (hasHostKeys()) return false;
+
     p_IdentityClip = _srcClip;
     p_IdentityTime = p_Args.time;
     return true;
@@ -2739,8 +2773,32 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         const float      w    = static_cast<float>(db.x2 - db.x1);
         const float      h    = static_cast<float>(db.y2 - db.y1);
 
-        st = BuildSampleTransforms(anim, fetchBlurParams(p_Args.time),
-                                   static_cast<float>(clipTime), w, h);
+        const BlurParams blur = fetchBlurParams(p_Args.time);
+        const float      ct   = static_cast<float>(clipTime);
+
+        // Parameters keyframed in the host change within the frame, and the
+        // snapshot above holds only their frame-centre values -- a hand-
+        // keyframed move would render with no blur at all. So when blur is on,
+        // check whether re-reading the parameters at the two ends of the shutter
+        // moves anything; if so, every shutter sample reads its own. Shutter
+        // times are clip-relative, so each maps back to host time by the same
+        // offset the frame's own time has. Stage-only animation compares equal
+        // and keeps the one-snapshot path, so it pays nothing for this.
+        const auto hostAt = [this, &p_Args, ct](float tk) {
+            return fetchAnimParams(p_Args.time + static_cast<double>(tk - ct));
+        };
+        const bool blurring = blur.enabled && blur.shutterAngle > 1e-4f && blur.samples > 1;
+
+        if (blurring && ParamsMoveAcrossShutter(anim, hostAt, blur, ct, w, h))
+        {
+            mtx::ProbeOnce("blur-host-keys",
+                           "render: host keyframes move within the shutter; blurring per sample");
+            st = BuildSampleTransformsAt(hostAt, blur, ct, w, h);
+        }
+        else
+        {
+            st = BuildSampleTransforms(anim, blur, ct, w, h);
+        }
 
         addPreviewGhost(st, anim, clipTime, w, h);
 
