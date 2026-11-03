@@ -26,7 +26,13 @@
 #include "Sampler.h"
 #include "TransformMath.h"
 #include "interact/OverlayInteract.h"
+// The GPU path is CUDA on Windows and Metal on macOS: one per platform, chosen
+// at compile time. Resolve on a Mac uses Metal, and there is no CUDA there.
+#if defined(__APPLE__)
+#include "render/MetalRender.h"
+#else
 #include "render/CudaRender.h"
+#endif
 
 #include <memory>
 #include "FrameBounds.h"
@@ -110,7 +116,11 @@ public:
     /// always was.
     void setDefocus(float p_RadiusPx) { _defocus = p_RadiusPx; }
 
+#if defined(__APPLE__)
+    virtual void processImagesMetal() override;
+#else
     virtual void processImagesCUDA() override;
+#endif
     virtual void multiThreadProcessImages(OfxRectI p_ProcWindow) override;
 
     /** @brief The CPU render with the blur applied.
@@ -201,6 +211,42 @@ private:
 
 } // namespace
 
+#if defined(__APPLE__)
+
+void TransformProcessor::processImagesMetal()
+{
+    // The Metal twin of processImagesCUDA below: same arguments, same rule that
+    // a missing source still clears the destination. Pixel data here is an
+    // id<MTLBuffer>, not a CPU pointer, which the launcher bridges.
+    const mtx::ImageView sv = srcView();
+    const bool live = !sv.Empty();
+
+    void* dstData = _dstImg->getPixelData();
+    if (!dstData) return;
+
+    const OfxRectI db = _dstImg->getBounds();
+    const int dstWidth    = db.x2 - db.x1;
+    const int dstHeight   = db.y2 - db.y1;
+    const int dstRowBytes = _dstImg->getRowBytes();
+
+    mtx::ProbeOnce("metal-queue",
+                   std::string("Metal render: host command queue = ") +
+                   (_pMetalCmdQ ? "provided" : "NULL"));
+
+    const char* err =
+        RunMultiTransformMetal(_pMetalCmdQ,
+                               live ? sv.data : nullptr, sv.width, sv.height,
+                               sv.rowStrideBytes, sv.depth,
+                               dstData, dstWidth, dstHeight, dstRowBytes, dstDepth(),
+                               _transforms,
+                               static_cast<int>(_filter), static_cast<int>(_edge),
+                               sv.originX, sv.originY, _defocus);
+
+    if (err) mtx::ProbeOnce("metal-error", std::string("Metal error: ") + err);
+}
+
+#else
+
 void TransformProcessor::processImagesCUDA()
 {
     // Deliberately no early return on a missing source. The launcher clears the
@@ -237,6 +283,8 @@ void TransformProcessor::processImagesCUDA()
 
     if (err) mtx::ProbeOnce("cuda-error", std::string("CUDA error: ") + err);
 }
+
+#endif
 
 void TransformProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
 {
@@ -2704,6 +2752,7 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     // render gets its own line, which is the difference being asked about.
     const std::string dispatchKind =
         std::string(p_Args.isEnabledCudaRender   ? "cuda" : "no-cuda") + "/" +
+        (p_Args.isEnabledMetalRender  ? "metal" : "no-metal") + "/" +
         (p_Args.isEnabledOpenCLRender ? "opencl" : "no-opencl");
     const auto renderStart = std::chrono::steady_clock::now();
 
@@ -2822,9 +2871,9 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
                         static_cast<EdgeMode>(edgeIdx));
     processor.setDefocus(defocusPx);
 
-    // CUDA blurs inside its own launch; only the CPU path needs the whole-frame
+    // CUDA and Metal blur inside their own launch; only the CPU path needs the whole-frame
     // detour, because process() would hand it the frame a strip at a time.
-    if (mtx::DefocusActive(defocusPx) && !p_Args.isEnabledCudaRender)
+    if (mtx::DefocusActive(defocusPx) && !p_Args.isEnabledCudaRender && !p_Args.isEnabledMetalRender)
         processor.processDefocusedCpu();
     else
         processor.process();
@@ -2900,11 +2949,16 @@ void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
     // aware and must not be run during LUT generation.
     p_Desc.setNoSpatialAwareness(false);
 
-    // CUDA only. Phase 0's probe measured supportsOpenCLRender = NO on this
-    // host (an NVIDIA GPU makes Resolve choose CUDA), so an OpenCL path could
-    // not be tested and was dropped rather than shipped unverified.
+    // CUDA on Windows, Metal on macOS. Phase 0's probe measured
+    // supportsOpenCLRender = NO on this host (an NVIDIA GPU makes Resolve choose
+    // CUDA), so an OpenCL path could not be tested and was dropped rather than
+    // shipped unverified. A Mac has no CUDA; Resolve there renders with Metal.
+#if defined(__APPLE__)
+    p_Desc.setSupportsMetalRender(true);
+#else
     p_Desc.setSupportsCudaRender(true);
     p_Desc.setSupportsCudaStream(true);
+#endif
 
     p_Desc.setOverlayInteractDescriptor(new mtx::MultiTransformOverlayDescriptor());
 }

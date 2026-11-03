@@ -1,0 +1,2 @@
+# Shell scripts run on macOS: keep LF even if edited on Windows.
+*.sh text eol=lf

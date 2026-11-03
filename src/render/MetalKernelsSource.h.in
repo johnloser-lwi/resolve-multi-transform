@@ -1,0 +1,9 @@
+#pragma once
+
+// GENERATED at CMake configure time from src/render/MetalKernels.metal.
+// Edit that file, not this one.
+//
+// The shader ships inside the plugin binary and is compiled once per device at
+// first use, so there is no .metallib to locate next to the bundle at runtime.
+
+static const char* const kMetalKernelSource = R"MTXMETAL(@MTX_METAL_SOURCE@)MTXMETAL";

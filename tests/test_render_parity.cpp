@@ -10,7 +10,15 @@
 #include "AnimEngine.h"
 #include "Defocus.h"
 #include "Sampler.h"
+// The GPU under test is CUDA on Windows and Metal on macOS. Both expose the
+// same synchronous entry point, so every check below runs unchanged on either;
+// the name says CUDA only because that path came first.
+#if defined(__APPLE__)
+#include "render/MetalRender.h"
+#define RunMultiTransformCudaSync RunMultiTransformMetalSync
+#else
 #include "render/CudaRender.h"
+#endif
 
 #include <algorithm>
 #include <cmath>

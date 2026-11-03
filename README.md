@@ -80,6 +80,43 @@ environment variable is often not inherited by apps launched from an already-run
 so the plugin can fail to appear even when everything is correct. Prefer the normal install
 unless you specifically need to avoid elevation.
 
+## macOS (written, not yet built or tested)
+
+The `mac` branch carries a full macOS port: the same plugin and the same features, with a
+**Metal** renderer in place of CUDA and Cocoa for the dialogs and clipboard. It was written on
+Windows before a Mac was available. The shared C++ has been checked with clang's parser, and the
+Windows build still passes every test, but the Mac-only files (`PlatformMac.mm`,
+`EditDebounceMac.cpp`, `MetalRender.mm`, `MetalKernels.metal`) have never been compiled. Expect
+to fix a few compile errors on the first build.
+
+**Build and install** (Xcode command line tools and `brew install cmake` first):
+
+```bash
+scripts/build-mac.sh      # universal binary (Apple Silicon + Intel), runs the tests
+scripts/install-mac.sh    # copies to /Library/OFX/Plugins, signs ad-hoc; asks for your password
+```
+
+Restart Resolve afterwards. Presets live in `~/Documents/MultiTransform/Presets`; settings, the
+effect clipboard and `probe.log` in `~/Library/Application Support/MultiTransform`.
+
+**First test, in this order:**
+
+1. `build-mac.sh` compiles, and **`test_render_parity` passes**. It runs every CPU-vs-GPU check
+   against the Metal path, so it proves the shader matches the CPU before Resolve is involved.
+2. Resolve lists the plugin. `probe.log` should show `render dispatch: no-cuda/metal/...` and
+   `Metal render: host command queue = provided`.
+3. A move with motion blur, and the Gaussian blur, both on the Edit page and in Fusion.
+4. Save Preset / Load Preset / Set Folder open their dialogs in front of Resolve; Copy as Fusion
+   Nodes pastes into Fusion.
+5. Output Link republishes after a slider drag (the debounce timer).
+
+How the pieces map: `src/platform/Platform.h` is the OS layer (Win32 in `PlatformWin.cpp`, Cocoa
+in `PlatformMac.mm`); `src/render/MetalKernels.metal` is a line-for-line port of the GPU parts of
+`Sampler.h` and `Defocus.h`, embedded into the plugin at build time and compiled at first use,
+so **a change to the sampler or the blur must be made in both**. The benchmark is CUDA-only and
+is not built on macOS. Sharing the Mac build with other people needs a Developer ID signature
+and notarisation; ad-hoc signing only covers your own machine.
+
 ## How stages and stagger work
 
 A **stage** is a complete transform (scale, position, rotation, anchor) with **its own start
