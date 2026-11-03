@@ -1,202 +1,50 @@
 #include "PresetIO.h"
 
-#include "HostProbe.h"
-
-#include <windows.h>
-#include <commdlg.h>
-#include <shlobj.h>
-#include <shobjidl.h>
+#include "platform/Platform.h"
 
 #include <algorithm>
-#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <sstream>
 #include <vector>
 
+// Shared preset, settings and clipboard logic. Everything the OS has to do --
+// folders, listings, dialogs, the clipboard -- goes through platform/Platform.h,
+// so this file behaves the same on Windows and macOS.
+
 namespace mtx {
-
-namespace {
-
-std::wstring Widen(const std::string& s)
-{
-    if (s.empty()) return std::wstring();
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &w[0], n);
-    return w;
-}
-
-std::string Narrow(const std::wstring& w)
-{
-    if (w.empty()) return std::string();
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
-                                      nullptr, 0, nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), &s[0], n, nullptr, nullptr);
-    return s;
-}
-
-/** @brief Shared open/save dialog, built on IFileDialog.
- *
- * Deliberately not GetOpenFileName/GetSaveFileName any more.
- *
- * The old code had to smuggle the starting folder in through `lpstrFile`,
- * because `lpstrInitialDir` has only been advisory since Vista -- Windows
- * prefers the calling executable's last-visited-folder MRU, and that executable
- * is Resolve, whose MRU is shared with every other dialog it opens. Putting a
- * bare directory in `lpstrFile` did beat the MRU, and then broke Open outright:
- * with OFN_FILEMUSTEXIST the dialog validates that string as a *file name*,
- * finds a path ending in a backslash, and returns FALSE before it ever appears.
- * The button did nothing at all.
- *
- * IFileDialog has SetFolder, so the folder can simply be stated. No filename
- * hack, nothing for the MRU to override, and failures come back as an HRESULT
- * that can be logged instead of vanishing.
- */
-bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& outPath,
-                   const wchar_t* ext = L"json",
-                   const wchar_t* filterName = L"Multi Transform preset (*.json)",
-                   const wchar_t* filterSpec = L"*.json",
-                   const wchar_t* title = nullptr)
-{
-    const std::string folder = PresetFolder();
-
-    // The host's UI thread is already COM-initialised, but this must not assume
-    // it: initialise, tolerate a different existing mode, and only uninitialise
-    // if this call is what initialised it.
-    const HRESULT coInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    const bool weInitialised = SUCCEEDED(coInit);
-
-    bool ok = false;
-    IFileDialog* dialog = nullptr;
-
-    HRESULT hr = CoCreateInstance(saving ? CLSID_FileSaveDialog : CLSID_FileOpenDialog,
-                                  nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
-    if (SUCCEEDED(hr))
-    {
-        const COMDLG_FILTERSPEC kFilter[] = {
-            { filterName,         filterSpec },
-            { L"All files (*.*)", L"*.*"    }
-        };
-        dialog->SetFileTypes(2, kFilter);
-        dialog->SetDefaultExtension(ext);
-        dialog->SetTitle(title ? title
-                               : (saving ? L"Save Multi Transform preset"
-                                         : L"Load Multi Transform preset"));
-
-        DWORD flags = 0;
-        if (SUCCEEDED(dialog->GetOptions(&flags)))
-        {
-            flags |= FOS_FORCEFILESYSTEM;
-            flags |= saving ? FOS_OVERWRITEPROMPT : (FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
-            dialog->SetOptions(flags);
-        }
-
-        if (!folder.empty())
-        {
-            IShellItem* start = nullptr;
-            if (SUCCEEDED(SHCreateItemFromParsingName(Widen(folder).c_str(), nullptr,
-                                                      IID_PPV_ARGS(&start))))
-            {
-                // SetFolder, not SetDefaultFolder: the latter is a suggestion the
-                // last-visited folder overrides, which is the trap above.
-                dialog->SetFolder(start);
-                start->Release();
-            }
-        }
-
-        if (saving && !suggestedName.empty())
-            dialog->SetFileName(Widen(suggestedName).c_str());
-
-        hr = dialog->Show(GetActiveWindow());
-        if (SUCCEEDED(hr))
-        {
-            IShellItem* picked = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&picked)))
-            {
-                PWSTR wide = nullptr;
-                if (SUCCEEDED(picked->GetDisplayName(SIGDN_FILESYSPATH, &wide)) && wide)
-                {
-                    outPath = Narrow(wide);
-                    ok = !outPath.empty();
-                    CoTaskMemFree(wide);
-                }
-                picked->Release();
-            }
-        }
-        dialog->Release();
-    }
-
-    if (weInitialised) CoUninitialize();
-
-    // Cancelling is not a failure and must stay silent. Anything else is a
-    // dialog that refused to appear, which is precisely the bug that went
-    // unnoticed before -- so it gets recorded rather than swallowed.
-    if (!ok && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
-    {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
-        ProbeLog(std::string("preset dialog failed: hr=") + buf);
-    }
-    return ok;
-}
-
-} // namespace
 
 std::string CurveFolder()
 {
     const std::string base = PresetFolder();
     if (base.empty()) return "";
 
-    const std::string curves = base + "\\Curves";
-    CreateDirectoryA(curves.c_str(), nullptr);
+    const std::string curves = JoinPath(base, "Curves");
+    platform::MakeDirectory(curves);
     return curves;
 }
 
 std::vector<std::string> ListJsonFiles(const std::string& folder)
 {
-    std::vector<std::string> out;
-    if (folder.empty()) return out;
+    std::vector<std::string> out = platform::ListFiles(folder, ".json");
 
-    WIN32_FIND_DATAA fd = {};
-    const HANDLE h = FindFirstFileA((folder + "\\*.json").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return out;      // no folder, or nothing in it
-
-    do
-    {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        out.push_back(folder + "\\" + fd.cFileName);
-    }
-    while (FindNextFileA(h, &fd));
-
-    FindClose(h);
-
-    // FindFirstFile's order is whatever the filesystem hands back, which is not
-    // stable. The library is a visual grid, so a curve moving between sessions
-    // for no reason would be worse than it sounds.
+    // The filesystem's order is whatever it hands back, which is not stable.
+    // The library is a visual grid, so a curve moving between sessions for no
+    // reason would be worse than it sounds.
     std::sort(out.begin(), out.end());
     return out;
 }
 
 std::string EffectClipboardPath()
 {
-    char path[MAX_PATH] = { 0 };
-    if (FAILED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) return "";
-
-    const std::string base = std::string(path) + "\\MultiTransform";
-    CreateDirectoryA(base.c_str(), nullptr);
-    return base + "\\clipboard.json";
+    const std::string base = platform::AppDataFolder();
+    return base.empty() ? "" : JoinPath(base, "clipboard.json");
 }
 
 std::string SettingsFilePath()
 {
-    char path[MAX_PATH] = { 0 };
-    if (FAILED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) return "";
-
-    const std::string base = std::string(path) + "\\MultiTransform";
-    CreateDirectoryA(base.c_str(), nullptr);
-    return base + "\\settings.json";
+    const std::string base = platform::AppDataFolder();
+    return base.empty() ? "" : JoinPath(base, "settings.json");
 }
 
 Settings LoadSettings()
@@ -228,62 +76,7 @@ bool SaveSettings(const Settings& s, std::string& error)
 
 bool ChooseFolder(const std::string& current, std::string& outPath)
 {
-    // IFileDialog in folder-pick mode rather than SHBrowseForFolder: the old
-    // one is a cramped tree with no address bar and no way to paste a path,
-    // which is the same friction this whole change exists to remove.
-    //
-    // The host's UI thread is already COM-initialised, but this must not assume
-    // it: initialise, tolerate a different existing mode, and only uninitialise
-    // if this call is what initialised it.
-    const HRESULT coInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    const bool weInitialised = SUCCEEDED(coInit);
-
-    bool ok = false;
-    IFileDialog* dialog = nullptr;
-
-    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_PPV_ARGS(&dialog))))
-    {
-        DWORD flags = 0;
-        if (SUCCEEDED(dialog->GetOptions(&flags)))
-            dialog->SetOptions(flags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-
-        dialog->SetTitle(L"Choose the Multi Transform preset folder");
-
-        if (!current.empty())
-        {
-            IShellItem* start = nullptr;
-            if (SUCCEEDED(SHCreateItemFromParsingName(Widen(current).c_str(), nullptr,
-                                                      IID_PPV_ARGS(&start))))
-            {
-                // SetFolder, not SetDefaultFolder: the latter is only a
-                // suggestion that the last-visited folder overrides, which is
-                // the exact trap the file dialogs fell into.
-                dialog->SetFolder(start);
-                start->Release();
-            }
-        }
-
-        if (SUCCEEDED(dialog->Show(GetActiveWindow())))
-        {
-            IShellItem* picked = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&picked)))
-            {
-                PWSTR wide = nullptr;
-                if (SUCCEEDED(picked->GetDisplayName(SIGDN_FILESYSPATH, &wide)) && wide)
-                {
-                    outPath = Narrow(wide);
-                    ok = !outPath.empty();
-                    CoTaskMemFree(wide);
-                }
-                picked->Release();
-            }
-        }
-        dialog->Release();
-    }
-
-    if (weInitialised) CoUninitialize();
-    return ok;
+    return platform::RunFolderDialog(current, outPath);
 }
 
 namespace {
@@ -292,8 +85,8 @@ namespace {
 ///
 /// It was recomputed on every call, and one of the callers is the effect
 /// constructor -- which Resolve runs every time a clip is *selected*. That put
-/// a settings-file open, a JSON parse, a directory stat and two CreateDirectory
-/// calls on the path of an ordinary mouse click, to answer a question whose
+/// a settings-file open, a JSON parse, a directory stat and two directory
+/// creations on the path of an ordinary mouse click, to answer a question whose
 /// answer changes only when the user changes it. InvalidatePresetFolderCache()
 /// is called from the two places that can.
 std::mutex      g_folderMutex;
@@ -323,12 +116,8 @@ std::string PresetFolder()
     // A configured folder is honoured only while it is actually there. Sending
     // the dialog to a deleted folder or an unplugged drive would look exactly
     // like the bug this replaced.
-    if (!s.presetFolder.empty())
-    {
-        const DWORD attr = GetFileAttributesA(s.presetFolder.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
-            resolved = s.presetFolder;
-    }
+    if (!s.presetFolder.empty() && platform::DirectoryExists(s.presetFolder))
+        resolved = s.presetFolder;
 
     if (resolved.empty()) resolved = DefaultPresetFolder();
 
@@ -342,74 +131,40 @@ std::string PresetFolder()
 
 std::string DefaultPresetFolder()
 {
-    // Documents, not LocalAppData. Presets are the user's own files -- they get
-    // named, kept, copied to another machine and shared with other people -- and
-    // LocalAppData is a hidden folder nobody browses to. The probe log stays
-    // where it was: that one really is internal.
-    char path[MAX_PATH] = { 0 };
+    // Documents, not the private data folder. Presets are the user's own files
+    // -- they get named, kept, copied to another machine and shared with other
+    // people -- and the data folder is hidden and nobody browses to it. The
+    // probe log stays there: that one really is internal.
+    std::string docs = platform::DocumentsFolder();
 
-    // CSIDL_PERSONAL follows a redirected or OneDrive-backed Documents folder,
-    // which a hardcoded %USERPROFILE%\Documents would not.
-    if (FAILED(SHGetFolderPathA(nullptr, CSIDL_PERSONAL, nullptr, 0, path)))
-    {
-        // Somewhere to go rather than nowhere. An empty return would leave the
-        // dialog with no folder at all, which is the problem this is fixing.
-        if (FAILED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) return "";
-    }
+    // Somewhere to go rather than nowhere. An empty return would leave the
+    // dialog with no folder at all, which is the problem this is fixing.
+    const std::string base = docs.empty() ? platform::AppDataFolder()
+                                          : JoinPath(docs, "MultiTransform");
+    if (base.empty()) return "";
+    platform::MakeDirectory(base);
 
-    const std::string base = std::string(path) + "\\MultiTransform";
-    CreateDirectoryA(base.c_str(), nullptr);
-
-    const std::string presets = base + "\\Presets";
-    CreateDirectoryA(presets.c_str(), nullptr);
+    const std::string presets = JoinPath(base, "Presets");
+    platform::MakeDirectory(presets);
     return presets;
 }
 
 bool ChoosePresetToOpen(std::string& outPath)
 {
-    return RunFileDialog(false, "", outPath);
+    return platform::RunFileDialog(false, PresetFolder(), "", outPath);
 }
 
 bool ChoosePresetToSave(const std::string& suggestedName, std::string& outPath)
 {
-    return RunFileDialog(true, suggestedName, outPath);
+    return platform::RunFileDialog(true, PresetFolder(), suggestedName, outPath);
 }
 
 bool CopyTextToClipboard(const std::string& utf8, std::string& error)
 {
     // Fusion's Node Editor pastes the same { Tools = ... } text it puts on the
     // clipboard when a node is copied, so writing the setting text as clipboard
-    // text lets the user Ctrl+V it straight in -- no file, no load.
-    const std::wstring w = Widen(utf8);
-
-    if (!OpenClipboard(GetActiveWindow()))
-    {
-        error = "could not open the clipboard (another app may be holding it)";
-        return false;
-    }
-
-    bool ok = false;
-    if (EmptyClipboard())
-    {
-        const size_t bytes = (w.size() + 1) * sizeof(wchar_t);
-        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (h)
-        {
-            if (void* dst = GlobalLock(h))
-            {
-                std::memcpy(dst, w.c_str(), bytes);
-                GlobalUnlock(h);
-                // On success the clipboard owns h; do not free it.
-                if (SetClipboardData(CF_UNICODETEXT, h)) ok = true;
-                else                                     GlobalFree(h);
-            }
-            else { GlobalFree(h); }
-        }
-    }
-    CloseClipboard();
-
-    if (!ok) error = "could not write to the clipboard";
-    return ok;
+    // text lets the user paste it straight in -- no file, no load.
+    return platform::SetClipboardText(utf8, error);
 }
 
 bool ReadTextFile(const std::string& path, std::string& outText, std::string& error)

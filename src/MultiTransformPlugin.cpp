@@ -21,6 +21,7 @@
 #include "Preset.h"
 #include "CurvePreset.h"
 #include "PresetIO.h"
+#include "platform/Platform.h"
 #include "ParamNames.h"
 #include "Sampler.h"
 #include "TransformMath.h"
@@ -1415,7 +1416,7 @@ void MultiTransformPlugin::saveCurve(int stage)
     }
 
     std::string error;
-    if (!mtx::WriteTextFile(folder + "\\" + name + ".json", mtx::CurveToJson(c), error))
+    if (!mtx::WriteTextFile(mtx::JoinPath(folder, name + ".json"), mtx::CurveToJson(c), error))
     {
         sendMessage(OFX::Message::eMessageError, "", "Could not save the curve:\n" + error);
         return;
@@ -3737,7 +3738,7 @@ void MultiTransformPluginFactory::describeInContext(OFX::ImageEffectDescriptor& 
 
     PushButtonParamDescriptor* resetFolder = p_Desc.definePushButtonParam(kParamResetFolder);
     resetFolder->setLabels("Use Default Folder", "Default Folder", "Use Default Folder");
-    resetFolder->setHint("Go back to Documents\\MultiTransform\\Presets. Nothing is moved or "
+    resetFolder->setHint("Go back to MultiTransform/Presets in Documents. Nothing is moved or "
                          "deleted -- only where the dialogs open changes.");
     resetFolder->setParent(*gPresets);
     page->addChild(*resetFolder);

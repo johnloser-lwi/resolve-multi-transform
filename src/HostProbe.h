@@ -4,7 +4,8 @@
 
 namespace mtx {
 
-/** @brief Append a line to the probe log (%LOCALAPPDATA%\MultiTransform\probe.log).
+/** @brief Append a line to the probe log: %LOCALAPPDATA%\MultiTransform\probe.log
+ *  on Windows, ~/Library/Application Support/MultiTransform/probe.log on macOS.
  *
  * Deliberately cheap and fire-and-forget: opens, appends, closes. The log is a
  * development aid for establishing what the host actually supports, since the

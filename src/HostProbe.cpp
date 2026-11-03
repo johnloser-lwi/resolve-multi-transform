@@ -1,7 +1,6 @@
 #include "HostProbe.h"
 
-#include <windows.h>
-#include <shlobj.h>
+#include "platform/Platform.h"
 
 #include <fstream>
 #include <mutex>
@@ -21,14 +20,8 @@ bool g_hostDumped = false;
 
 std::string LogDir()
 {
-    char path[MAX_PATH] = {0};
-    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path)))
-    {
-        std::string dir = std::string(path) + "\\MultiTransform";
-        CreateDirectoryA(dir.c_str(), nullptr);
-        return dir;
-    }
-    return ".";
+    const std::string dir = platform::AppDataFolder();
+    return dir.empty() ? "." : dir;
 }
 
 const char* YesNo(bool b) { return b ? "yes" : "NO"; }
@@ -37,7 +30,7 @@ const char* YesNo(bool b) { return b ? "yes" : "NO"; }
 
 std::string ProbeLogPath()
 {
-    static const std::string p = LogDir() + "\\probe.log";
+    static const std::string p = JoinPath(LogDir(), "probe.log");
     return p;
 }
 
@@ -47,11 +40,7 @@ void ProbeLog(const std::string& line)
     std::ofstream f(ProbeLogPath(), std::ios::app);
     if (!f) return;
 
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    char stamp[32];
-    sprintf_s(stamp, "%02d:%02d:%02d.%03d ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    f << stamp << line << "\n";
+    f << platform::LogTimestamp() << line << "\n";
 }
 
 void ProbeOnce(const std::string& key, const std::string& line)
