@@ -2778,27 +2778,42 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
 
         // Parameters keyframed in the host change within the frame, and the
         // snapshot above holds only their frame-centre values -- a hand-
-        // keyframed move would render with no blur at all. So when blur is on,
-        // check whether re-reading the parameters at the two ends of the shutter
-        // moves anything; if so, every shutter sample reads its own. Shutter
-        // times are clip-relative, so each maps back to host time by the same
-        // offset the frame's own time has. Stage-only animation compares equal
-        // and keeps the one-snapshot path, so it pays nothing for this.
-        const auto hostAt = [this, &p_Args, ct](float tk) {
-            return fetchAnimParams(p_Args.time + static_cast<double>(tk - ct));
-        };
+        // keyframed move would render with no blur at all. So when blur is on
+        // and something carries keys, the parameters are read at the shutter's
+        // open and close, and every sample in between interpolates them.
+        //
+        // Two host reads, not one per sample: reading the full set at every
+        // sample time was thousands of host calls per frame, and Fusion --
+        // rendering several frames at once through its own locks -- choked on
+        // a simple fade. Across one shutter a keyframe curve is straight to
+        // well below a pixel, so the interpolation costs nothing visible.
+        // Shutter times are clip-relative, so each maps back to host time by
+        // the same offset the frame's own time has. Without keys, or when the
+        // keys do not move this frame, the one-snapshot path runs as before.
         const bool blurring = blur.enabled && blur.shutterAngle > 1e-4f && blur.samples > 1;
+        bool keyed = false;
 
-        if (blurring && ParamsMoveAcrossShutter(anim, hostAt, blur, ct, w, h))
+        if (blurring && hasHostKeys())
         {
-            mtx::ProbeOnce("blur-host-keys",
-                           "render: host keyframes move within the shutter; blurring per sample");
-            st = BuildSampleTransformsAt(hostAt, blur, ct, w, h);
+            const float tOpen  = ShutterOpenTime(ct, blur);
+            const float tClose = ShutterCloseTime(ct, blur);
+            const AnimParams open  = fetchAnimParams(p_Args.time + static_cast<double>(tOpen  - ct));
+            const AnimParams close = fetchAnimParams(p_Args.time + static_cast<double>(tClose - ct));
+            const float span = tClose - tOpen;
+            const auto at = [&open, &close, tOpen, span](float tk) {
+                return LerpAnimParams(open, close, span > 1e-6f ? (tk - tOpen) / span : 0.5f);
+            };
+
+            if (ParamsMoveAcrossShutter(anim, at, blur, ct, w, h))
+            {
+                mtx::ProbeOnce("blur-host-keys",
+                               "render: host keyframes move within the shutter; blurring per sample");
+                st = BuildSampleTransformsAt(at, blur, ct, w, h);
+                keyed = true;
+            }
         }
-        else
-        {
-            st = BuildSampleTransforms(anim, blur, ct, w, h);
-        }
+
+        if (!keyed) st = BuildSampleTransforms(anim, blur, ct, w, h);
 
         addPreviewGhost(st, anim, clipTime, w, h);
 

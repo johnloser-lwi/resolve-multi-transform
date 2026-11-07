@@ -1667,6 +1667,36 @@ static void TestBlurFollowsHostKeys()
     st.inv[st.count - 1].Apply(W * 0.5f, H * 0.5f, x1, y1);
     CheckNear(x0 - x1, 0.05f * (tLast - tFirst) * W, 0.05f, "samples follow the keyed curve");
 
+    // The render reads the host only at the shutter's open and close and
+    // interpolates between: for a linear key that is the exact curve, so the
+    // fast path must reproduce the per-sample-read result.
+    {
+        const float tO = ShutterOpenTime(5.0f, b), tC = ShutterCloseTime(5.0f, b);
+        CheckNear(tC - tO, 0.5f, 1e-6f, "a 180 degree shutter spans half a frame");
+
+        const AnimParams open = keyed(tO), close = keyed(tC);
+        const auto lerped = [&open, &close, tO, tC](float tk) {
+            return LerpAnimParams(open, close, (tk - tO) / (tC - tO));
+        };
+        const SampleTransforms exact = BuildSampleTransformsAt(keyed,  b, 5.0f, W, H);
+        const SampleTransforms fast  = BuildSampleTransformsAt(lerped, b, 5.0f, W, H);
+        Check(exact.count == fast.count, "interpolated keys pick the same sample count");
+        float worst = 0.0f;
+        for (int k = 0; k < exact.count && k < fast.count; ++k)
+            for (int i = 0; i < 6; ++i)
+                worst = std::max(worst, std::fabs(exact.inv[k].m[i] - fast.inv[k].m[i]));
+        Check(worst < 1e-3f, "interpolated keys match per-sample reads");
+
+        CheckNear(LerpAnimParams(open, close, 0.0f).base.posX, open.base.posX,  1e-6f, "u=0 is the open read");
+        CheckNear(LerpAnimParams(open, close, 1.0f).base.posX, close.base.posX, 1e-6f, "u=1 is the close read");
+
+        // Discrete fields are not blended: they come whole from the nearer end.
+        AnimParams one = open, two = close;
+        one.stageCount = 1; two.stageCount = 2;
+        Check(LerpAnimParams(one, two, 0.3f).stageCount == 1, "discrete field from the open end");
+        Check(LerpAnimParams(one, two, 0.7f).stageCount == 2, "discrete field from the close end");
+    }
+
     // Constant keys behave exactly like the snapshot path.
     {
         AnimParams moving = AnimParams::Default();
