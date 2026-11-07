@@ -8,8 +8,8 @@
 #include <sstream>
 #include <vector>
 
-// Shared preset, settings and clipboard logic. Everything the OS has to do --
-// folders, listings, dialogs, the clipboard -- goes through platform/Platform.h,
+// Shared preset and settings logic. Everything the OS has to do -- folders,
+// listings, dialogs -- goes through platform/Platform.h,
 // so this file behaves the same on Windows and macOS.
 
 namespace mtx {
@@ -157,14 +157,6 @@ bool ChoosePresetToOpen(std::string& outPath)
 bool ChoosePresetToSave(const std::string& suggestedName, std::string& outPath)
 {
     return platform::RunFileDialog(true, PresetFolder(), suggestedName, outPath);
-}
-
-bool CopyTextToClipboard(const std::string& utf8, std::string& error)
-{
-    // Fusion's Node Editor pastes the same { Tools = ... } text it puts on the
-    // clipboard when a node is copied, so writing the setting text as clipboard
-    // text lets the user paste it straight in -- no file, no load.
-    return platform::SetClipboardText(utf8, error);
 }
 
 bool ReadTextFile(const std::string& path, std::string& outText, std::string& error)

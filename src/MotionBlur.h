@@ -222,6 +222,76 @@ inline bool ParamsMoveAcrossShutter(const AnimParams& centre, const ParamsAt& at
     return false;
 }
 
+/** @brief When the shutter opens and closes, in the same time base as @p t. */
+MTX_HD inline float ShutterOpenTime(float t, const BlurParams& b)
+{
+    return t + b.shutterPhase / 360.0f - 0.5f * b.shutterAngle / 360.0f;
+}
+MTX_HD inline float ShutterCloseTime(float t, const BlurParams& b)
+{
+    return t + b.shutterPhase / 360.0f + 0.5f * b.shutterAngle / 360.0f;
+}
+
+/** @brief Parameters part-way across the shutter, interpolated between the
+ *  values read at its open (@p u = 0) and its close (@p u = 1).
+ *
+ *  What makes keyframed blur affordable. Reading every parameter from the host
+ *  at every shutter sample cost thousands of host calls per frame -- Fusion
+ *  choked on a simple fade -- for curves that are, across one shutter of at
+ *  most a frame, straight to well below a pixel. So the host is asked twice
+ *  and every sample in between is a lerp.
+ *
+ *  Continuous fields are interpolated. Discrete ones (counts, switches, modes)
+ *  come whole from the nearer end, and so does any field not listed here --
+ *  a forgotten one degrades to the old single-snapshot behaviour rather than to
+ *  anything wrong. */
+inline AnimParams LerpAnimParams(const AnimParams& a, const AnimParams& b, float u)
+{
+    AnimParams r = u < 0.5f ? a : b;
+    const auto L = [u](float x, float y) { return x + (y - x) * u; };
+
+#define MTX_LERP(dst, x, y, f) dst.f = L(x.f, y.f)
+    MTX_LERP(r.base, a.base, b.base, scaleX);  MTX_LERP(r.base, a.base, b.base, scaleY);
+    MTX_LERP(r.base, a.base, b.base, posX);    MTX_LERP(r.base, a.base, b.base, posY);
+    MTX_LERP(r.base, a.base, b.base, rot);     MTX_LERP(r.base, a.base, b.base, tiltX);
+    MTX_LERP(r.base, a.base, b.base, swivelY); MTX_LERP(r.base, a.base, b.base, opacity);
+    MTX_LERP(r.base, a.base, b.base, defocus);
+    MTX_LERP(r.base, a.base, b.base, anchorX); MTX_LERP(r.base, a.base, b.base, anchorY);
+
+    for (int i = 0; i < kMaxStages; ++i)
+    {
+        Stage& s = r.stages[i];
+        const Stage& sa = a.stages[i];
+        const Stage& sb = b.stages[i];
+        MTX_LERP(s, sa, sb, startFrame);  MTX_LERP(s, sa, sb, endFrame);
+        MTX_LERP(s, sa, sb, scaleFrom);   MTX_LERP(s, sa, sb, scaleTo);
+        MTX_LERP(s, sa, sb, scaleYFrom);  MTX_LERP(s, sa, sb, scaleYTo);
+        MTX_LERP(s, sa, sb, posXFrom);    MTX_LERP(s, sa, sb, posXTo);
+        MTX_LERP(s, sa, sb, posYFrom);    MTX_LERP(s, sa, sb, posYTo);
+        MTX_LERP(s, sa, sb, rotFrom);     MTX_LERP(s, sa, sb, rotTo);
+        MTX_LERP(s, sa, sb, tiltXFrom);   MTX_LERP(s, sa, sb, tiltXTo);
+        MTX_LERP(s, sa, sb, swivelYFrom); MTX_LERP(s, sa, sb, swivelYTo);
+        MTX_LERP(s, sa, sb, opacityFrom); MTX_LERP(s, sa, sb, opacityTo);
+        MTX_LERP(s, sa, sb, defocusFrom); MTX_LERP(s, sa, sb, defocusTo);
+        MTX_LERP(s, sa, sb, anchorX);     MTX_LERP(s, sa, sb, anchorY);
+        MTX_LERP(s, sa, sb, pathC1X);     MTX_LERP(s, sa, sb, pathC1Y);
+        MTX_LERP(s, sa, sb, pathC2X);     MTX_LERP(s, sa, sb, pathC2Y);
+        MTX_LERP(s, sa, sb, offsetPos);   MTX_LERP(s, sa, sb, offsetScale);
+        MTX_LERP(s, sa, sb, offsetRot);   MTX_LERP(s, sa, sb, offsetTilt);
+        MTX_LERP(s, sa, sb, offsetSwivel); MTX_LERP(s, sa, sb, offsetOpacity);
+        MTX_LERP(s, sa, sb, offsetDefocus);
+
+        MTX_LERP(s.easing, sa.easing, sb.easing, x1); MTX_LERP(s.easing, sa.easing, sb.easing, y1);
+        MTX_LERP(s.easing, sa.easing, sb.easing, x2); MTX_LERP(s.easing, sa.easing, sb.easing, y2);
+        MTX_LERP(s.easing, sa.easing, sb.easing, bounceAmount);
+        MTX_LERP(s.easing, sa.easing, sb.easing, bounceCount);
+        MTX_LERP(s.easing, sa.easing, sb.easing, bounceDamping);
+        MTX_LERP(s.easing, sa.easing, sb.easing, bounceStart);
+    }
+#undef MTX_LERP
+    return r;
+}
+
 /** @brief Build the per-sample inverse transforms for one render, with the
  *  parameters re-read at each shutter time (see ParamsAt above). */
 template <typename ParamsAt>

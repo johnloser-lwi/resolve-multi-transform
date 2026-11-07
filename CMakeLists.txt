@@ -98,10 +98,10 @@ set(MTX_PLUGIN_SOURCES
     src/interact/QuickWidget.cpp
 )
 if(APPLE)
-    list(APPEND MTX_PLUGIN_SOURCES src/platform/PlatformMac.mm src/platform/EditDebounceMac.cpp)
+    list(APPEND MTX_PLUGIN_SOURCES src/platform/PlatformMac.mm)
     set_source_files_properties(src/platform/PlatformMac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 else()
-    list(APPEND MTX_PLUGIN_SOURCES src/platform/PlatformWin.cpp src/platform/EditDebounceWin.cpp)
+    list(APPEND MTX_PLUGIN_SOURCES src/platform/PlatformWin.cpp)
 endif()
 
 add_library(MultiTransform MODULE ${MTX_PLUGIN_SOURCES})

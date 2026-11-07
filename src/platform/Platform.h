@@ -1,11 +1,11 @@
 #pragma once
 
 // The operating-system layer: everything the plugin needs from the OS that is
-// not image processing -- folders, file listing, the native file dialogs and
-// the clipboard. One implementation per platform:
+// not image processing -- folders, file listing and the native file dialogs.
+// One implementation per platform:
 //
-//   PlatformWin.cpp   Win32 / COM (IFileDialog, SHGetFolderPath, the clipboard)
-//   PlatformMac.mm    Cocoa (NSOpenPanel, NSSavePanel, NSPasteboard)
+//   PlatformWin.cpp   Win32 / COM (IFileDialog, SHGetFolderPath)
+//   PlatformMac.mm    Cocoa (NSOpenPanel, NSSavePanel)
 //
 // Kept deliberately small and string-based, so the preset and settings logic
 // above it (PresetIO.cpp) is shared code with one behaviour on both systems.
@@ -45,9 +45,6 @@ bool RunFileDialog(bool saving, const std::string& folder, const std::string& su
 
 /// The native folder picker, starting in @p current.
 bool RunFolderDialog(const std::string& current, std::string& outPath);
-
-/// Replace the clipboard with @p utf8 as plain text.
-bool SetClipboardText(const std::string& utf8, std::string& error);
 
 /// Local wall-clock time as "HH:MM:SS.mmm ", for log lines.
 std::string LogTimestamp();

@@ -1,5 +1,5 @@
-// macOS implementation of Platform.h: Cocoa dialogs, NSPasteboard, and the
-// standard user folders. Compiled as Objective-C++ with ARC (see CMakeLists).
+// macOS implementation of Platform.h: Cocoa dialogs and the standard user
+// folders. Compiled as Objective-C++ with ARC (see CMakeLists).
 //
 // UNTESTED ON HARDWARE: written on Windows ahead of a Mac being available.
 // The first things to check when it is: that the dialogs appear in front of
@@ -41,7 +41,7 @@ std::string UserFolder(NSSearchPathDirectory which)
     return paths.count > 0 ? FromNS(paths[0]) : std::string();
 }
 
-/// AppKit panels and the pasteboard belong to the main thread. The host calls
+/// AppKit panels belong to the main thread. The host calls
 /// instance-changed there in practice; this keeps the call safe if it ever
 /// does not, at the cost of blocking the caller until the user answers.
 void OnMain(void (^block)(void))
@@ -176,21 +176,6 @@ bool RunFolderDialog(const std::string& current, std::string& outPath)
     });
 
     if (ok) outPath = picked;
-    return ok;
-}
-
-bool SetClipboardText(const std::string& utf8, std::string& error)
-{
-    __block bool ok = false;
-    NSString* text = ToNS(utf8);
-
-    OnMain(^{
-        NSPasteboard* pb = [NSPasteboard generalPasteboard];
-        [pb clearContents];
-        ok = [pb setString:text forType:NSPasteboardTypeString];
-    });
-
-    if (!ok) error = "could not write to the clipboard";
     return ok;
 }
 

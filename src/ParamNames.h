@@ -58,7 +58,6 @@ constexpr const char* kParamBaseReset      = "baseReset";
 // --- Presets ---
 constexpr const char* kParamGroupPresets   = "grpPresets";
 constexpr const char* kParamSaveEffect     = "savePresetEffect";
-constexpr const char* kParamBakeFusion     = "bakeToFusion";
 constexpr const char* kParamSaveStage      = "savePresetStage";
 constexpr const char* kParamLoadPreset     = "loadPreset";
 constexpr const char* kParamLoadPresetFit  = "loadPresetFit";
@@ -71,27 +70,6 @@ constexpr const char* kParamLoadFromOverlay = "loadPresetFromOverlay";
 constexpr const char* kParamPresetFolder   = "presetFolderPath";   ///< read-out only
 constexpr const char* kParamSetFolder      = "setPresetFolder";
 constexpr const char* kParamResetFolder    = "resetPresetFolder";
-
-// --- Output link ---
-//
-// Read-only outputs holding the composed transform (all stages, easing and the
-// base pose flattened) as host keyframes, republished on every edit while the
-// checkbox is on. They exist so Fusion expressions can follow the plugin's
-// final motion live -- e.g. Transform1.Size = MultiTransform1.outSize -- which
-// a private render-time computation cannot offer. Values use the same
-// conventions the Fusion bake validated: Centre normalised with 0.5,0.5 at the
-// frame centre, Size a scale multiplier, Angle degrees CCW, opacity 0..1.
-constexpr const char* kParamGroupOutput    = "grpOutputLink";
-constexpr const char* kParamOutputEnable   = "outputLinkEnable";
-constexpr const char* kParamOutputNull     = "outputLinkNull";   ///< publish only, render pass-through
-constexpr const char* kParamOutCenterX     = "outCenterX";
-constexpr const char* kParamOutCenterY     = "outCenterY";
-constexpr const char* kParamOutSize        = "outSize";
-constexpr const char* kParamOutAngle       = "outAngle";
-constexpr const char* kParamOutOpacity     = "outOpacity";
-constexpr const char* kParamLinkedName     = "linkedNodeName";    ///< this node's name in the comp, for the expressions
-constexpr const char* kParamCopyLinked     = "copyFusionLinked";   ///< clipboard: expression-linked Transform
-constexpr const char* kParamUpdateOutputs  = "updateOutputs";     ///< manual output-link republish
 
 // --- Motion blur ---
 constexpr const char* kParamBlurEnabled    = "motionBlur";

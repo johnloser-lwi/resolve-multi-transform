@@ -83,10 +83,10 @@ unless you specifically need to avoid elevation.
 ## macOS (written, not yet built or tested)
 
 The `mac` branch carries a full macOS port: the same plugin and the same features, with a
-**Metal** renderer in place of CUDA and Cocoa for the dialogs and clipboard. It was written on
+**Metal** renderer in place of CUDA and Cocoa for the dialogs. It was written on
 Windows before a Mac was available. The shared C++ has been checked with clang's parser, and the
 Windows build still passes every test, but the Mac-only files (`PlatformMac.mm`,
-`EditDebounceMac.cpp`, `MetalRender.mm`, `MetalKernels.metal`) have never been compiled. Expect
+`MetalRender.mm`, `MetalKernels.metal`) have never been compiled. Expect
 to fix a few compile errors on the first build.
 
 **Build and install** (Xcode command line tools and `brew install cmake` first):
@@ -106,9 +106,7 @@ effect clipboard and `probe.log` in `~/Library/Application Support/MultiTransfor
 2. Resolve lists the plugin. `probe.log` should show `render dispatch: no-cuda/metal/...` and
    `Metal render: host command queue = provided`.
 3. A move with motion blur, and the Gaussian blur, both on the Edit page and in Fusion.
-4. Save Preset / Load Preset / Set Folder open their dialogs in front of Resolve; Copy as Fusion
-   Nodes pastes into Fusion.
-5. Output Link republishes after a slider drag (the debounce timer).
+4. Save Preset / Load Preset / Set Folder open their dialogs in front of Resolve.
 
 How the pieces map: `src/platform/Platform.h` is the OS layer (Win32 in `PlatformWin.cpp`, Cocoa
 in `PlatformMac.mm`); `src/render/MetalKernels.metal` is a line-for-line port of the GPU parts of
@@ -349,8 +347,6 @@ How it works, and what it costs:
   5 ms at 100 px. The transform alone is about 0.3 ms, so a blurred instance costs roughly ten
   unblurred ones. It runs only while the radius is above zero, so a stage that ends sharp stops
   paying once it gets there.
-- **Bake to Fusion** cannot carry a blur (a Fusion Transform has no blur) and says so in its
-  message. The Output Link has no blur channel either.
 
 ### Setting timing
 
@@ -630,15 +626,17 @@ Turning motion blur off, setting Shutter Angle to 0, or setting Samples to 1 all
 ### Hand-keyframed parameters blur too
 
 You can also keyframe any parameter in the Inspector — the base transform, a stage's From or
-To — and the blur follows it. No mode to switch: when blur is on, each render checks whether
-re-reading the parameters at the two ends of the shutter moves anything, and if it does, every
-shutter sample reads the parameters at its own sub-frame time, which the host interpolates
-along its keyframe curve. Stages, keyframes, or both together all blur the same way.
+To — and the blur follows it. No mode to switch: when blur is on and some parameter has
+keyframes, each render reads the parameters at the shutter's open and close, and every shutter
+sample interpolates between those two reads. Stages, keyframes, or both together all blur the
+same way.
 
-That check costs nothing for stage-only animation (the values compare equal and the usual path
-runs); a keyframed frame pays one extra round of parameter reads per shutter sample, a fraction
-of a millisecond. Keyframed parameters also stop the effect from declaring itself a pass-through
-on frames where the keys happen to pass through the neutral pose.
+It is deliberately two reads, not one per sample. Reading every parameter at every sample time
+cost thousands of host calls per frame and made Fusion choke on a simple keyframed fade; across
+one shutter (at most a frame) a keyframe curve is straight to well below a pixel, so the
+interpolation is invisible. Without keyframes nothing extra is read. Keyframed parameters also
+stop the effect from declaring itself a pass-through on frames where the keys happen to pass
+through the neutral pose.
 
 ### Timing anchors
 
