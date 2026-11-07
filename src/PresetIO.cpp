@@ -375,43 +375,6 @@ bool ChoosePresetToSave(const std::string& suggestedName, std::string& outPath)
     return RunFileDialog(true, suggestedName, outPath);
 }
 
-bool CopyTextToClipboard(const std::string& utf8, std::string& error)
-{
-    // Fusion's Node Editor pastes the same { Tools = ... } text it puts on the
-    // clipboard when a node is copied, so writing the setting text as clipboard
-    // text lets the user Ctrl+V it straight in -- no file, no load.
-    const std::wstring w = Widen(utf8);
-
-    if (!OpenClipboard(GetActiveWindow()))
-    {
-        error = "could not open the clipboard (another app may be holding it)";
-        return false;
-    }
-
-    bool ok = false;
-    if (EmptyClipboard())
-    {
-        const size_t bytes = (w.size() + 1) * sizeof(wchar_t);
-        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (h)
-        {
-            if (void* dst = GlobalLock(h))
-            {
-                std::memcpy(dst, w.c_str(), bytes);
-                GlobalUnlock(h);
-                // On success the clipboard owns h; do not free it.
-                if (SetClipboardData(CF_UNICODETEXT, h)) ok = true;
-                else                                     GlobalFree(h);
-            }
-            else { GlobalFree(h); }
-        }
-    }
-    CloseClipboard();
-
-    if (!ok) error = "could not write to the clipboard";
-    return ok;
-}
-
 bool ReadTextFile(const std::string& path, std::string& outText, std::string& error)
 {
     std::ifstream f(path, std::ios::binary);

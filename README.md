@@ -312,8 +312,6 @@ How it works, and what it costs:
   5 ms at 100 px. The transform alone is about 0.3 ms, so a blurred instance costs roughly ten
   unblurred ones. It runs only while the radius is above zero, so a stage that ends sharp stops
   paying once it gets there.
-- **Bake to Fusion** cannot carry a blur (a Fusion Transform has no blur) and says so in its
-  message. The Output Link has no blur channel either.
 
 ### Setting timing
 
@@ -593,15 +591,17 @@ Turning motion blur off, setting Shutter Angle to 0, or setting Samples to 1 all
 ### Hand-keyframed parameters blur too
 
 You can also keyframe any parameter in the Inspector — the base transform, a stage's From or
-To — and the blur follows it. No mode to switch: when blur is on, each render checks whether
-re-reading the parameters at the two ends of the shutter moves anything, and if it does, every
-shutter sample reads the parameters at its own sub-frame time, which the host interpolates
-along its keyframe curve. Stages, keyframes, or both together all blur the same way.
+To — and the blur follows it. No mode to switch: when blur is on and some parameter has
+keyframes, each render reads the parameters at the shutter's open and close, and every shutter
+sample interpolates between those two reads. Stages, keyframes, or both together all blur the
+same way.
 
-That check costs nothing for stage-only animation (the values compare equal and the usual path
-runs); a keyframed frame pays one extra round of parameter reads per shutter sample, a fraction
-of a millisecond. Keyframed parameters also stop the effect from declaring itself a pass-through
-on frames where the keys happen to pass through the neutral pose.
+It is deliberately two reads, not one per sample. Reading every parameter at every sample time
+cost thousands of host calls per frame and made Fusion choke on a simple keyframed fade; across
+one shutter (at most a frame) a keyframe curve is straight to well below a pixel, so the
+interpolation is invisible. Without keyframes nothing extra is read. Keyframed parameters also
+stop the effect from declaring itself a pass-through on frames where the keys happen to pass
+through the neutral pose.
 
 ### Timing anchors
 
