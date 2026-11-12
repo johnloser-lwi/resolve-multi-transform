@@ -18,7 +18,7 @@ namespace mtx {
 namespace platform {
 
 /// The plugin's private data folder, created if missing; "" if the OS will not
-/// say. Holds settings.json, the effect clipboard and the probe log.
+/// say. Holds settings.json and the effect clipboard.
 ///   Windows: %LOCALAPPDATA%\MultiTransform
 ///   macOS:   ~/Library/Application Support/MultiTransform
 std::string AppDataFolder();
@@ -45,9 +45,6 @@ bool RunFileDialog(bool saving, const std::string& folder, const std::string& su
 
 /// The native folder picker, starting in @p current.
 bool RunFolderDialog(const std::string& current, std::string& outPath);
-
-/// Local wall-clock time as "HH:MM:SS.mmm ", for log lines.
-std::string LogTimestamp();
 
 } // namespace platform
 

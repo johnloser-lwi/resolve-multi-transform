@@ -19,6 +19,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -217,6 +219,42 @@ void ReleaseScratch(DeviceState& s, id<MTLBuffer> b)
     }
 }
 
+// --- Giving the blur's memory back once the blur stops ----------------------
+// As in CudaKernel.cu: the idle pool is what makes blurred playback fast, and
+// once no blur has rendered for kBlurIdleMs the next un-blurred render drops
+// every idle buffer. Buffers in use are untouched; their command buffers return
+// them when they complete.
+
+constexpr long long kBlurIdleMs = 2000;
+std::atomic<long long> g_lastBlurMs{ 0 };
+std::atomic<bool>      g_poolHolds{ false };
+
+long long NowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void NoteBlurUse()
+{
+    g_lastBlurMs.store(NowMs());
+    g_poolHolds.store(true);
+}
+
+void ReleaseIdleBlurScratch(DeviceState& s)
+{
+    if (!g_poolHolds.load()) return;
+    if (NowMs() - g_lastBlurMs.load() < kBlurIdleMs) return;
+    if (!g_poolHolds.exchange(false)) return;   // another render is already trimming
+
+    std::lock_guard<std::mutex> hold(s.poolLock);
+    for (auto it = s.pool.begin(); it != s.pool.end();)
+    {
+        if (!it->inUse) it = s.pool.erase(it);
+        else ++it;
+    }
+}
+
 // --- Encoding ------------------------------------------------------------------
 
 void Dispatch(id<MTLComputeCommandEncoder> enc, id<MTLComputePipelineState> ps,
@@ -270,6 +308,8 @@ const char* Encode(id<MTLCommandQueue> queue,
 
     DeviceState* state = StateFor(queue.device);
     if (!state->error.empty()) return state->error.c_str();
+
+    if (!mtx::DefocusActive(defocusPx)) ReleaseIdleBlurScratch(*state);
 
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     if (!cb) return "Metal: could not create a command buffer";
@@ -357,6 +397,7 @@ const char* Encode(id<MTLCommandQueue> queue,
                 ReleaseScratch(*s, a);
                 ReleaseScratch(*s, b);
             }];
+            NoteBlurUse();
             blurred = true;
         }
         else
@@ -381,6 +422,18 @@ const char* Encode(id<MTLCommandQueue> queue,
 }
 
 } // namespace
+
+unsigned long long BlurScratchReservedBytes()
+{
+    unsigned long long bytes = 0;
+    std::lock_guard<std::mutex> hold(StateLock());
+    for (auto& s : States())
+    {
+        std::lock_guard<std::mutex> pool(s->poolLock);
+        for (auto& e : s->pool) bytes += e.buffer.length;
+    }
+    return bytes;
+}
 
 const char* RunMultiTransformMetal(void* pCmdQueue,
                                    const void* src, int srcWidth, int srcHeight,

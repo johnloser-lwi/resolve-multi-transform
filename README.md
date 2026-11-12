@@ -3,11 +3,6 @@
 A multi-stage animated transform node with staggered per-stage timing, built-in motion blur,
 and an on-screen viewer overlay for editing timing and easing curves directly.
 
-**Status: Phase 0 (scaffold).** The plugin currently builds, loads, and renders a pass-through
-image. Its real job right now is the host capability probe. The transform, animation engine,
-GPU kernels and overlay UI land in later phases — see the plan in
-`~/.claude/plans/https-www-youtube-com-watch-v-zeu9pdfinx-jolly-sloth.md`.
-
 ## Requirements
 
 - **DaVinci Resolve Studio** — the free edition does not load third-party OFX plugins.
@@ -96,15 +91,16 @@ scripts/build-mac.sh      # universal binary (Apple Silicon + Intel), runs the t
 scripts/install-mac.sh    # copies to /Library/OFX/Plugins, signs ad-hoc; asks for your password
 ```
 
-Restart Resolve afterwards. Presets live in `~/Documents/MultiTransform/Presets`; settings, the
-effect clipboard and `probe.log` in `~/Library/Application Support/MultiTransform`.
+Restart Resolve afterwards. Presets live in `~/Documents/MultiTransform/Presets`; settings and
+the effect clipboard live in `~/Library/Application Support/MultiTransform`.
 
 **First test, in this order:**
 
 1. `build-mac.sh` compiles, and **`test_render_parity` passes**. It runs every CPU-vs-GPU check
    against the Metal path, so it proves the shader matches the CPU before Resolve is involved.
-2. Resolve lists the plugin. `probe.log` should show `render dispatch: no-cuda/metal/...` and
-   `Metal render: host command queue = provided`.
+2. Resolve lists the plugin, and applying it to a clip renders on the GPU: playback with a
+   move should be about as smooth as on Windows. A Metal path that failed would leave the
+   frame unchanged or black.
 3. A move with motion blur, and the Gaussian blur, both on the Edit page and in Fusion.
 4. Save Preset / Load Preset / Set Folder open their dialogs in front of Resolve.
 
@@ -195,7 +191,7 @@ the very host this is written for. A group header is drawn by the host itself an
 missing that way.
 
 **There is no tab support to be had.** The only tab mechanism in OFX is multiple `PageParam`s,
-and Resolve reports `maxPages = 0` (see `probe.log`) — it advertises none. Selecting a stage
+and Resolve reports `maxPages = 0` — it advertises none. Selecting a stage
 therefore uses the Active Stage dropdown or the overlay's stage tabs, and the other three stages
 are hidden entirely, groups and all.
 
@@ -478,7 +474,7 @@ and Ease In / Ease Out are the x positions of the two control handles.
 
 > A visual, draggable curve editor is coming in Phase 5. It has to live in the **viewer
 > overlay** rather than the Inspector, because Resolve's OFX host supports neither parametric
-> (curve) parameters nor custom parameter-panel widgets — both measured, see `probe.log`.
+> (curve) parameters nor custom parameter-panel widgets — both measured.
 
 ## Presets
 
@@ -1005,8 +1001,8 @@ an identical image, so they collapse to one. A static frame with 64 fixed sample
 on-screen movement instead of paying a fixed worst case every frame.
 
 **Check that the GPU path is actually being used.** The CPU fallback is ~400x slower, and four
-layers of that will not play back. `probe.log` records `render dispatch: cuda=yes` on the first
-render; if it says `no`, that dwarfs every other consideration.
+layers of that will not play back. If playback is unusably slow, check that Resolve's GPU
+processing mode is CUDA (Preferences → Memory and GPU): that dwarfs every other consideration.
 
 ### Prefer stages over stacked instances
 
@@ -1070,9 +1066,6 @@ Now:
   cropped source and the same pixels embedded full-frame and requires them to match exactly.
 - Sampling coordinates are bounded before integer conversion, so a near-singular transform can
   no longer produce the undefined float-to-int behaviour that `x0 + 1` then overflowed.
-
-When a source's bounds differ from the destination's, `probe.log` records it once per session
-with both rectangles — so the next Fusion report can be read against facts.
 
 ### Fusion builds Inspector controls only for parameters that start visible
 
@@ -1166,23 +1159,6 @@ for an effect that animates internally**:
 
 Resolve is lenient about all three and never showed any of the problems; Fusion honours all
 three, and is the one behaving correctly.
-
-`probe.log` records the host's capabilities on load, which render path was chosen, and any
-error thrown in the overlay or the CUDA kernel. It is quiet during normal playback.
-
-## Host capability probe
-
-The plugin writes what the host actually supports to:
-
-```
-%LOCALAPPDATA%\MultiTransform\probe.log
-```
-
-This exists because published documentation on Resolve's OFX host is thin and partly
-contradictory. The log records the host version, whether the DrawSuite is available, whether
-custom interacts and parametric parameters are supported, which GPU render paths are offered,
-and — on first render — the clip frame range and the time value the host passes, which settles
-how the animation engine maps parameter frames onto real time.
 
 ## Layout
 

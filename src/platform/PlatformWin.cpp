@@ -4,8 +4,6 @@
 
 #include "platform/Platform.h"
 
-#include "HostProbe.h"
-
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
@@ -182,16 +180,6 @@ bool RunFileDialog(bool saving, const std::string& folder, const std::string& su
     }
 
     if (weInitialised) CoUninitialize();
-
-    // Cancelling is not a failure and must stay silent. Anything else is a
-    // dialog that refused to appear, which is precisely the bug that went
-    // unnoticed before -- so it gets recorded rather than swallowed.
-    if (!ok && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
-    {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
-        ProbeLog(std::string("preset dialog failed: hr=") + buf);
-    }
     return ok;
 }
 
@@ -245,16 +233,6 @@ bool RunFolderDialog(const std::string& current, std::string& outPath)
 
     if (weInitialised) CoUninitialize();
     return ok;
-}
-
-std::string LogTimestamp()
-{
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    char stamp[32];
-    std::snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d.%03d ",
-                  st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    return stamp;
 }
 
 } // namespace platform

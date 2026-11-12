@@ -34,4 +34,4 @@ sudo xattr -dr com.apple.quarantine "$dest/$name" 2>/dev/null || true
 sudo codesign --force --sign - "$dest/$name"
 
 echo "Installed: $dest/$name"
-echo "Start DaVinci Resolve; the probe log is ~/Library/Application Support/MultiTransform/probe.log"
+echo "Start DaVinci Resolve."

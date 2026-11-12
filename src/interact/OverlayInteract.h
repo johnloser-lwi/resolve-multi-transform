@@ -10,7 +10,7 @@ namespace mtx {
  *
  * All custom UI lives here rather than in the Inspector, because Resolve's OFX
  * host supports neither parametric (curve) parameters nor custom parameter
- * interacts -- both measured in probe.log. The viewer overlay is the only
+ * interacts -- both measured on this host. The viewer overlay is the only
  * surface available, and it turns out to be the better one anyway: the timing
  * lanes and the easing curve belong over the picture, not beside it.
  *

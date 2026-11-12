@@ -179,20 +179,5 @@ bool RunFolderDialog(const std::string& current, std::string& outPath)
     return ok;
 }
 
-std::string LogTimestamp()
-{
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    struct tm local;
-    const time_t secs = tv.tv_sec;
-    localtime_r(&secs, &local);
-
-    char stamp[32];
-    std::snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d.%03d ",
-                  local.tm_hour, local.tm_min, local.tm_sec,
-                  static_cast<int>(tv.tv_usec / 1000));
-    return stamp;
-}
-
 } // namespace platform
 } // namespace mtx

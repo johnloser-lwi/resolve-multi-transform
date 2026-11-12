@@ -82,7 +82,6 @@ endif()
 # --- The plugin --------------------------------------------------------------
 set(MTX_PLUGIN_SOURCES
     src/MultiTransformPlugin.cpp
-    src/HostProbe.cpp
     src/Preset.cpp
     src/PresetIO.cpp
     src/Settings.cpp

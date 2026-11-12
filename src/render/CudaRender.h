@@ -46,3 +46,8 @@ void RunMultiTransformCudaSync(const void* hostSrc, int srcWidth, int srcHeight,
                                int srcOriginX = 0, int srcOriginY = 0,
                                int srcDepth = mtx::kDepthFloat, int dstDepth = mtx::kDepthFloat,
                                float defocusPx = 0.0f);
+
+/** @brief Device memory the blur's scratch pool currently holds, in bytes.
+ *  Drops to zero once no blur has rendered for a couple of seconds and an
+ *  un-blurred frame has rendered since; exposed so the test can check that. */
+unsigned long long BlurScratchReservedBytes();

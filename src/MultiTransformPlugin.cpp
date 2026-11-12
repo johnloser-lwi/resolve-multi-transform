@@ -4,8 +4,7 @@
 // (Phase 2) and motion blur (Phase 3) reuse the same header-only maths, so this
 // renderer stays as the correctness oracle they are diffed against.
 //
-// Two host facts shape the design, both measured in Phase 0 and recorded in
-// probe.log:
+// Two host facts shape the design, both measured in Phase 0:
 //   1. Resolve supports neither parametric (curve) parameters nor custom
 //      parameter-panel interacts, so the plugin owns its own animation.
 //   2. Resolve passes timeline-absolute times and reports a meaningless clip
@@ -17,7 +16,6 @@
 #include "AnimEngine.h"
 #include "ClipTime.h"
 #include "EditBlock.h"
-#include "HostProbe.h"
 #include "Preset.h"
 #include "CurvePreset.h"
 #include "PresetIO.h"
@@ -39,12 +37,9 @@
 #include "Defocus.h"
 
 #include <algorithm>
-#include <chrono>
 #include <functional>
 #include <cstring>
-#include <iomanip>
 #include <mutex>
-#include <sstream>
 
 #include "ofxDrawSuite.h"
 #include "ofxsInteract.h"
@@ -226,20 +221,13 @@ void TransformProcessor::processImagesMetal()
     const int dstHeight   = db.y2 - db.y1;
     const int dstRowBytes = _dstImg->getRowBytes();
 
-    mtx::ProbeOnce("metal-queue",
-                   std::string("Metal render: host command queue = ") +
-                   (_pMetalCmdQ ? "provided" : "NULL"));
-
-    const char* err =
-        RunMultiTransformMetal(_pMetalCmdQ,
+    RunMultiTransformMetal(_pMetalCmdQ,
                                live ? sv.data : nullptr, sv.width, sv.height,
                                sv.rowStrideBytes, sv.depth,
                                dstData, dstWidth, dstHeight, dstRowBytes, dstDepth(),
                                _transforms,
                                static_cast<int>(_filter), static_cast<int>(_edge),
                                sv.originX, sv.originY, _defocus);
-
-    if (err) mtx::ProbeOnce("metal-error", std::string("Metal error: ") + err);
 }
 
 #else
@@ -262,23 +250,13 @@ void TransformProcessor::processImagesCUDA()
     const int dstHeight   = db.y2 - db.y1;
     const int dstRowBytes = _dstImg->getRowBytes();
 
-    // Whether the host supplies a stream decides who synchronises, so it is
-    // worth knowing which world we are in when a render looks wrong.
-    mtx::ProbeOnce("cuda-stream",
-                   std::string("CUDA render: host stream = ") +
-                   (_pCudaStream ? "provided (host synchronises)"
-                                 : "NULL (plugin synchronises)"));
-
-    const char* err =
-        RunMultiTransformCuda(_pCudaStream,
+    RunMultiTransformCuda(_pCudaStream,
                               live ? sv.data : nullptr, sv.width, sv.height,
                               sv.rowStrideBytes, sv.depth,
                               dstData, dstWidth, dstHeight, dstRowBytes, dstDepth(),
                               _transforms,
                               static_cast<int>(_filter), static_cast<int>(_edge),
                               sv.originX, sv.originY, _defocus);
-
-    if (err) mtx::ProbeOnce("cuda-error", std::string("CUDA error: ") + err);
 }
 
 #endif
@@ -346,7 +324,6 @@ void TransformProcessor::processDefocusedCpu()
     catch (const std::bad_alloc&)
     {
         // A huge radius on a huge frame. A sharp frame beats no frame.
-        mtx::ProbeOnce("defocus-oom", "render: no memory for the blur buffers; rendering sharp");
         multiThreadProcessImages(_renderWindow);
         return;
     }
@@ -751,8 +728,6 @@ MultiTransformPlugin::MultiTransformPlugin(OfxImageEffectHandle p_Handle)
         s.bounceStart   = fetchDoubleParam  (StageParam(kParamBounceStart,   i));
     }
 
-
-    mtx::ProbeHostOnce();
 
     // Deliberately not migrating here. At construction the clip is not
     // necessarily connected, so the clip start reads back as a placeholder, and
@@ -1205,7 +1180,6 @@ void MultiTransformPlugin::copyEffect()
         sendMessage(OFX::Message::eMessageError, "", "Could not copy the settings:\n" + error);
         return;
     }
-    mtx::ProbeLog("effect copied to clipboard");
 }
 
 void MultiTransformPlugin::pasteEffect()
@@ -1237,7 +1211,6 @@ void MultiTransformPlugin::pasteEffect()
     d.wholeEffect = true;
     applyPreset(d);
 
-    mtx::ProbeLog("effect pasted from clipboard");
 }
 
 int MultiTransformPlugin::activeStageIndex() const
@@ -1278,7 +1251,6 @@ void MultiTransformPlugin::copyStage()
     g_stageClipboard.stage = captureStage(active);
     g_stageClipboard.valid = true;
 
-    mtx::ProbeLog("stage " + std::to_string(active + 1) + " copied");
 }
 
 void MultiTransformPlugin::pasteStage()
@@ -1430,7 +1402,6 @@ void MultiTransformPlugin::saveCurve(int stage)
         sendMessage(OFX::Message::eMessageError, "", "Could not save the curve:\n" + error);
         return;
     }
-    mtx::ProbeLog("curve saved: " + name);
 }
 
 void MultiTransformPlugin::addPreviewGhost(SampleTransforms& st, const AnimParams& a,
@@ -1763,7 +1734,6 @@ void MultiTransformPlugin::savePreset(bool wholeEffect)
         sendMessage(OFX::Message::eMessageError, "", "Could not save the preset:\n" + error);
         return;
     }
-    mtx::ProbeLog("preset saved: " + path);
 }
 
 void MultiTransformPlugin::loadPreset(bool fitToClip)
@@ -1806,7 +1776,6 @@ void MultiTransformPlugin::loadPreset(bool fitToClip)
     }
 
     applyPreset(d);
-    mtx::ProbeLog("preset loaded: " + path + (fitToClip ? " (fit to clip)" : ""));
 }
 
 void MultiTransformPlugin::changedClip(const OFX::InstanceChangedArgs& /*p_Args*/,
@@ -1854,7 +1823,6 @@ void MultiTransformPlugin::migrateTimingIfNeeded()
     }
     if (!any) return;
 
-    int converted = 0;
     {
         mtx::EditBlock block(this, "Convert timing to clip-relative");
         for (int i = 0; i < kMaxStages; ++i)
@@ -1865,22 +1833,15 @@ void MultiTransformPlugin::migrateTimingIfNeeded()
             if (mtx::LooksTimelineAbsolute(s, clipStart))
             {
                 _stage[i].startFrame->setValue(s - clipStart);
-                ++converted;
             }
             if (mtx::LooksTimelineAbsolute(e, clipStart))
             {
                 _stage[i].endFrame->setValue(e - clipStart);
-                ++converted;
             }
         }
     }
 
     for (int i = 0; i < kMaxStages; ++i) updateDuration(i);
-
-    std::ostringstream o;
-    o << "timing migration: clipStart=" << clipStart << " length=" << clipLength
-      << " -- converted " << converted << " value(s) to clip-relative";
-    mtx::ProbeLog(o.str());
 }
 
 bool MultiTransformPlugin::sourceSize(double p_Time, float& outW, float& outH) const
@@ -2408,24 +2369,9 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     // the buffer, so it is refused rather than assumed.
     if (PixelDepthOf(dst->getPixelDepth()) < 0)
     {
-        mtx::ProbeOnce("unsupported-depth",
-                       std::string("render: destination depth not supported: ")
-                       + OFX::mapBitDepthEnumToStr(dst->getPixelDepth()));
         OFX::throwSuiteStatusException(kOfxStatErrImageFormat);
         return;
     }
-
-    // Which path this render takes, logged once *per kind* rather than once per
-    // process. Keyed on a fixed string it fired for whichever page rendered
-    // first and never again -- so when the Fusion page and the Edit page host
-    // the same comp through different OFX hosts, the log had nothing to say
-    // about the second. Keying on the state means a CPU fallback after a CUDA
-    // render gets its own line, which is the difference being asked about.
-    const std::string dispatchKind =
-        std::string(p_Args.isEnabledCudaRender   ? "cuda" : "no-cuda") + "/" +
-        (p_Args.isEnabledMetalRender  ? "metal" : "no-metal") + "/" +
-        (p_Args.isEnabledOpenCLRender ? "opencl" : "no-opencl");
-    const auto renderStart = std::chrono::steady_clock::now();
 
     int filterIdx = kFilterBilinear;
     int edgeIdx   = kEdgeBlack;
@@ -2457,31 +2403,11 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
     // region of definition -- see FrameBounds.h for the crash that made it so.
     publishFrameBounds(db, p_Args.renderScale);
 
-    // Logged once: Fusion's own log says "cannot get Parameter for Source" when
-    // an upstream tool has nothing at a frame, and this is what that looks like
-    // from inside the plugin -- a render with no source at all, which renders
-    // transparent. Having both sides of that conversation in the logs is what
-    // lets a Fusion crash be read against what the plugin was actually doing.
-    if (!src) mtx::ProbeOnce("render-no-source",
-                             "render: host supplied no source image; rendering transparent");
-
     if (src)
     {
         const OfxRectI sb = src->getBounds();
         srcOriginX = sb.x1 - db.x1;
         srcOriginY = sb.y1 - db.y1;
-
-        // One line per process about what this host actually hands over, so
-        // the next Fusion report can be read against facts rather than guesses.
-        if (sb.x1 != db.x1 || sb.y1 != db.y1 || sb.x2 != db.x2 || sb.y2 != db.y2)
-        {
-            std::ostringstream o;
-            o << "render: source bounds differ from destination -- src ["
-              << sb.x1 << "," << sb.y1 << " - " << sb.x2 << "," << sb.y2 << "] dst ["
-              << db.x1 << "," << db.y1 << " - " << db.x2 << "," << db.y2 << "]"
-              << (src->getPixelData() ? "" : " (source has no pixel data)");
-            mtx::ProbeOnce("src-dst-bounds-differ", o.str());
-        }
 
         // Evaluate in clip time, not timeline time. Stage start/end are frames
         // measured from the clip's first frame, so the animation stays put when
@@ -2527,8 +2453,6 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
 
             if (ParamsMoveAcrossShutter(anim, at, blur, ct, w, h))
             {
-                mtx::ProbeOnce("blur-host-keys",
-                               "render: host keyframes move within the shutter; blurring per sample");
                 st = BuildSampleTransformsAt(at, blur, ct, w, h);
                 keyed = true;
             }
@@ -2563,32 +2487,6 @@ void MultiTransformPlugin::render(const OFX::RenderArguments& p_Args)
         processor.processDefocusedCpu();
     else
         processor.process();
-
-    // One line per dispatch kind with what it cost. The first render of a kind
-    // is not representative -- it pays JIT and cache warm-up -- but the order of
-    // magnitude is, and an order of magnitude is what separates a CUDA frame
-    // from a CPU one. The thread count is the host's answer, since a CPU path
-    // that the host refuses to spread across cores is a different problem from
-    // a CPU path at all.
-    {
-        const double ms = std::chrono::duration<double, std::milli>(
-                              std::chrono::steady_clock::now() - renderStart).count();
-        std::ostringstream o;
-        o << "render dispatch: " << dispatchKind
-          << "  dst=" << (db.x2 - db.x1) << "x" << (db.y2 - db.y1)
-          << "  depth=" << OFX::mapBitDepthEnumToStr(dst->getPixelDepth())
-          << (src ? std::string(" (src ") + OFX::mapBitDepthEnumToStr(src->getPixelDepth()) + ")"
-                  : std::string(" (no src)"))
-          << "  blur samples=" << st.count
-          << "  first render " << std::fixed << std::setprecision(2) << ms << " ms"
-          << "  host threads=" << OFX::MultiThread::getNumCPUs();
-        // Keyed on depth as well: now that the host may supply byte or short
-        // images, a render at a new depth is as worth one line as a render on
-        // a new path, and a key that ignored it would hide the first of each.
-        mtx::ProbeOnce("render-dispatch-" + dispatchKind + "-"
-                           + OFX::mapBitDepthEnumToStr(dst->getPixelDepth()),
-                       o.str());
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2635,10 +2533,10 @@ void MultiTransformPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
     // aware and must not be run during LUT generation.
     p_Desc.setNoSpatialAwareness(false);
 
-    // CUDA on Windows, Metal on macOS. Phase 0's probe measured
-    // supportsOpenCLRender = NO on this host (an NVIDIA GPU makes Resolve choose
-    // CUDA), so an OpenCL path could not be tested and was dropped rather than
-    // shipped unverified. A Mac has no CUDA; Resolve there renders with Metal.
+    // CUDA on Windows, Metal on macOS. Phase 0 measured supportsOpenCLRender = NO
+    // on this host (an NVIDIA GPU makes Resolve choose CUDA), so an OpenCL path
+    // could not be tested and was dropped rather than shipped unverified. A Mac
+    // has no CUDA; Resolve there renders with Metal.
 #if defined(__APPLE__)
     p_Desc.setSupportsMetalRender(true);
 #else

@@ -155,9 +155,6 @@ try {
     Write-Host "  1. Start DaVinci Resolve."
     Write-Host "  2. Apply 'Multi Transform' (group: MultiTransform) from the OpenFX library."
     Write-Host "  3. Under the Viewer, set the on-screen-control dropdown to 'Open FX Overlay'."
-    Write-Host ""
-    Write-Host "Probe log: $env:LOCALAPPDATA\MultiTransform\probe.log"
-    Write-Host "  (written by the plugin on load - send this back to confirm host capabilities)"
 
     $exitCode = 0
 }
