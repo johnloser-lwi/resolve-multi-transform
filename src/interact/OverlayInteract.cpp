@@ -4,7 +4,6 @@
 #include "ClipTime.h"
 #include "EditBlock.h"
 #include "FrameBounds.h"
-#include "HostProbe.h"
 #include "ParamNames.h"
 
 #include <cmath>
@@ -71,7 +70,7 @@ MultiTransformInteract::MultiTransformInteract(OfxInteractHandle handle,
     }
     catch (...)
     {
-        mtx::ProbeLog("overlay: addParamToSlaveTo failed; overlay will still draw");
+        // Slaving only makes redraws more eager; the overlay draws without it.
     }
 }
 
@@ -112,9 +111,6 @@ void MultiTransformInteract::abandonDrag(const char* why)
     // after, and the host is left holding an edit that never ends.
     if (!_captured && !_editBlockOpen && EditDepthOf(_effect) == 0) return;
 
-    mtx::ProbeLog(std::string("overlay: abandoned drag (") + why + "), depth was "
-                  + std::to_string(EditDepthOf(_effect)));
-
     _captured      = nullptr;
     _editBlockOpen = false;
     setPreviewGhost(false);
@@ -128,29 +124,19 @@ bool MultiTransformInteract::buildContext(OverlayContext& out, double time,
     {
         return buildContextUnsafe(out, time, pixelScale);
     }
-    catch (const OFX::Exception::Suite& e)
+    catch (const OFX::Exception::Suite&)
     {
-        // Logged with the status and once per distinct status, so the log says
-        // which host call refused and how -- "threw" alone turned out to be
-        // the last line before a crash, and said nothing about why.
-        mtx::ProbeOnce("overlay-build-suite-" + std::to_string(e.status()),
-                       std::string("overlay: buildContext: host call failed with ")
-                       + e.what() + " (" + std::to_string(e.status()) + "); frame skipped");
         return false;
     }
-    catch (const std::exception& e)
+    catch (const std::exception&)
     {
-        mtx::ProbeOnce(std::string("overlay-build-std-") + e.what(),
-                       std::string("overlay: buildContext threw std::exception: ") + e.what());
         return false;
     }
     catch (...)
     {
-        // Not ours and not the SDK's. A foreign exception unwinding through this
-        // module is itself worth knowing about, because the Fusion page has
-        // crashed inside the unwinder on this very thread.
-        mtx::ProbeOnce("overlay-build-foreign",
-                       "overlay: buildContext caught an exception of unknown type; frame skipped");
+        // Not ours and not the SDK's. Contained here rather than unwinding
+        // into the host: the Fusion page has crashed inside the unwinder on
+        // this very thread.
         return false;
     }
 }
@@ -220,12 +206,8 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
             mtx::FrameBoundsProvider* bounds = mtx::FrameBoundsOf(_effect);
             if (!bounds || !bounds->lastFrameBounds(rod))
             {
-                mtx::ProbeOnce("overlay-no-frame",
-                               "overlay: no project size and no rendered frame; overlay waits");
                 return false;
             }
-            mtx::ProbeOnce("overlay-render-bounds",
-                           "overlay: host reports no project size; using last render bounds");
         }
     }
 
@@ -884,7 +866,6 @@ bool MultiTransformInteract::draw(const OFX::DrawArgs& args)
     }
     catch (...)
     {
-        mtx::ProbeOnce("overlay-draw-failed", "overlay: draw threw; overlay suppressed");
         return false;
     }
 
@@ -977,7 +958,6 @@ bool MultiTransformInteract::penDown(const OFX::PenArgs& args)
     }
     catch (...)
     {
-        mtx::ProbeOnce("overlay-pendown-failed", "overlay: penDown threw");
         closeEditBlock();
         setPreviewGhost(false);
         _captured = nullptr;
@@ -1014,7 +994,6 @@ bool MultiTransformInteract::penMotion(const OFX::PenArgs& args)
     {
         // Drop the capture: continuing to feed a widget that just failed to
         // write a parameter would repeat the failure on every mouse move.
-        mtx::ProbeOnce("overlay-penmotion-failed", "overlay: penMotion threw; drag cancelled");
         closeEditBlock();
         setPreviewGhost(false);
         _captured = nullptr;
@@ -1036,7 +1015,7 @@ bool MultiTransformInteract::penUp(const OFX::PenArgs& args)
     }
     catch (...)
     {
-        mtx::ProbeOnce("overlay-penup-failed", "overlay: penUp threw");
+        // Nothing to undo: the drag ends below either way.
     }
     _captured = nullptr;
     setPreviewGhost(false);

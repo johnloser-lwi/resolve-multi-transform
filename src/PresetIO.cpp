@@ -1,7 +1,5 @@
 #include "PresetIO.h"
 
-#include "HostProbe.h"
-
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
@@ -129,16 +127,6 @@ bool RunFileDialog(bool saving, const std::string& suggestedName, std::string& o
     }
 
     if (weInitialised) CoUninitialize();
-
-    // Cancelling is not a failure and must stay silent. Anything else is a
-    // dialog that refused to appear, which is precisely the bug that went
-    // unnoticed before -- so it gets recorded rather than swallowed.
-    if (!ok && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
-    {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
-        ProbeLog(std::string("preset dialog failed: hr=") + buf);
-    }
     return ok;
 }
 
@@ -344,8 +332,7 @@ std::string DefaultPresetFolder()
 {
     // Documents, not LocalAppData. Presets are the user's own files -- they get
     // named, kept, copied to another machine and shared with other people -- and
-    // LocalAppData is a hidden folder nobody browses to. The probe log stays
-    // where it was: that one really is internal.
+    // LocalAppData is a hidden folder nobody browses to.
     char path[MAX_PATH] = { 0 };
 
     // CSIDL_PERSONAL follows a redirected or OneDrive-backed Documents folder,

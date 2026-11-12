@@ -46,4 +46,3 @@ if (-not $current -or $current -notlike "*$Destination*") {
 }
 
 Write-Host ""
-Write-Host "Probe log: $env:LOCALAPPDATA\MultiTransform\probe.log"
