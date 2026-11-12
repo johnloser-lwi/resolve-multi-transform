@@ -74,16 +74,41 @@ struct DeviceState
 
     // Scratch for the blur: ~270 MB at UHD, so it is pooled rather than
     // allocated per frame -- the CUDA path measured per-frame allocation as half
-    // the blur's cost. Buffers return to the pool when their command buffer
-    // completes, so concurrent renders (Fusion runs several at once) never share
-    // one. A few idle buffers are kept; beyond that they are freed.
+    // the blur's cost. Shared by every instance on the device, never owned by
+    // one: the host keeps an instance alive for every use of the effect, so
+    // per-instance scratch would grow with the timeline. Buffers return to the
+    // pool when their command buffer completes, so concurrent renders (Fusion
+    // runs several at once) never share one.
+    //
+    // What an idle pool holds is capped in BYTES (kIdleBudget), oldest-used
+    // dropped first. A count cap was wrong: one blur buffer on a 5000x5000
+    // Fusion canvas is ~400 MB, so "four idle buffers" could pin 1.6 GB of VRAM
+    // for the session.
     std::mutex poolLock;
-    struct Entry { id<MTLBuffer> buffer; bool inUse; };
+    struct Entry { id<MTLBuffer> buffer; bool inUse; unsigned long long lastUsed; };
     std::vector<Entry> pool;
+    unsigned long long useCounter = 0;   ///< use counter for least-recently-used trimming
 };
 
-std::mutex                                g_stateLock;
-std::vector<std::unique_ptr<DeviceState>> g_states;
+/// Idle scratch kept between renders, per device. Matches the CUDA pool's
+/// release threshold (CudaKernel.cu, PluginPool): room for one UHD blur's two
+/// buffers with headroom, and nothing more pinned once rendering stops.
+constexpr NSUInteger kIdleBudget = 768ull * 1024ull * 1024ull;
+
+// Deliberately never destroyed. Command-buffer completion handlers release
+// scratch into these states, and one can fire while the host is unloading the
+// plugin -- after static destructors would have freed them. The process exit
+// returns the memory anyway.
+std::mutex& StateLock()
+{
+    static std::mutex* m = new std::mutex;
+    return *m;
+}
+std::vector<std::unique_ptr<DeviceState>>& States()
+{
+    static auto* v = new std::vector<std::unique_ptr<DeviceState>>;
+    return *v;
+}
 
 id<MTLComputePipelineState> MakePipeline(id<MTLLibrary> lib, NSString* name, DeviceState& s)
 {
@@ -99,8 +124,8 @@ id<MTLComputePipelineState> MakePipeline(id<MTLLibrary> lib, NSString* name, Dev
 
 DeviceState* StateFor(id<MTLDevice> device)
 {
-    std::lock_guard<std::mutex> hold(g_stateLock);
-    for (auto& s : g_states)
+    std::lock_guard<std::mutex> hold(StateLock());
+    for (auto& s : States())
         if (s->device == device) return s.get();
 
     auto s = std::make_unique<DeviceState>();
@@ -134,31 +159,37 @@ DeviceState* StateFor(id<MTLDevice> device)
         s->store     = MakePipeline(lib, @"mtx_defocus_store",  *s);
     }
 
-    g_states.push_back(std::move(s));
-    return g_states.back().get();
+    States().push_back(std::move(s));
+    return States().back().get();
 }
 
 id<MTLBuffer> AcquireScratch(DeviceState& s, NSUInteger bytes)
 {
     {
         std::lock_guard<std::mutex> hold(s.poolLock);
+
+        // Best fit among idle buffers that are big enough but not wastefully
+        // so: a UHD buffer is not handed to a 1080p render while it waits.
+        Entry* best = nullptr;
         for (auto& e : s.pool)
+            if (!e.inUse && e.buffer.length >= bytes && e.buffer.length <= bytes * 2
+                && (!best || e.buffer.length < best->buffer.length))
+                best = &e;
+        if (best)
         {
-            // Big enough, but not wastefully so: a UHD buffer is not handed to
-            // a 1080p render while the UHD one waits.
-            if (!e.inUse && e.buffer.length >= bytes && e.buffer.length <= bytes * 2)
-            {
-                e.inUse = true;
-                return e.buffer;
-            }
+            best->inUse    = true;
+            best->lastUsed = ++s.useCounter;
+            return best->buffer;
         }
     }
 
+    // Exact size, never rounded up: a grow-only buffer holds the largest size
+    // it has ever seen for good.
     id<MTLBuffer> b = [s.device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];
     if (!b) return nil;
 
     std::lock_guard<std::mutex> hold(s.poolLock);
-    s.pool.push_back({ b, true });
+    s.pool.push_back({ b, true, ++s.useCounter });
     return b;
 }
 
@@ -166,15 +197,23 @@ void ReleaseScratch(DeviceState& s, id<MTLBuffer> b)
 {
     std::lock_guard<std::mutex> hold(s.poolLock);
     for (auto& e : s.pool)
-        if (e.buffer == b) { e.inUse = false; break; }
+        if (e.buffer == b) { e.inUse = false; e.lastUsed = ++s.useCounter; break; }
 
-    // Keep at most four idle buffers: enough for a couple of renders in flight
-    // with two buffers each, without holding gigabytes after a 4K blur.
-    int idle = 0;
-    for (auto it = s.pool.begin(); it != s.pool.end();)
+    // Trim idle buffers, least recently used first, until what the pool holds
+    // while idle fits the budget. Buffers in use are never touched -- their
+    // command buffers are still running.
+    for (;;)
     {
-        if (!it->inUse && ++idle > 4) it = s.pool.erase(it);
-        else ++it;
+        NSUInteger idleBytes = 0;
+        auto oldest = s.pool.end();
+        for (auto it = s.pool.begin(); it != s.pool.end(); ++it)
+        {
+            if (it->inUse) continue;
+            idleBytes += it->buffer.length;
+            if (oldest == s.pool.end() || it->lastUsed < oldest->lastUsed) oldest = it;
+        }
+        if (idleBytes <= kIdleBudget || oldest == s.pool.end()) break;
+        s.pool.erase(oldest);
     }
 }
 
