@@ -13,11 +13,13 @@
 #include "render/CudaRender.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace mtx;
@@ -550,6 +552,28 @@ static void RunDefocusChecks(int W, int H)
                                   kFilterBilinear, kEdgeBlack, 0, 0, kDepthFloat, kDepthFloat, 8.0f);
         const double d = MaxDiff(sharp, blurred);
         Report("blur actually changes the image", d > 0.1, d);
+    }
+
+    // The blur's scratch memory is kept between blurred frames (fast playback)
+    // and given back once the blur has been idle: the first un-blurred frame
+    // after ~2 s trims the pool to nothing.
+    {
+        std::vector<float> out(static_cast<size_t>(W) * H * 4);
+        RunMultiTransformCudaSync(src.data(), W, H, out.data(), W, H, st,
+                                  kFilterBilinear, kEdgeBlack, 0, 0, kDepthFloat, kDepthFloat, 8.0f);
+        const unsigned long long held = BlurScratchReservedBytes();
+        Report("blur scratch is kept between blurred frames", held > 0, static_cast<double>(held));
+
+        RunMultiTransformCudaSync(src.data(), W, H, out.data(), W, H, st,
+                                  kFilterBilinear, kEdgeBlack, 0, 0, kDepthFloat, kDepthFloat, 0.0f);
+        Report("not released while the blur is recent",
+               BlurScratchReservedBytes() > 0, static_cast<double>(BlurScratchReservedBytes()));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+        RunMultiTransformCudaSync(src.data(), W, H, out.data(), W, H, st,
+                                  kFilterBilinear, kEdgeBlack, 0, 0, kDepthFloat, kDepthFloat, 0.0f);
+        const unsigned long long after = BlurScratchReservedBytes();
+        Report("released once the blur has been idle", after == 0, static_cast<double>(after));
     }
 }
 

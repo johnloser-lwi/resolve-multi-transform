@@ -14,6 +14,8 @@
 
 #include <cuda_runtime.h>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
 
 __global__ void MultiTransformKernel(const unsigned char* __restrict__ src,
@@ -255,6 +257,61 @@ cudaMemPool_t PluginPool()
     return pool;
 }
 
+// --- Giving the blur's memory back once the blur stops ----------------------
+//
+// The release threshold keeps up to 768 MB mapped between frames, which is
+// what makes blurred playback fast -- and, left alone, holds it for the rest of
+// the session after a single blurred frame. So the pool is trimmed to nothing
+// once no blur has rendered for kBlurIdleMs.
+//
+// The trim runs from an un-blurred GPU render rather than from a timer or a
+// background thread: inside a render the host's CUDA context is current, and
+// freeing device memory from a thread where it may not be is its own way to
+// leak or crash. The cost is that the memory is returned on the next frame this
+// plugin renders without blur, not the instant the blur ends.
+
+constexpr long long kBlurIdleMs = 2000;
+std::atomic<long long> g_lastBlurMs{ 0 };
+std::atomic<bool>      g_poolHolds{ false };   ///< blur scratch may be mapped
+
+long long NowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void NoteBlurUse()
+{
+    g_lastBlurMs.store(NowMs());
+    g_poolHolds.store(true);
+}
+
+void ReleaseIdleBlurScratch()
+{
+    if (!g_poolHolds.load()) return;
+    if (NowMs() - g_lastBlurMs.load() < kBlurIdleMs) return;
+    if (!g_poolHolds.exchange(false)) return;   // another render is already trimming
+
+    // Only memory not backing an outstanding allocation is released, so a
+    // blur that starts on another thread meanwhile is unaffected; it simply
+    // maps fresh memory and sets the flag again.
+    if (cudaMemPool_t pool = PluginPool())
+        if (cudaMemPoolTrimTo(pool, 0) != cudaSuccess) cudaGetLastError();
+}
+
+} // namespace
+
+unsigned long long BlurScratchReservedBytes()
+{
+    unsigned long long bytes = 0;   // cuuint64_t
+    if (cudaMemPool_t pool = PluginPool())
+        if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemCurrent, &bytes) != cudaSuccess)
+            cudaGetLastError();
+    return bytes;
+}
+
+namespace {
+
 /** @brief Render + blur + store. Returns false only if no scratch memory could
  *  be had at all, in which case the caller renders sharp instead.
  *
@@ -322,6 +379,7 @@ bool RenderDefocused(cudaStream_t stream,
     {
         cudaFreeAsync(a, stream);
         cudaFreeAsync(b, stream);
+        NoteBlurUse();
     }
     else
     {
@@ -345,6 +403,8 @@ const char* RunMultiTransformCuda(void* pStream,
                                   float defocusPx)
 {
     if (!dst || dstWidth <= 0 || dstHeight <= 0) return nullptr;
+
+    if (!mtx::DefocusActive(defocusPx)) ReleaseIdleBlurScratch();
 
     cudaStream_t stream = static_cast<cudaStream_t>(pStream);
 
