@@ -587,7 +587,11 @@ static void RunDefocusChecks(int W, int H)
 
 int main()
 {
+#if defined(__APPLE__)
+    std::printf("=== CPU vs Metal parity ===\n");
+#else
     std::printf("=== CPU vs CUDA parity ===\n");
+#endif
 
     RunDefocusChecks(256, 192);
 

@@ -18,10 +18,8 @@
 // 65535 and the maximum code must load as exactly 1.0, which a reciprocal
 // approximation would not give.
 //
-// This file must never contain the character sequence )MTXMETAL" -- it closes
+// This file must never contain a close paren, MTXMETAL and a double quote run together -- it closes
 // the raw string it is embedded in.
-//
-// UNTESTED ON HARDWARE: written on Windows ahead of a Mac being available.
 
 #include <metal_stdlib>
 using namespace metal;

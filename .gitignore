@@ -6,3 +6,4 @@ out/
 *.sdf
 *.opendb
 CMakeUserPresets.json
+build-mac/

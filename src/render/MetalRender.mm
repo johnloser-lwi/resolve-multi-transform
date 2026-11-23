@@ -8,8 +8,6 @@
 //                    transpose -> 3 column passes -> transpose -> store
 //
 // Compiled as Objective-C++ with ARC (see CMakeLists).
-//
-// UNTESTED ON HARDWARE: written on Windows ahead of a Mac being available.
 
 #include "render/MetalRender.h"
 
@@ -172,7 +170,7 @@ id<MTLBuffer> AcquireScratch(DeviceState& s, NSUInteger bytes)
 
         // Best fit among idle buffers that are big enough but not wastefully
         // so: a UHD buffer is not handed to a 1080p render while it waits.
-        Entry* best = nullptr;
+        DeviceState::Entry* best = nullptr;
         for (auto& e : s.pool)
             if (!e.inUse && e.buffer.length >= bytes && e.buffer.length <= bytes * 2
                 && (!best || e.buffer.length < best->buffer.length))

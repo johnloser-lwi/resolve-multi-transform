@@ -8,9 +8,8 @@
 // hands the plugin an id<MTLCommandQueue> (kOfxImageEffectPropMetalCommandQueue)
 // and each image's pixel data is an id<MTLBuffer>, not a CPU pointer.
 //
-// UNTESTED ON HARDWARE: written on Windows ahead of a Mac being available.
 // test_render_parity runs every CPU-vs-GPU check against this path on macOS;
-// that suite passing is the bar before trusting it in Resolve.
+// that suite passing is the bar before trusting a change to it in Resolve.
 
 #include "MotionBlur.h"
 #include "Sampler.h"
