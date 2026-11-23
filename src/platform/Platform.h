@@ -46,6 +46,16 @@ bool RunFileDialog(bool saving, const std::string& folder, const std::string& su
 /// The native folder picker, starting in @p current.
 bool RunFolderDialog(const std::string& current, std::string& outPath);
 
+/// Physical pixels per point on the display Resolve's window is on: 2 on a
+/// Retina Mac, 1 elsewhere. Always 1 on Windows.
+///
+/// The overlay needs it because two of the host's units disagree on a Retina
+/// Mac: the interact pixel scale counts *physical* pixels, while the host's
+/// drawText sizes its font in *points*. Laid out in physical pixels, every
+/// label came out twice the size of the box built for it. Scaling the layout
+/// by this puts the layout back in points, the unit the text already uses.
+double DisplayScale();
+
 } // namespace platform
 
 /// @p dir and @p name joined with the platform's separator.

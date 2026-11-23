@@ -235,5 +235,12 @@ bool RunFolderDialog(const std::string& current, std::string& outPath)
     return ok;
 }
 
+double DisplayScale()
+{
+    // Resolve on Windows reports a pixel scale that already agrees with the
+    // size of its text; the overlay was laid out against it from the start.
+    return 1.0;
+}
+
 } // namespace platform
 } // namespace mtx

@@ -75,14 +75,14 @@ environment variable is often not inherited by apps launched from an already-run
 so the plugin can fail to appear even when everything is correct. Prefer the normal install
 unless you specifically need to avoid elevation.
 
-## macOS (written, not yet built or tested)
+## macOS
 
 The `mac` branch carries a full macOS port: the same plugin and the same features, with a
-**Metal** renderer in place of CUDA and Cocoa for the dialogs. It was written on
-Windows before a Mac was available. The shared C++ has been checked with clang's parser, and the
-Windows build still passes every test, but the Mac-only files (`PlatformMac.mm`,
-`MetalRender.mm`, `MetalKernels.metal`) have never been compiled. Expect
-to fix a few compile errors on the first build.
+**Metal** renderer in place of CUDA and Cocoa for the dialogs. It was written on Windows ahead of
+a Mac, then built and tested on an Apple Silicon Mac (M5 Max, macOS 26, Resolve 21.2): it
+compiles as a universal binary with no warnings, all three test suites pass (including every
+CPU-vs-Metal parity check), and in Resolve it renders through the Metal path with the overlay
+drawn at the right size on a Retina display.
 
 **Build and install** (Xcode command line tools and `brew install cmake` first):
 
@@ -94,15 +94,21 @@ scripts/install-mac.sh    # copies to /Library/OFX/Plugins, signs ad-hoc; asks f
 Restart Resolve afterwards. Presets live in `~/Documents/MultiTransform/Presets`; settings and
 the effect clipboard live in `~/Library/Application Support/MultiTransform`.
 
-**First test, in this order:**
+**Checked so far:**
 
-1. `build-mac.sh` compiles, and **`test_render_parity` passes**. It runs every CPU-vs-GPU check
-   against the Metal path, so it proves the shader matches the CPU before Resolve is involved.
-2. Resolve lists the plugin, and applying it to a clip renders on the GPU: playback with a
-   move should be about as smooth as on Windows. A Metal path that failed would leave the
-   frame unchanged or black.
-3. A move with motion blur, and the Gaussian blur, both on the Edit page and in Fusion.
-4. Save Preset / Load Preset / Set Folder open their dialogs in front of Resolve.
+1. `build-mac.sh` compiles, and `test_render_parity` passes: every CPU-vs-GPU check runs against
+   the Metal path, so the shader is held to the CPU before Resolve is involved.
+2. Resolve lists the plugin and renders it on the GPU (its Metal shader cache holds the plugin's
+   kernels, so it is not falling back to the CPU).
+3. The on-screen overlay lays out correctly on Retina.
+
+**Still to confirm on the Mac:** motion blur and the Gaussian blur in Fusion as well as on the
+Edit page, and that Save Preset / Load Preset / Set Folder open their dialogs in front of Resolve.
+
+**Retina:** Resolve's interact pixel scale counts physical pixels on a Retina Mac, but its
+`drawText` sizes text in points. The overlay multiplies the pixel scale by the display's backing
+scale (`platform::DisplayScale()`, always 1 on Windows) so the layout is in points too; without
+it every label is drawn twice the size of its box.
 
 How the pieces map: `src/platform/Platform.h` is the OS layer (Win32 in `PlatformWin.cpp`, Cocoa
 in `PlatformMac.mm`); `src/render/MetalKernels.metal` is a line-for-line port of the GPU parts of

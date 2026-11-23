@@ -5,6 +5,7 @@
 #include "EditBlock.h"
 #include "FrameBounds.h"
 #include "ParamNames.h"
+#include "platform/Platform.h"
 
 #include <cmath>
 
@@ -236,6 +237,13 @@ bool MultiTransformInteract::buildContextUnsafe(OverlayContext& out, double time
     // to zero and the overlay would silently vanish.
     if (out.pixelScale.x <= 0.0) out.pixelScale.x = 1.0;
     if (out.pixelScale.y <= 0.0) out.pixelScale.y = 1.0;
+
+    // Lay out in points, not physical pixels: on a Retina Mac the host's pixel
+    // scale counts physical pixels but its text is sized in points, so without
+    // this every label is twice the size of its box. See DisplayScale().
+    out.uiScale       = platform::DisplayScale();
+    out.pixelScale.x *= out.uiScale;
+    out.pixelScale.y *= out.uiScale;
 
     out.stageCount  = GetChoice(_effect, kParamStageCount) + 1;
     out.activeStage = GetChoice(_effect, kParamActiveStage);

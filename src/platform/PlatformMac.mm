@@ -1,9 +1,8 @@
 // macOS implementation of Platform.h: Cocoa dialogs and the standard user
 // folders. Compiled as Objective-C++ with ARC (see CMakeLists).
 //
-// UNTESTED ON HARDWARE: written on Windows ahead of a Mac being available.
-// The first things to check when it is: that the dialogs appear in front of
-// Resolve, and that the folders below are created.
+// Not yet confirmed on a Mac: that the dialogs appear in front of Resolve,
+// and that the folders below are created.
 
 #include "platform/Platform.h"
 
@@ -14,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+#include <atomic>
 #include <cstdio>
 #include <ctime>
 
@@ -177,6 +177,34 @@ bool RunFolderDialog(const std::string& current, std::string& outPath)
 
     if (ok) outPath = picked;
     return ok;
+}
+
+double DisplayScale()
+{
+    // Resolve's main window, falling back to the main screen. Read live on the
+    // main thread (where the host draws overlays in practice), so dragging the
+    // window between a Retina and a non-Retina display is picked up on the
+    // next redraw. Off the main thread, AppKit is not to be touched: return the
+    // last value seen and refresh it on the main queue for next time.
+    static std::atomic<double> cached{ 0.0 };
+
+    auto read = []() -> double {
+        NSWindow* w = NSApp.mainWindow ? NSApp.mainWindow : NSApp.keyWindow;
+        CGFloat f = w ? w.backingScaleFactor
+                      : (NSScreen.mainScreen ? NSScreen.mainScreen.backingScaleFactor : 1.0);
+        return f >= 1.0 ? static_cast<double>(f) : 1.0;
+    };
+
+    if ([NSThread isMainThread])
+    {
+        const double f = read();
+        cached.store(f);
+        return f;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{ cached.store(read()); });
+    const double f = cached.load();
+    return f >= 1.0 ? f : 1.0;
 }
 
 } // namespace platform

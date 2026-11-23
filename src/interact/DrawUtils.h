@@ -84,7 +84,13 @@ struct OverlayContext
 
     /// Length of the clip in frames, or 0 when the host does not report it.
     double               clipLength = 0.0;
+    /// Size of one layout pixel in canonical units. On a Retina Mac one layout
+    /// pixel is one point (two physical pixels), matching the host's text.
     OfxPointD            pixelScale{ 1.0, 1.0 };
+
+    /// Physical pixels per layout pixel: 2 on a Retina Mac, else 1. Line
+    /// widths go to the host in physical pixels, so they are scaled by this.
+    double               uiScale = 1.0;
     OfxRectD             rod{ 0.0, 0.0, 0.0, 0.0 };   ///< image bounds, canonical
 
     int  activeStage = 0;      ///< which stage the gizmo and curve editor act on
@@ -251,7 +257,7 @@ inline void SetColour(const OverlayContext& c, const Colour& col)
 
 inline void SetLineWidth(const OverlayContext& c, float w)
 {
-    OFX::Private::gDrawSuite->setLineWidth(c.ctx, w);
+    OFX::Private::gDrawSuite->setLineWidth(c.ctx, w * static_cast<float>(c.uiScale));
 }
 
 inline void FillRect(const OverlayContext& c, double x1, double y1, double x2, double y2)
