@@ -35,9 +35,10 @@
 //    one set of strings serves both.
 //  - The value is a STRING: the id of the selected button. Default likewise.
 //
-// Only Resolve knows the type. Fusion's OFX host (and any other) would refuse
-// it, so everywhere else the same parameter is defined as an ordinary Choice
-// with the same options. The accessors below hide the difference and deal in
+// Only Resolve knows the type -- its Edit/Color pages, and its Fusion page,
+// which reuses the same description (see ButtonRowIcons). Any other host would
+// refuse it, so there the same parameter is defined as an ordinary Choice with
+// the same options. The accessors below hide the difference and deal in
 // button indices.
 //
 // The C++ support library has no class for an unknown type, so this goes
