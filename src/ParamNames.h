@@ -42,7 +42,6 @@ constexpr const char* kParamFilter         = "filterMode";
 constexpr const char* kParamEdge           = "edgeMode";
 
 // --- Base transform: a static resting pose, applied under the animation ---
-constexpr const char* kParamGroupBase      = "grpBase";
 constexpr const char* kParamBaseScale      = "baseScale";
 constexpr const char* kParamBaseScaleY     = "baseScaleY";
 constexpr const char* kParamBaseLinkScale  = "baseLinkScale";
@@ -56,7 +55,6 @@ constexpr const char* kParamBaseAnchor     = "baseAnchor";
 constexpr const char* kParamBaseReset      = "baseReset";
 
 // --- Presets ---
-constexpr const char* kParamGroupPresets   = "grpPresets";
 constexpr const char* kParamSaveEffect     = "savePresetEffect";
 constexpr const char* kParamSaveStage      = "savePresetStage";
 constexpr const char* kParamLoadPreset     = "loadPreset";
@@ -78,27 +76,13 @@ constexpr const char* kParamShutterPhase   = "shutterPhase";
 constexpr const char* kParamBlurSamples    = "blurSamples";
 constexpr const char* kParamBlurAdaptive   = "blurAdaptive";
 
-// --- Overlay state, grouped so it stays out of the way ---
-constexpr const char* kParamGroupOverlay   = "grpOverlay";
+// --- Overlay state (the Overlay tab) ---
 
 // --- Per stage (suffixed with 1-based index) ---
-// Every section is a collapsible group.
-//
-// An earlier version used label-type string parameters as plain dividers
-// instead, to avoid a wall of disclosure arrows. Two things killed that: the
-// panel roughly tripled in size as base transforms, presets, motion paths and
-// bounce controls arrived, and the label dividers turned out to render in
-// Fusion but not in Resolve -- the text sits in the parameter's *value* while
-// Resolve draws the (empty) label, so the separators were invisible in the very
-// host this is written for. A group header is drawn by the host itself, so it
-// cannot go missing that way.
-constexpr const char* kParamGroupTiming    = "grpTiming";
-constexpr const char* kParamGroupFrom      = "grpFrom";
-constexpr const char* kParamGroupTo        = "grpTo";
-constexpr const char* kParamGroupEasing    = "grpEasing";
+// A stage's controls sit directly on their Inspector tabs (Stage, A, B, Easing),
+// with no collapsible groups: see the note above DefineStage.
 constexpr const char* kParamCurveName      = "curveName";
 constexpr const char* kParamSaveCurve      = "saveCurve";
-constexpr const char* kParamGroupPath      = "grpPath";
 constexpr const char* kParamEnabled        = "enabled";
 constexpr const char* kParamAnchor2        = "timingAnchor";   ///< TimingAnchor
 constexpr const char* kParamStartFrame     = "startFrame";
@@ -187,6 +171,35 @@ inline const char* QuickActionLabel(int action)
         default:                return "";
     }
 }
+
+/// One push button per QuickAction, on the Inspector's Quick tab. The tab gives
+/// them room of their own, so the dropdown-plus-Apply above is no longer shown
+/// in the Inspector; it stays defined (hidden) because the overlay's QUICK
+/// panel still drives actions through it.
+inline const char* QuickButtonParam(int action)
+{
+    static const char* const kNames[kQuickActionCount] = {
+        "quickCopyAtoB", "quickCopyBtoA", "quickSwapAB",
+        "quickCopyStage", "quickPasteStage", "quickFlatten",
+        "quickCopyAll", "quickPasteAll" };
+    return (action >= 0 && action < kQuickActionCount) ? kNames[action] : "";
+}
+
+// --- Inspector tabs ----------------------------------------------------------
+//
+// The Inspector shows one section at a time, picked from two rows of tab
+// buttons (Resolve's button row; a single "Section" choice in other hosts --
+// see ButtonRow.h). Navigation only: not saved, not undoable.
+constexpr const char* kParamTabsMain     = "inspectorTabs";       ///< Stage .. Easing
+constexpr const char* kParamTabsMore     = "inspectorTabsMore";   ///< Render .. Presets
+
+enum InspectorSection
+{
+    kSecStage = 0, kSecBase, kSecA, kSecB, kSecEasing,     // first row
+    kSecRender, kSecOverlay, kSecQuick, kSecPresets,       // second row
+    kSecCount,
+    kSecFirstMore = kSecRender                             ///< first section on the second row
+};
 
 // Per-channel timing offsets. Frames (or percentages under a Stretch anchor),
 // shift semantics: the channel keeps its duration and easing, just later.

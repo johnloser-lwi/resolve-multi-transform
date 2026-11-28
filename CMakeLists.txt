@@ -159,6 +159,11 @@ if(WIN32)
     target_link_libraries(bench_render PRIVATE mtxgpu)
 endif()
 
+# The tab-face images are copied into the bundle by the POST_BUILD step below,
+# which only runs when the plugin relinks; make editing an image force that.
+file(GLOB MTX_TAB_FACES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/packaging/tab-faces/*.png")
+set_property(TARGET MultiTransform APPEND PROPERTY LINK_DEPENDS ${MTX_TAB_FACES})
+
 # --- Assemble the .ofx.bundle ------------------------------------------------
 # Per-config path: with a multi-config generator a single shared bundle dir means
 # a Debug build silently overwrites the Release one (and vice versa), and the
@@ -175,6 +180,9 @@ add_custom_command(TARGET MultiTransform POST_BUILD
             "$<TARGET_FILE:MultiTransform>" "${BUNDLE_DIR}/Contents/${BUNDLE_ARCH_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/packaging/Info.plist" "${BUNDLE_DIR}/Contents/"
+    # Face images for the Inspector's tab buttons (Resolve; see src/ButtonRow.h).
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/packaging/tab-faces" "${BUNDLE_DIR}/Contents/Resources/tab-faces"
     COMMENT "Assembling MultiTransform.ofx.bundle"
 )
 if(APPLE)
